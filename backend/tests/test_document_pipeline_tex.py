@@ -156,6 +156,46 @@ Hello world.
     assert r"\providecommand{\DeclareUnicodeCharacter}[2]{}" not in translated
 
 
+def test_translate_latex_document_disables_microtype_protrusion(monkeypatch) -> None:
+    # Venue templates pair \usepackage{microtype} with Type1 Times
+    # (neurips_2026.sty: \renewcommand{\rmdefault}{ptm}); under XeLaTeX the
+    # first TS1-companion glyph then aborts the run with "Cannot use
+    # XeTeXglyph with ptmr8c". The guard must land after every preamble load
+    # and \microtypesetup call, wherever microtype was loaded from.
+    source_text = r"""\documentclass{article}
+\usepackage{microtype}
+\microtypesetup{protrusion=true}
+\begin{document}
+Hello world.
+\end{document}
+"""
+
+    monkeypatch.setattr(
+        translate_service, "_translate_latex_body", lambda *args, **kwargs: "你好。"
+    )
+
+    translated = translate_service.translate_latex_document(source_text)
+
+    assert r"\usepackage{microtype}" in translated
+    guard = r"\microtypesetup{protrusion=false}"
+    assert translated.index(r"\microtypesetup{protrusion=true}") < translated.rindex(guard)
+    assert translated.rindex(guard) < translated.rindex(r"\begin{document}")
+
+
+def test_ensure_xelatex_compatibility_microtype_guard_is_idempotent() -> None:
+    prefix = (
+        r"\documentclass{article}"
+        "\n"
+        r"\usepackage{microtype}"
+        "\n"
+        r"\begin{document}"
+    )
+
+    guarded = translate_service._ensure_xelatex_compatibility(prefix)
+
+    assert translate_service._ensure_xelatex_compatibility(guarded) == guarded
+
+
 def test_translate_latex_document_prefers_windows_cjk_font(monkeypatch) -> None:
     source_text = r"""\documentclass{article}
 \begin{document}

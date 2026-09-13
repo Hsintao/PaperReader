@@ -96,6 +96,15 @@ _XELATEX_ENGINE_SHIM_SNIPPET = (
     "\\let\\RequirePDFTeX\\relax\n"
     "\\providecommand{\\pdfinfo}[1]{}\n"
 )
+_MICROTYPE_PROTRUSION_GUARD_SNIPPET = (
+    "% Injected by PaperReader: microtype protrusion measures glyph widths with\n"
+    "% \\XeTeXglyph, which hard-errors on the Type1 text fonts pdfLaTeX-era venue\n"
+    "% templates still select under XeLaTeX (Cannot use XeTeXglyph with ptmr8c).\n"
+    "% Protrusion only subtly refines margins, so disable it for translated builds\n"
+    "% instead of risking a compile abort. This runs after every preamble package\n"
+    "% and \\microtypesetup call, wherever microtype was loaded from.\n"
+    "\\IfPackageLoadedTF{microtype}{\\microtypesetup{protrusion=false}}{}\n"
+)
 
 
 def _is_escaped_at(text: str, offset: int) -> bool:
@@ -523,10 +532,29 @@ _PDF_ONLY_FONT_REPLACEMENT = (
 )
 
 
+def _disable_microtype_protrusion(prefix: str) -> str:
+    """Neutralize microtype's protrusion feature for XeLaTeX builds.
+
+    Under XeTeX, protrusion factor setup measures glyph widths through the
+    ``\\XeTeXglyph`` primitive, which hard-errors on Type1 fonts — and
+    pdfLaTeX-era venue templates (e.g. NeurIPS: ``\\usepackage{microtype}``
+    plus T1-encoded Times) still select those under XeLaTeX. The first
+    TS1-companion character then aborts the run. The guard is placed at the
+    end of the preamble so it overrides any preamble ``\\microtypesetup``
+    re-enable, and it covers microtype loaded directly or by a class.
+    """
+    if "\\IfPackageLoadedTF{microtype}" in prefix:
+        return prefix
+    anchor = prefix.rfind("\\begin{document}")
+    if anchor == -1:
+        return prefix
+    return prefix[:anchor] + _MICROTYPE_PROTRUSION_GUARD_SNIPPET + prefix[anchor:]
+
+
 def _ensure_xelatex_compatibility(prefix: str) -> str:
     """Make pdfLaTeX-only constructs harmless under XeLaTeX.
 
-    Translated builds always compile with XeLaTeX for CJK output. Three source
+    Translated builds always compile with XeLaTeX for CJK output. Four source
     constructs would otherwise fail there:
 
     - arXiv can prepend ``\\DeclareUnicodeCharacter`` before
@@ -540,14 +568,19 @@ def _ensure_xelatex_compatibility(prefix: str) -> str:
     - Times/psnfss font packages (acl.sty's ``\\usepackage{times}`` and
       cousins) reference Type1 metrics that trigger ``XeTeXglyph`` errors;
       swap them for newtxtext, which is native and visually equivalent.
+    - microtype protrusion aborts on those same Type1 fonts (see
+      ``_disable_microtype_protrusion``); turn the feature off.
 
-    All injections are idempotent and sit before the source preamble.
+    All injections are idempotent. The engine shim and the Unicode compat
+    shim sit before the source preamble; the microtype guard sits at the end
+    of it, right before ``\\begin{document}``.
     """
     if _XELATEX_ENGINE_SHIM_SNIPPET.strip() not in prefix:
         prefix = _XELATEX_ENGINE_SHIM_SNIPPET + prefix
     prefix = _PDF_ONLY_FONT_PACKAGE_PATTERN.sub(
         lambda _m: _PDF_ONLY_FONT_REPLACEMENT, prefix
     )
+    prefix = _disable_microtype_protrusion(prefix)
     if not _DECLARE_UNICODE_CHARACTER_PATTERN.search(prefix):
         return prefix
     if _XELATEX_UNICODE_COMPAT_SNIPPET.strip() in prefix:

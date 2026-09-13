@@ -61,3 +61,75 @@ def test_real_xelatex_reproduces_the_three_original_fatal_errors(tmp_path):
     assert "Paragraph ended before \\@ssect was complete" in messages
     assert "Too many }'s" in messages
     assert "Misplaced alignment tab character &" in messages
+
+
+_MICROTYPE_TRIGGER_SOURCE = """\\documentclass{article}
+\\renewcommand{\\rmdefault}{ptm}
+\\usepackage[utf8]{inputenc}
+\\usepackage[T1]{fontenc}
+\\usepackage{xcolor}
+\\usepackage{microtype}
+\\begin{document}
+\\begin{itemize}
+\\item {\\color{green!60!black} 对齐驱动力：} sample text.
+\\end{itemize}
+\\end{document}
+"""
+
+
+def _translate_with_production_injections(source_text: str) -> str:
+    """Run the translated-document prefix pipeline without the LLM."""
+    from app.services import translate_service
+
+    prefix, body, suffix = translate_service._split_latex_document(source_text)
+    prefix = translate_service._ensure_xelatex_compatibility(prefix)
+    prefix = translate_service._ensure_cjk_support(prefix)
+    return f"{prefix}\n{body}\n{suffix}"
+
+
+@pytest.mark.skipif(shutil.which(settings.latexmk_path) is None, reason="latexmk is not installed")
+def test_real_xelatex_microtype_protrusion_guard_prevents_ptmr8c_abort(tmp_path):
+    # NeurIPS-style font setup: Type1 Times as \rmdefault plus microtype. With
+    # xeCJK loaded ahead of fontenc (the translated-preamble order), the
+    # itemize bullet substitutes TS1/ptm and microtype's protrusion setup
+    # aborts the run on the Type1 ptmr8c. The injected guard must keep the
+    # strict (non-fallback) compile green.
+    tex_path = tmp_path / "translated.tex"
+    tex_path.write_text(
+        _translate_with_production_injections(_MICROTYPE_TRIGGER_SOURCE),
+        encoding="utf-8",
+    )
+
+    result = compile_tex_project_with_fallback(
+        tex_path, tmp_path, compiler=TRANSLATED_LATEX_COMPILER
+    )
+
+    assert result.pdf_path.is_file()
+    assert result.pdf_path.stat().st_size > 0
+    assert not result.used_fallback
+
+
+@pytest.mark.skipif(shutil.which(settings.latexmk_path) is None, reason="latexmk is not installed")
+def test_real_xelatex_microtype_protrusion_trigger_still_exists(tmp_path):
+    # Canary for the engine failure the protrusion guard neutralizes: xeCJK
+    # loaded right after \documentclass (but before fontenc) leaves the text
+    # encoding in the state where the TS1/ptm substitution aborts. If a future
+    # TeX Live stops failing here, the guard can be retired.
+    tex_path = tmp_path / "trigger.tex"
+    tex_path.write_text(
+        _MICROTYPE_TRIGGER_SOURCE.replace(
+            "\\documentclass{article}\n",
+            "\\documentclass{article}\n\\usepackage{xeCJK}\n",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    outcome = _run_latexmk(
+        tex_path, tmp_path, force=True, compiler=TRANSLATED_LATEX_COMPILER
+    )
+    errors, _ = parse_latex_log_issues(tmp_path / "trigger.log")
+    messages = "\n".join(str(error["message"]) for error in errors)
+
+    assert outcome.returncode != 0
+    assert "Cannot use XeTeXglyph with ptmr8c; not a native platform font." in messages
