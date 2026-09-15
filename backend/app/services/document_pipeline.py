@@ -355,7 +355,7 @@ def _persist_latex_recovery(record: DocumentRecord, report: LatexRecoveryEntry) 
     record.latex_recovery = report
     stage_map = {
         "analyzing": ("latex_diagnose", "分析 LaTeX 错误"),
-        "repairing": ("latex_repair", "安全修复 LaTeX"),
+        "repairing": ("latex_repair", "自动修复 LaTeX"),
         "recompiling": ("latex_rebuild", "重新编译 LaTeX"),
     }
     if report.status in stage_map:
@@ -430,6 +430,8 @@ def _compile_translated_tex(
             translated_tex,
             output_dir / f"{translated_tex.stem}.log",
             provider_settings=provider_settings,
+            initial_error=str(initial_error) if initial_error else None,
+            compile_output_dir=output_dir,
             on_update=lambda report: _persist_latex_recovery(record, report),
         )
         record.latex_recovery = outcome.report
@@ -492,6 +494,7 @@ def _compile_translated_tex_project(
             provider_settings=provider_settings,
             compile_output_dir=output_dir,
             backup_dir=output_dir,
+            initial_error=str(initial_error) if initial_error else None,
             on_update=lambda report: _persist_latex_recovery(record, report),
         )
         record.latex_recovery = outcome.report

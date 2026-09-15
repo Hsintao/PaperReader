@@ -1,4 +1,5 @@
 import shutil
+import json
 
 import pytest
 
@@ -11,6 +12,39 @@ from app.services.latex_service import (
     parse_latex_log_issues,
 )
 from app.services.mineru_layout import Paragraph, TextRun
+from app.services import latex_recovery
+
+
+@pytest.mark.skipif(shutil.which(settings.latexmk_path) is None, reason="latexmk is not installed")
+@pytest.mark.parametrize("missing_log", [False, True])
+def test_real_recovery_adds_required_math_package(tmp_path, monkeypatch, missing_log):
+    tex_path = tmp_path / "translated.tex"
+    log_path = tmp_path / "translated.log"
+    tex_path.write_text(
+        "\\documentclass{article}\n\\begin{document}\n"
+        "Preserved prose. $\\dfrac{1}{2}$\n\\end{document}\n", encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError) as failure:
+        compile_tex_project_with_fallback(tex_path, tmp_path, compiler=TRANSLATED_LATEX_COMPILER)
+    assert "Undefined control sequence" in str(failure.value)
+    if missing_log:
+        log_path.unlink()
+    responses = iter([
+        json.dumps({"summary": "The fraction command requires amsmath.", "error_lines": [2]}),
+        json.dumps({"patches": [{"start_line": 2, "end_line": 2,
+            "original": r"\begin{document}",
+            "replacement": "\\usepackage{amsmath}\n\\begin{document}",
+            "reason": "Load the math package"}]}),
+    ])
+    monkeypatch.setattr(latex_recovery.llm_client, "chat", lambda **kwargs: next(responses))
+    outcome = latex_recovery.recover_latex_document(
+        tex_path, log_path, provider_settings=None, initial_error=str(failure.value),
+    )
+    assert outcome.result is not None, outcome.report.last_error
+    assert outcome.result.pdf_path.stat().st_size > 0
+    assert not outcome.result.used_fallback
+    assert not outcome.result.errors
+    assert r"Preserved prose. $\dfrac{1}{2}$" in tex_path.read_text(encoding="utf-8")
 
 
 @pytest.mark.skipif(shutil.which(settings.latexmk_path) is None, reason="latexmk is not installed")

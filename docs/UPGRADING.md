@@ -1,5 +1,13 @@
 # Upgrading PaperReader
 
+## Upgrading from v2.1.9 to v2.1.10
+
+PaperReader v2.1.10 is backward compatible and requires no manual data migration. Keep the existing `DATA_DIR`, database, `AUTH_SECRET_KEY`, provider settings, completed translation checkpoints, and TeX Live installation.
+
+Automatic LaTeX recovery now continues for up to five rounds and passes compiler feedback into the next diagnosis. Logs without source-line anchors no longer abort recovery; the repair model may fix preamble definitions, ordinary package declarations, macros, and complete environments. Every applied round keeps a before-repair `.tex` backup in the document output directory. Existing documents can be retried from the failed stage and do not need to be uploaded again.
+
+Frontend, package-lock root metadata, API, desktop guides, and release notes are synchronized to `2.1.10`; the Git tag is `v2.1.10`.
+
 ## Upgrading from v2.1.8 to v2.1.9
 
 PaperReader v2.1.9 is backward compatible and requires no manual data migration. Keep the existing `DATA_DIR`, database, `AUTH_SECRET_KEY`, provider settings, and TeX Live installation. On first start, SQLite adds three columns to `documents` (`last_read_page`, `last_read_ratio`, `metadata_json`) and a new `annotations` table; existing documents simply start with an empty reading position, no annotations, and no metadata.

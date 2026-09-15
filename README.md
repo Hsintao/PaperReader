@@ -1,12 +1,12 @@
-# PaperReader v2.1.9
+# PaperReader v2.1.10
 
 English | [简体中文](docs/zh-cn/README.zh-cn.md)
 
-[Download Windows / macOS v2.1.9](https://github.com/Mars-Dingdang/PaperReader/releases/tag/v2.1.9) · [Upgrade guide](docs/UPGRADING.md) · [Release notes](docs/releases/v2.1.9.md)
+[Download Windows / macOS v2.1.10](https://github.com/Mars-Dingdang/PaperReader/releases/tag/v2.1.10) · [Upgrade guide](docs/UPGRADING.md) · [Release notes](docs/releases/v2.1.10.md)
 
 > 📖 **Please read the [User Guide (中文)](docs/user_instruction.md) before downloading.** It covers installation (including the Windows "unblock ZIP" step that prevents most launch failures), first-run provider setup, paper submission, history, artifacts, and AI chat.
 
-v2.1.9 upgrades the reader itself: in-document search, persistent annotations with Markdown note export, reading-position memory, synced dual-pane scrolling, streamed AI answers with clickable citations, library-wide full-text search, BibTeX export, and a figure gallery — on top of a PDF renderer that now loads pages on demand. See the [release notes](docs/releases/v2.1.9.md) for details. Frontend/API package version: `2.1.9`.
+v2.1.10 improves translated LaTeX recovery: compiler feedback is carried across up to five repair rounds, missing line anchors no longer abort diagnosis, and repairs can reach preambles, macros, packages, and complete environments while preserving the paper source. See the [release notes](docs/releases/v2.1.10.md) for details. Frontend/API package version: `2.1.10`.
 
 ![](./images/demo1.png)
 
@@ -27,7 +27,7 @@ PaperReader is a full-stack bilingual paper-reading app. Upload a PDF or a LaTeX
 - Upload `.pdf`, single `.tex`, individual TeX project files, or a complete `.zip` / `.tar` / `.tar.gz` / `.tgz` LaTeX archive; LaTeX source is preferred for arXiv papers because it preserves structure better than PDF extraction
 - PDF parsing via the MinerU cloud API — no local OCR or GPU required
 - Concurrent LLM translation with validated per-chunk checkpoints and automatic retry; failed documents resume from the last checkpoint instead of starting over
-- Four-layer LaTeX failure prevention: prose sanitizer → strict-then-fallback compile → bounded model repair → in-browser manual TeX editor
+- LaTeX recovery: prose sanitizer → strict-then-fallback compile → up to five compiler-guided model repair attempts with expanding context, preamble/package fixes and automatic backups → in-browser manual TeX editor
 - Optional vision-model adversarial check on each page (auto / manual review modes, off by default)
 - Side-by-side original/translated PDF reader with outlines (bookmarks or backend-parsed section structure), selectable text, trackpad zoom, on-demand page rendering, and a progress bar with stage breakdown, ETA, and failure diagnosis
 - In-document search (Ctrl/Cmd+F) with match navigation across the whole file

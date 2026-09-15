@@ -1,12 +1,12 @@
-# PaperReader v2.1.9
+# PaperReader v2.1.10
 
 [English](../../README.md) | 简体中文
 
-[下载 Windows / macOS v2.1.9](https://github.com/Mars-Dingdang/PaperReader/releases/tag/v2.1.9) · [升级指南](../UPGRADING.md) · [发布说明](releases/v2.1.9.md)
+[下载 Windows / macOS v2.1.10](https://github.com/Mars-Dingdang/PaperReader/releases/tag/v2.1.10) · [升级指南](../UPGRADING.md) · [发布说明](releases/v2.1.10.md)
 
 > 📖 **下载前请先阅读[用户说明书](../user_instruction.md)**，其中包含安装（含 Windows 安装包"解除锁定"步骤，可避免绝大多数启动失败）、首次运行的服务商配置、论文提交、历史记录、产物文件与 AI 对话等说明。
 
-v2.1.9 升级阅读器本体：文档内搜索、可持久化批注与 Markdown 笔记导出、阅读位置记忆、双栏联动滚动、流式 AI 回答与可点击引用、跨文档全文搜索、BibTeX 导出、图表墙；PDF 渲染改为按需加载。详见[发布说明](releases/v2.1.9.md)。前端/API 版本号：`2.1.9`。
+v2.1.10 提高了译文 LaTeX 自动修复的成功率：编译反馈会持续传递给最多五轮修复，缺少行号的日志不再直接失败，修复范围可覆盖导言区、宏、宏包和完整环境，同时保留论文源码。详见[发布说明](releases/v2.1.10.md)。前端/API 版本号：`2.1.10`。
 
 ![](../../images/demo1.png)
 
@@ -27,7 +27,7 @@ PaperReader 是一款全栈双语论文阅读应用。上传 PDF 或 LaTeX 源�
 - 支持 `.pdf`、单个 `.tex`、逐个上传 TeX 工程文件，或完整的 `.zip` / `.tar` / `.tar.gz` / `.tgz` LaTeX 工程包；arXiv 论文优先使用 LaTeX 源码，结构保留优于 PDF 提取
 - PDF 解析走 MinerU 云端 API，无需本地 OCR 或 GPU
 - LLM 并发翻译，带逐 chunk 校验检查点与自动重试；失败文档从最近检查点续跑，无需从头再来
-- 四层 LaTeX 失败防护：散文本清洗 → strict/降级两级编译 → 有界模型修复 → 浏览器内手动 TeX 编辑器
+- LaTeX 自动恢复：散文本清洗 → strict/降级两级编译 → 最多五轮编译反馈驱动的模型修复，支持扩大上下文、修复导言区与宏包、自动备份 → 浏览器内手动 TeX 编辑器
 - 可选的视觉模型逐页对抗校验（自动/手动复核，默认关闭）
 - 原文/译文 PDF 对照阅读：书签或后端解析的章节大纲、文本选择复制、触控板缩放、按需页面渲染，以及带阶段分解、预计耗时与失败诊断的进度条
 - Ctrl/Cmd+F 文档内全文搜索，支持逐个命中跳转

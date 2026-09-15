@@ -1,5 +1,8 @@
 import copy
+import json
 from pathlib import Path
+
+import pytest
 
 from app.models.store import LatexRecoveryEntry
 from app.models import store
@@ -21,6 +24,128 @@ def _fixture_tex() -> str:
 
 def _fixture_log() -> str:
     return "! Misplaced alignment tab character &.\nl.5 Big & Tall\n"
+
+
+def test_recovery_without_line_anchors_still_diagnoses_and_repairs(tmp_path, monkeypatch):
+    tex_path = tmp_path / "translated.tex"
+    log_path = tmp_path / "translated.log"
+    tex_path.write_text(_fixture_tex().replace("Big & Tall", r"\textbfbroken{Tall}"), encoding="utf-8")
+    log_path.write_text("! Emergency stop.\n*** (job aborted, no legal \\end found)\n", encoding="utf-8")
+    responses = iter([
+        json.dumps({"summary": "Misspelled formatting command.", "error_lines": [5]}),
+        json.dumps({"patches": [{"start_line": 5, "end_line": 5,
+            "original": r"\textbfbroken{Tall}", "replacement": r"\textbf{Tall}", "reason": "correct command"}]}),
+    ])
+    monkeypatch.setattr(latex_recovery.llm_client, "chat", lambda **kwargs: next(responses))
+
+    def compile_ok(path, output_dir, compiler=None):
+        assert r"\textbf{Tall}" in path.read_text(encoding="utf-8")
+        return LatexCompileResult(output_dir / "translated.pdf")
+
+    outcome = latex_recovery.recover_latex_document(
+        tex_path, log_path, provider_settings=None, compile_func=compile_ok,
+    )
+    assert outcome.result is not None, outcome.report.last_error
+
+
+@pytest.mark.parametrize("bad_response", ["not JSON", '{"patches":[]}'])
+def test_recovery_retries_invalid_model_output_with_feedback(tmp_path, monkeypatch, bad_response):
+    tex_path = tmp_path / "translated.tex"
+    log_path = tmp_path / "translated.log"
+    tex_path.write_text(_fixture_tex(), encoding="utf-8")
+    log_path.write_text(_fixture_log(), encoding="utf-8")
+    diagnosis = json.dumps({"summary": "Escape the prose ampersand.", "error_lines": [5]})
+    patch = json.dumps({"patches": [{"start_line": 5, "end_line": 5,
+        "original": "Big & Tall", "replacement": r"Big \& Tall", "reason": "escape"}]})
+    responses = iter(
+        [bad_response, diagnosis, f"```json\n{patch}\n```"] if bad_response == "not JSON"
+        else [diagnosis, bad_response, diagnosis, patch]
+    )
+    messages = []
+
+    def chat(**kwargs):
+        messages.append(kwargs["message"])
+        return next(responses)
+
+    monkeypatch.setattr(latex_recovery.llm_client, "chat", chat)
+    outcome = latex_recovery.recover_latex_document(
+        tex_path, log_path, provider_settings=None,
+        initial_error="latexmk process failed before producing a PDF",
+        compile_func=lambda path, output_dir, **kwargs: LatexCompileResult(output_dir / "translated.pdf"),
+    )
+    assert outcome.result is not None, outcome.report.last_error
+    assert outcome.report.rounds == 2
+    assert "latexmk process failed" in messages[0]
+    assert "latexmk process failed" in messages[-1]
+    assert "Previous repair attempt was rejected" in messages[-1]
+    assert "<diagnosis>\nEscape the prose ampersand." in messages[-1]
+
+
+def test_recovery_uses_compiler_despite_preflight_advisory_and_continues_past_two_rounds(tmp_path, monkeypatch):
+    tex_path = tmp_path / "translated.tex"
+    log_path = tmp_path / "translated.log"
+    tex_path.write_text(_fixture_tex(), encoding="utf-8")
+    log_path.write_text(_fixture_log(), encoding="utf-8")
+    responses = []
+    before = "Big & Tall"
+    for attempt in range(1, 4):
+        after = r"Big \& Tall" + "." * attempt
+        responses.extend([
+            json.dumps({"summary": f"Diagnosis {attempt}", "error_lines": [5]}),
+            json.dumps({"patches": [{"start_line": 5, "end_line": 5,
+                "original": before, "replacement": after, "reason": f"Repair {attempt}"}]}),
+        ])
+        before = after
+    replies = iter(responses)
+    messages = []
+
+    def chat(**kwargs):
+        messages.append(kwargs["message"])
+        return next(replies)
+
+    monkeypatch.setattr(latex_recovery.llm_client, "chat", chat)
+    monkeypatch.setattr(latex_recovery, "validate_latex_structure", lambda tex: [(5, "advisory")])
+    compile_calls = []
+
+    def compile_eventually_ok(path, output_dir, **kwargs):
+        compile_calls.append(path.read_text(encoding="utf-8"))
+        if len(compile_calls) < 3:
+            log_path.write_text(f"! Remaining issue {len(compile_calls)}.\nl.5 source\n", encoding="utf-8")
+            raise RuntimeError(f"Compiler feedback {len(compile_calls)}")
+        return LatexCompileResult(output_dir / "translated.pdf")
+
+    outcome = latex_recovery.recover_latex_document(
+        tex_path, log_path, provider_settings=None, compile_func=compile_eventually_ok,
+    )
+    assert outcome.result is not None, outcome.report.last_error
+    assert outcome.report.rounds == 3
+    assert len(compile_calls) == 3
+    assert "Compiler feedback 2" in messages[-1]
+    assert "Remaining issue 2" in messages[-1]
+
+
+def test_patch_can_fix_preamble_outside_compiler_window(tmp_path):
+    tex_path = tmp_path / "translated.tex"
+    tex_path.write_text(_fixture_tex(), encoding="utf-8")
+    latex_recovery._validate_and_apply_patches(tex_path, {"patches": [{
+        "start_line": 2, "end_line": 2, "original": r"\begin{document}",
+        "replacement": "\\usepackage{amsmath}\n\\newcommand{\\papername}{Paper}\n\\begin{document}",
+        "reason": "Supply required math commands and macro definition",
+    }]}, {5}, 1)
+    assert r"\usepackage{amsmath}" in tex_path.read_text(encoding="utf-8")
+
+
+def test_patch_can_repair_a_large_environment_while_preserving_content(tmp_path):
+    tex_path = tmp_path / "translated.tex"
+    before = "\n".join([r"\begin{itemize}"] + [f"\\item Entry {index}" for index in range(100)] + [r"\end{enumerate}"])
+    after = before.replace(r"\end{enumerate}", r"\end{itemize}")
+    tex_path.write_text("\\documentclass{article}\n\\begin{document}\n" + before + "\n\\end{document}\n", encoding="utf-8")
+    changes = latex_recovery._validate_and_apply_patches(tex_path, {"patches": [{
+        "start_line": 3, "end_line": 104, "original": before, "replacement": after,
+        "reason": "Match environment delimiters",
+    }]}, {104}, 1)
+    assert changes
+    assert after in tex_path.read_text(encoding="utf-8")
 
 
 def test_recovery_persists_analysis_before_applying_bounded_patch(tmp_path, monkeypatch):
@@ -82,6 +207,7 @@ def test_recovery_rejects_dangerous_or_out_of_window_patch_without_writing(tmp_p
         log_path,
         provider_settings=None,
         compile_func=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not compile")),
+        max_rounds=1,
     )
 
     assert outcome.result is None
@@ -109,6 +235,7 @@ def test_recovery_rejects_new_file_paths_without_writing(tmp_path, monkeypatch):
         log_path,
         provider_settings=None,
         compile_func=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not compile")),
+        max_rounds=1,
     )
 
     assert outcome.result is None
@@ -221,7 +348,7 @@ def test_patch_validator_rejects_whole_document_rewrite(tmp_path):
             tex_path, payload, set(range(1, len(lines) + 1)), 1
         )
     except ValueError as exc:
-        assert "too many lines" in str(exc).lower()
+        assert "removes too much source content" in str(exc).lower()
     else:
         raise AssertionError("whole-document rewrite must be rejected")
 
@@ -249,6 +376,7 @@ def test_recovery_stops_after_two_rounds(tmp_path, monkeypatch):
         log_path,
         provider_settings=None,
         compile_func=compile_fail,
+        max_rounds=2,
     )
     assert outcome.result is None
     assert outcome.report.status == "failed"
