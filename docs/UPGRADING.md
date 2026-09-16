@@ -1,5 +1,13 @@
 # Upgrading PaperReader
 
+## Upgrading from v2.1.10 to v2.1.11
+
+Keep the existing `DATA_DIR`, database, `AUTH_SECRET_KEY`, provider settings, and TeX Live installation. No manual database migration is required. Existing parser choices remain unchanged; new configurations default to MinerU. Set its key before uploading PDFs, or explicitly choose local parsing. LLM and MinerU credentials retain their existing values when left blank and are cleared only by their respective delete controls.
+
+The reader now highlights on the first click after the PDF text layer is ready, previews annotation notes, and displays a vertical figure overlay per PDF pane. Existing LaTeX projects receive a gallery derived from their main source and included Figure/Table environments. Thumbnails are stored under `outputs/<document_id>/figure-previews/` and refreshed when the compiled PDF changes.
+
+Frontend, API, and desktop packages are version `2.1.11`; the release tag is `v2.1.11`.
+
 ## Upgrading from v2.1.9 to v2.1.10
 
 PaperReader v2.1.10 is backward compatible and requires no manual data migration. Keep the existing `DATA_DIR`, database, `AUTH_SECRET_KEY`, provider settings, completed translation checkpoints, and TeX Live installation.
@@ -121,7 +129,7 @@ npm --prefix frontend ci
 npm --prefix frontend run build
 ```
 
-Keep your existing `.env`; add desired new options from `.env.example` instead of overwriting credentials or paths. An old configuration with `MINERU_API_KEY` and no `PDF_PARSER` retains MinerU parsing. New installations explicitly use `PDF_PARSER=local`. Set `PDF_PARSER=mineru` to opt into cloud layout parsing.
+Keep your existing `.env`; add desired new options from `.env.example` instead of overwriting credentials or paths. An old configuration with `MINERU_API_KEY` and no `PDF_PARSER` retains MinerU parsing. New installations use `PDF_PARSER=mineru`. Set `PDF_PARSER=local` to explicitly use local extraction.
 
 `make backend` / `make frontend` remain supported. A built frontend is also served by FastAPI at port 8000. Production builds use same-origin API and file URLs by default, including `127.0.0.1` in the Windows app. For a separately hosted UI, set `VITE_BACKEND_URL` at frontend build time and configure `CORS_ORIGINS` on the backend. Keep UI and API on the same site for the existing SameSite=Lax cookie policy.
 

@@ -17,11 +17,8 @@ class Settings(BaseSettings):
         project_root = Path(__file__).resolve().parents[3]
         if not self.data_dir.is_absolute():
             self.data_dir = (project_root / self.data_dir).resolve()
-        # v1 used MinerU unconditionally and had no PDF_PARSER setting. Keep
-        # existing key-based configurations working; new installs explicitly
-        # select local parsing in .env.example.
         if not self.pdf_parser:
-            self.pdf_parser = "mineru" if self.mineru_api_key else "local"
+            self.pdf_parser = "mineru"
 
     app_env: str = Field(default="dev", alias="APP_ENV")
     desktop_mode: bool = Field(default=False, alias="PAPERREADER_DESKTOP")

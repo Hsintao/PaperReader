@@ -75,7 +75,7 @@ export function ProviderSettingsForm({
       <div className="settings-section-heading">
         <div>
           <h3>PDF 解析</h3>
-          <p>本地解析不需要密钥；扫描件和复杂排版可选择 MinerU。</p>
+          <p>默认使用 MinerU 解析公式、图表和复杂排版，也可切换到无需密钥的本地解析。</p>
         </div>
         <span className={`config-status ${value.pdf_parser === 'local' || mineruKeyConfigured ? 'ready' : 'missing'}`}>
           {value.pdf_parser === 'local' ? '本地' : mineruKeyConfigured ? 'MinerU 已配置' : '需要密钥'}

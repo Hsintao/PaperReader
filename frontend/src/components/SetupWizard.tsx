@@ -11,7 +11,7 @@ export function SetupWizard({ status, onComplete }: Props) {
     mineru_api_key: '',
     base_url: status.defaults?.base_url || 'https://api.openai.com/v1',
     model: status.defaults?.model || 'gpt-4o-mini',
-    pdf_parser: status.defaults?.pdf_parser || 'local',
+    pdf_parser: status.defaults?.pdf_parser || 'mineru',
     mineru_base_url: status.defaults?.mineru_base_url || 'https://mineru.net/api/v4',
     mineru_model_version: status.defaults?.mineru_model_version || 'vlm',
     mineru_language: status.defaults?.mineru_language || 'en',

@@ -1,21 +1,21 @@
 """Backend-generated document outline and figure gallery.
 
-Sources, in priority order: MinerU's ``content_list_v2.json`` (page-nested
-blocks with captions), the extraction checkpoint's ``content_blocks`` (local
-parser, same shape), and for LaTeX projects the image files in the project
-directory.  The outline shape matches the frontend's ``OutlineItem``.
+PDFs use extracted layout blocks. LaTeX projects use the main document's
+included Figure and Table environments, with previews from the compiled PDF.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from app.core.config import settings
 from app.models.store import DocumentRecord
 from app.services.alignment_service import _content_list_path
+from app.services.alignment_service import _plain_target
+from app.services.latex_service import flatten_tex_project
 
-_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
 _FIGURE_LIMIT = 200
 
 
@@ -91,28 +91,148 @@ def _structure_from_blocks(pages, base_dir: Path) -> dict:
 
 
 def _tex_project_figures(record: DocumentRecord) -> list[dict]:
-    project_dir = record.source_path.parent
-    if not project_dir.is_dir():
-        return []
+    text = flatten_tex_project(record.source_path)
+    text = re.sub(r"(?<!\\)%[^\n]*", "", text)
+    text = text.split(r"\begin{document}", 1)[-1].split(r"\end{document}", 1)[0]
     figures: list[dict] = []
-    for path in sorted(project_dir.rglob("*")):
-        if len(figures) >= _FIGURE_LIMIT:
-            break
-        if not path.is_file() or path.suffix.lower() not in _IMAGE_EXTS:
-            continue
-        url = _url_for(path)
-        if url:
-            figures.append({"kind": "figure", "caption": path.stem, "page": None, "url": url})
+    counters = {"figure": 0, "table": 0}
+    for match in re.finditer(r"\\begin\{(figure|table)(\*?)\}(.*?)\\end\{\1\2\}", text, re.DOTALL):
+        kind, _, body = match.groups()
+        captions = list(re.finditer(r"\\caption(\*?)\s*(?:\[[^\]]*\])?\s*\{", body))
+        for caption in captions or [None]:
+            value = ""
+            if caption:
+                depth = 1
+                start = caption.end()
+                for end in range(start, len(body)):
+                    if body[end] == "{" and body[end - 1] != "\\":
+                        depth += 1
+                    elif body[end] == "}" and body[end - 1] != "\\":
+                        depth -= 1
+                    if depth == 0:
+                        value = _plain_target(body[start:end])
+                        break
+            numbered = caption is not None and not caption.group(1)
+            if numbered:
+                counters[kind] += 1
+            label = f"{kind.title()} {counters[kind]}" if numbered else kind.title()
+            figures.append({"kind": kind, "label": label, "caption": f"{label}: {value}" if value else label,
+                            "page": None, "url": ""})
     return figures
 
 
+def _float_crop(page, item: dict, anchors: list[tuple[float, float]]) -> tuple | None:
+    """Crop a TeX float between its hyperref anchor and first caption line."""
+    textpage = page.get_textpage()
+    try:
+        label = re.match(r".*?\d+\s*[.:：．]", item.get("locate_text", ""))
+        if not label or not anchors:
+            return None
+        search = textpage.search(label.group())
+        try:
+            found = search.get_next()
+        finally:
+            search.close()
+        if not found:
+            return None
+        start, length = found
+        left, bottom, _, top = textpage.get_charbox(start)
+        preceding = [(x, y) for x, y in anchors if abs(x - left) < 20 and y >= top]
+        if not preceding:
+            return None
+        x, y = min(preceding, key=lambda point: point[1])
+        width, height = page.get_size()
+        line = textpage.get_text_range(start, min(300, textpage.count_chars() - start)).splitlines()[0]
+        right = max(textpage.get_charbox(i)[2] for i in range(start, start + max(length, len(line))))
+        crop_right = width - 24 if left >= width / 2 or right > width / 2 else width / 2 - 8
+        return (max(0, x - 4), max(0, bottom - 4), max(0, width - crop_right), max(0, height - y - 4))
+    finally:
+        textpage.close()
+
+
+def _with_pdf_previews(record: DocumentRecord, figures: list[dict], side: str) -> list[dict]:
+    """Locate captions in each PDF independently; cache thumbnails by mtime."""
+    import pypdfium2 as pdfium
+    from pypdf import PdfReader
+
+    url = record.original_pdf_url if side == "original" else record.translated_pdf_url
+    if not url or not url.startswith("/data/"):
+        return figures if side == "original" else []
+    path = settings.data_dir / url.removeprefix("/data/")
+    if not path.is_file():
+        return figures if side == "original" else []
+    reader = PdfReader(path)
+    pages = [page.extract_text() or "" for page in reader.pages]
+    anchors: dict[tuple[int, str], list[tuple[float, float]]] = {}
+    for name, destination in reader.named_destinations.items():
+        kind = name.split('.')[0]
+        if kind in {"figure", "table"} and destination.get('/Left') is not None and destination.get('/Top') is not None:
+            anchors.setdefault((reader.get_destination_page_number(destination), kind), []).append(
+                (float(destination['/Left']), float(destination['/Top']))
+            )
+    preview_dir = settings.output_dir / record.document_id / "figure-previews"
+    result = []
+    pdf = pdfium.PdfDocument(str(path))
+    try:
+        for figure_index, figure in enumerate(figures):
+            item = dict(figure)
+            label = item.get("label") or ""
+            if not label:
+                match = re.match(r"(Figure|Fig\.?|Table|图|表)\s*(\d+)", item["caption"], re.I)
+                if match:
+                    label = f"{item['kind'].title()} {match.group(2)}"
+            number = re.search(r"\d+", label)
+            page_index = None
+            if number:
+                names = r"(?:Figure|Fig\.?|图)" if item["kind"] == "figure" else r"(?:Table|表)"
+                pattern = re.compile(rf"({names}\s*{number.group()}\s*[.:：．][^\n]*)", re.I)
+                for index, text in enumerate(pages):
+                    match = pattern.search(text)
+                    if match:
+                        page_index = index
+                        item["locate_text"] = match.group(1).strip()
+                        if side == "translated" or len(item["caption"]) <= len(label):
+                            item["caption"] = item["locate_text"]
+                        break
+            if page_index is None and side == "original" and item.get("page"):
+                page_index = item["page"] - 1
+            if page_index is not None:
+                item["page"] = page_index + 1
+                preview_dir.mkdir(parents=True, exist_ok=True)
+                preview = preview_dir / f"{side}-float-{figure_index + 1}.png"
+                if not preview.exists() or preview.stat().st_mtime < path.stat().st_mtime:
+                    page = pdf[page_index]
+                    try:
+                        crop = _float_crop(page, item, anchors.get((page_index, item['kind']), []))
+                        bitmap = page.render(scale=0.8, crop=crop or (0, 0, 0, 0))
+                        try:
+                            bitmap.to_pil().save(preview)
+                        finally:
+                            bitmap.close()
+                    finally:
+                        page.close()
+                if not item["url"] or side == "translated":
+                    item["url"] = _url_for(preview) or ""
+            elif side == "translated":
+                item["page"] = None
+            result.append(item)
+    finally:
+        pdf.close()
+    return result
+
+
 def build_document_structure(record: DocumentRecord) -> dict:
+    if record.source_type in {"tex", "tex_project"}:
+        figures = _tex_project_figures(record)
+        return {"outline": [], "figures": _with_pdf_previews(record, figures, "original"),
+                "translated_figures": _with_pdf_previews(record, figures, "translated")}
     content_path = _content_list_path(record)
     if content_path:
         try:
             pages = json.loads(content_path.read_text(encoding="utf-8"))
             structure = _structure_from_blocks(pages, content_path.parent)
             if structure["outline"] or structure["figures"]:
+                structure["translated_figures"] = _with_pdf_previews(record, structure["figures"], "translated")
                 return structure
         except Exception:
             pass
@@ -124,9 +244,8 @@ def build_document_structure(record: DocumentRecord) -> dict:
             if pages:
                 structure = _structure_from_blocks(pages, checkpoint.parent)
                 if structure["outline"] or structure["figures"]:
+                    structure["translated_figures"] = _with_pdf_previews(record, structure["figures"], "translated")
                     return structure
         except Exception:
             pass
-    if record.source_type in {"tex", "tex_project"}:
-        return {"outline": [], "figures": _tex_project_figures(record)}
     return {"outline": [], "figures": []}

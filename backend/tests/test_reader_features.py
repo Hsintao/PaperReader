@@ -197,6 +197,31 @@ def test_structure_endpoint_returns_outline_and_figures(client, isolated_storage
     assert structure["figures"][0]["caption"] == "Figure 1: Overview"
 
 
+def test_tex_figures_follow_included_floats_and_include_tables(isolated_storage):
+    from app.services.document_structure import build_document_structure
+
+    project = isolated_storage / "project"
+    project.mkdir()
+    (project / "unused.png").write_bytes(b"unused")
+    (project / "used.png").write_bytes(b"used")
+    (project / "main.tex").write_text(
+        "\\documentclass{article}\n\\begin{document}\n"
+        "% \\begin{figure}\\caption{Unused}\\end{figure}\n"
+        "\\input{body}\n\\end{document}", encoding="utf-8",
+    )
+    (project / "body.tex").write_text(
+        "\\begin{table}\\caption{First \\textbf{results}}\\begin{tabular}{c}1\\end{tabular}\\end{table}\n"
+        "\\begin{figure*}\\includegraphics{used.png}\\caption{Overview}\\end{figure*}", encoding="utf-8",
+    )
+    record = DocumentRecord(document_id="tex-floats", owner_user_id=1, source_type="tex_project",
+                            source_path=project / "main.tex", source_filename="main.tex")
+    figures = build_document_structure(record)["figures"]
+    assert [item["kind"] for item in figures] == ["table", "figure"]
+    assert figures[0]["caption"] == "Table 1: First results"
+    assert figures[1]["caption"] == "Figure 1: Overview"
+    assert "unused" not in str(figures)
+
+
 def test_library_search_finds_text_and_snippet(client):
     owner = _register(client, "searcher")
     _create_done_document(

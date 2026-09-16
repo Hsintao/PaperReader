@@ -1,12 +1,12 @@
-# PaperReader v2.1.10
+# PaperReader v2.1.11
 
 [English](../../README.md) | 简体中文
 
-[下载 Windows / macOS v2.1.10](https://github.com/Mars-Dingdang/PaperReader/releases/tag/v2.1.10) · [升级指南](../UPGRADING.md) · [发布说明](releases/v2.1.10.md)
+[下载 Windows / macOS v2.1.11](https://github.com/Mars-Dingdang/PaperReader/releases/tag/v2.1.11) · [升级指南](../UPGRADING.md) · [发布说明](releases/v2.1.11.md)
 
 > 📖 **下载前请先阅读[用户说明书](../user_instruction.md)**，其中包含安装（含 Windows 安装包"解除锁定"步骤，可避免绝大多数启动失败）、首次运行的服务商配置、论文提交、历史记录、产物文件与 AI 对话等说明。
 
-v2.1.10 提高了译文 LaTeX 自动修复的成功率：编译反馈会持续传递给最多五轮修复，缺少行号的日志不再直接失败，修复范围可覆盖导言区、宏、宏包和完整环境，同时保留论文源码。详见[发布说明](releases/v2.1.10.md)。前端/API 版本号：`2.1.10`。
+v2.1.11 修复对照高亮首次点击不显示及跨页定位偏差，新增批注笔记预览，并将图表导航改为每个 PDF 左侧的竖向半透明浮层。LaTeX 图表按论文中 Figure/Table 的顺序展示；大模型与 MinerU 密钥独立更新，新配置默认使用 MinerU。详见[发布说明](releases/v2.1.11.md)。前端/API 版本号：`2.1.11`。
 
 ![](../../images/demo1.png)
 

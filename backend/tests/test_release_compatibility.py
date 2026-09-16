@@ -106,7 +106,7 @@ def test_legacy_chat_request_shape_still_works_after_login(isolated_storage, mon
 
 def test_desktop_health_version():
     with TestClient(app) as client:
-        assert client.get('/health').json() == {'status': 'ok', 'app': 'PaperReader', 'version': '2.1.10'}
+        assert client.get('/health').json() == {'status': 'ok', 'app': 'PaperReader', 'version': '2.1.11'}
 
 
 def test_release_version_metadata_stays_in_sync():
@@ -123,5 +123,5 @@ def test_v1_mineru_configuration_keeps_its_parser(monkeypatch):
     from app.core.config import Settings
     monkeypatch.delenv('PDF_PARSER', raising=False)
     assert Settings(_env_file=None, MINERU_API_KEY='legacy-test-key').pdf_parser == 'mineru'
-    assert Settings(_env_file=None, MINERU_API_KEY='').pdf_parser == 'local'
+    assert Settings(_env_file=None, MINERU_API_KEY='').pdf_parser == 'mineru'
     assert Settings(_env_file=None, MINERU_API_KEY='legacy-test-key', PDF_PARSER='local').pdf_parser == 'local'

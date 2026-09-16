@@ -1,12 +1,12 @@
-# PaperReader v2.1.10
+# PaperReader v2.1.11
 
 English | [简体中文](docs/zh-cn/README.zh-cn.md)
 
-[Download Windows / macOS v2.1.10](https://github.com/Mars-Dingdang/PaperReader/releases/tag/v2.1.10) · [Upgrade guide](docs/UPGRADING.md) · [Release notes](docs/releases/v2.1.10.md)
+[Download Windows / macOS v2.1.11](https://github.com/Mars-Dingdang/PaperReader/releases/tag/v2.1.11) · [Upgrade guide](docs/UPGRADING.md) · [Release notes](docs/releases/v2.1.11.md)
 
 > 📖 **Please read the [User Guide (中文)](docs/user_instruction.md) before downloading.** It covers installation (including the Windows "unblock ZIP" step that prevents most launch failures), first-run provider setup, paper submission, history, artifacts, and AI chat.
 
-v2.1.10 improves translated LaTeX recovery: compiler feedback is carried across up to five repair rounds, missing line anchors no longer abort diagnosis, and repairs can reach preambles, macros, packages, and complete environments while preserving the paper source. See the [release notes](docs/releases/v2.1.10.md) for details. Frontend/API package version: `2.1.10`.
+v2.1.11 fixes first-click counterpart highlighting, adds in-app annotation previews, and places figure navigation in a translucent vertical overlay beside each PDF. LaTeX galleries follow the paper's Figure/Table sequence, and LLM/MinerU keys can be updated independently. MinerU is the default for new configurations. See the [release notes](docs/releases/v2.1.11.md). Frontend/API package version: `2.1.11`.
 
 ![](./images/demo1.png)
 

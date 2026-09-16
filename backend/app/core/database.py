@@ -65,7 +65,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
                 llm_api_key_enc TEXT,
                 llm_base_url TEXT,
                 llm_model TEXT,
-                pdf_parser TEXT NOT NULL DEFAULT 'local',
+                pdf_parser TEXT NOT NULL DEFAULT 'mineru',
                 mineru_api_key_enc TEXT,
                 mineru_base_url TEXT,
                 mineru_model_version TEXT,
@@ -88,7 +88,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             row["name"] for row in conn.execute("PRAGMA table_info(user_settings)").fetchall()
         }
         settings_migrations = {
-            "pdf_parser": "TEXT NOT NULL DEFAULT 'local'",
+            "pdf_parser": "TEXT NOT NULL DEFAULT 'mineru'",
             "mineru_api_key_enc": "TEXT",
             "mineru_base_url": "TEXT",
             "mineru_model_version": "TEXT",

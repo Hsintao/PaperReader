@@ -109,11 +109,13 @@ export type FigureItem = {
   caption: string
   page: number | null
   url: string
+  locate_text?: string
 }
 
 export type DocumentStructure = {
   outline: OutlineItem[]
   figures: FigureItem[]
+  translated_figures?: FigureItem[]
 }
 
 export type LibrarySearchHit = {

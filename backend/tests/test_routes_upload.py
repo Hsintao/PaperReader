@@ -23,6 +23,7 @@ def _configure_provider(client: TestClient) -> None:
             "api_key": "test-key",
             "base_url": "https://llm.example/v1",
             "model": "test-model",
+            "pdf_parser": "local",
         },
     )
     assert response.status_code == 200, response.text

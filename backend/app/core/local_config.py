@@ -139,7 +139,7 @@ def setup_status(*, desktop_mode: bool) -> dict[str, object]:
         "defaults": {
             "base_url": values.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
             "model": values.get("OPENAI_MODEL", "gpt-4o-mini"),
-            "pdf_parser": values.get("PDF_PARSER", "local") or "local",
+            "pdf_parser": values.get("PDF_PARSER", "mineru") or "mineru",
             "mineru_base_url": values.get("MINERU_BASE_URL", "https://mineru.net/api/v4"),
             "mineru_model_version": values.get("MINERU_MODEL_VERSION", "vlm"),
             "mineru_language": values.get("MINERU_LANGUAGE", "en"),
@@ -182,7 +182,7 @@ def pending_bootstrap_provider() -> dict[str, object] | None:
         "api_key": values.get("OPENAI_API_KEY", ""),
         "base_url": values.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
         "model": values.get("OPENAI_MODEL", "gpt-4o-mini"),
-        "pdf_parser": values.get("PDF_PARSER", "local") or "local",
+        "pdf_parser": values.get("PDF_PARSER", "mineru") or "mineru",
         "mineru_api_key": values.get("MINERU_API_KEY", ""),
         "mineru_base_url": values.get("MINERU_BASE_URL", "https://mineru.net/api/v4"),
         "mineru_model_version": values.get("MINERU_MODEL_VERSION", "vlm"),

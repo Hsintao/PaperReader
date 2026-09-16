@@ -14,7 +14,7 @@ class InitialSetupRequest(BaseModel):
     api_key: str = Field(min_length=1)
     base_url: str = Field(min_length=1)
     model: str = Field(min_length=1)
-    pdf_parser: str = "local"
+    pdf_parser: str = "mineru"
     mineru_api_key: str = ""
     mineru_base_url: str = "https://mineru.net/api/v4"
     mineru_model_version: str = "vlm"

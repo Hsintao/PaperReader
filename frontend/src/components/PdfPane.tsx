@@ -163,6 +163,10 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
   } | null>(null)
   const [renderRange, setRenderRange] = useState<{ start: number; end: number }>({ start: 1, end: 1 })
   const [figuresOpen, setFiguresOpen] = useState(false)
+  const [notesOpen, setNotesOpen] = useState(false)
+  const [activeAnnotationId, setActiveAnnotationId] = useState<string | null>(null)
+  const [locateMessage, setLocateMessage] = useState('')
+  const centerCounterpartRef = useRef(false)
 
   const annotationsRef = useRef<AnnotationItem[]>(annotations)
   annotationsRef.current = annotations
@@ -239,6 +243,10 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
     pageRatiosRef.current = []
     renderWaitersRef.current.clear()
     setCounterpart(null)
+    counterpartRef.current = null
+    setNotesOpen(false)
+    setActiveAnnotationId(null)
+    setLocateMessage('')
     setRenderRange({ start: 1, end: 1 })
     setFiguresOpen(false)
     if (progressTimerRef.current) clearTimeout(progressTimerRef.current)
@@ -369,7 +377,8 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
       const scroller = scrollRef.current
       if (el && scroller) {
         isProgrammaticScrollRef.current = true
-        scroller.scrollTo({ top: el.offsetTop - 8, behavior: 'smooth' })
+        scroller.scrollTo({ top: el.offsetTop - 8, behavior: 'instant' })
+        updateRenderRange()
         window.setTimeout(() => {
           isProgrammaticScrollRef.current = false
         }, 600)
@@ -458,11 +467,18 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
       return
     }
     clearOverlayClasses(pageEl)
+    pageEl.classList.remove('pdf-page-counterpart-highlight')
 
     const cp = counterpartRef.current
     let counterpartMissing = false
     if (cp && cp.page === page) {
       counterpartMissing = !paintCounterpart(pageEl, index, cp)
+      if (!counterpartMissing && centerCounterpartRef.current) {
+        centerCounterpartRef.current = false
+        isProgrammaticScrollRef.current = true
+        pageEl.querySelector('.pdf-text-highlight')?.scrollIntoView({ block: 'center', behavior: 'instant' })
+        window.setTimeout(() => { isProgrammaticScrollRef.current = false }, 600)
+      }
     }
 
     const searchState = search.stateRef.current
@@ -497,7 +513,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
       }
     }
 
-    if (counterpartMissing) pageEl.classList.add('pdf-page-counterpart-highlight')
+    if (counterpartMissing) setLocateMessage('未在此页找到对应文字，请选择一句完整文本后重试。')
   }
 
   function repaintRenderedPages() {
@@ -518,7 +534,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
 
   function whenPageRendered(page: number): Promise<void> {
     const el = pageRefs.current[page - 1]
-    if (el?.querySelector('.react-pdf__Page__textContent')) return Promise.resolve()
+    if (el?.querySelector('.react-pdf__Page__textContent span')) return Promise.resolve()
     return new Promise((resolve) => {
       const list = renderWaitersRef.current.get(page) || []
       list.push(resolve)
@@ -528,6 +544,8 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
   }
 
   function clearHighlights() {
+    counterpartRef.current = null
+    centerCounterpartRef.current = false
     setCounterpart(null)
     const pane = containerRef.current
     if (!pane) return
@@ -548,10 +566,12 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
     setZoomInput(String(percent))
   }
 
-  useImperativeHandle(ref, () => ({
-    async locateAndHighlight({ text, highlightText, positionRatio }) {
+  async function locateAndHighlight({ text, highlightText, positionRatio }: {
+    text: string; highlightText?: string; positionRatio: number
+  }) {
       const doc = pdfDocumentRef.current
-      if (!doc || !numPages) return
+      if (!doc || !numPages) { setLocateMessage('PDF 正在加载，请稍后重试。'); return }
+      setLocateMessage('正在定位…')
       const hint = Math.max(1, Math.min(numPages, Math.round(positionRatio * Math.max(0, numPages - 1)) + 1))
       // Score every page by the longest prefix of the target it contains;
       // ties and misses fall back to the position hint.  Whole-document scan
@@ -560,22 +580,35 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
       const blockTarget = normalized(text)
       let bestPage = hint
       let bestScore = 0
+      let bestHighlightScore = 0
       for (let page = 1; page <= numPages; page += 1) {
         const pageText = await getPageText(page)
-        const score = Math.max(
-          prefixMatchScore(pageText, highlightTarget),
-          prefixMatchScore(pageText, blockTarget)
-        )
-        if (score > bestScore || (score > 0 && score === bestScore && Math.abs(page - hint) < Math.abs(bestPage - hint))) {
+        const highlightScore = prefixMatchScore(pageText, highlightTarget)
+        const score = prefixMatchScore(pageText, blockTarget)
+        if (highlightScore > bestHighlightScore || (highlightScore === bestHighlightScore &&
+          (score > bestScore || (score === bestScore && Math.abs(page - hint) < Math.abs(bestPage - hint))))) {
+          bestHighlightScore = highlightScore
           bestScore = score
           bestPage = page
         }
       }
-      setCounterpart({ page: bestPage, text, highlight: highlightText || '' })
+      if (pdfDocumentRef.current !== doc) return
+      if (!bestScore && !bestHighlightScore) {
+        setLocateMessage('未找到匹配文字，请选择一句完整文本后重试。')
+        return
+      }
+      setLocateMessage('')
+      const next = { page: bestPage, text, highlight: highlightText || '' }
+      counterpartRef.current = next
+      centerCounterpartRef.current = true
+      setCounterpart(next)
       gotoPage(bestPage)
       await whenPageRendered(bestPage)
       applyOverlays(bestPage)
-    },
+  }
+
+  useImperativeHandle(ref, () => ({
+    locateAndHighlight,
     scrollToRatio(ratio: number) {
       const scroller = scrollRef.current
       if (!scroller || mode !== 'scroll') return
@@ -726,7 +759,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
   useEffect(() => {
     repaintRenderedPages()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [annotations])
+  }, [annotations, counterpart])
 
   // Repaint after React commits new search state; painting reads the ref that
   // only updates on render, so calling it from the search callback directly
@@ -842,7 +875,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
             width={containerWidth}
             renderTextLayer
             renderAnnotationLayer
-            onRenderSuccess={() => handlePageRendered(page)}
+            onRenderTextLayerSuccess={() => handlePageRendered(page)}
           />
         ) : (
           <div className="pdf-page-placeholder">
@@ -880,9 +913,8 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
           {onCreateAnnotation && !overrideActive && (
             <button
               className="icon-btn"
-              title="导出阅读笔记"
-              disabled={!annotations.length}
-              onClick={() => onExportNotes?.()}
+              title="批注笔记"
+              onClick={() => { setNotesOpen((v) => !v); setFiguresOpen(false) }}
             >
               <BookMarked size={16} />
             </button>
@@ -911,7 +943,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
             <button
               className={`icon-btn ${figuresOpen ? 'active' : ''}`}
               title="图表"
-              onClick={() => setFiguresOpen((v) => !v)}
+              onClick={() => { setFiguresOpen((v) => !v); setNotesOpen(false) }}
             >
               <Images size={16} />
             </button>
@@ -985,6 +1017,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
       </div>
 
       <div className="pdf-body" ref={containerRef}>
+        {locateMessage && <div className="pdf-locate-message" role="status">{locateMessage}<button className="icon-btn" title="关闭定位提示" onClick={() => setLocateMessage('')}><X size={14} /></button></div>}
         {outlineOpen && (
           <div className="pdf-outline">
             <div className="pdf-outline-heading">
@@ -1022,7 +1055,12 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
             </button>
           </div>
         )}
-        <div className="pdf-canvas-wrap" ref={scrollRef} onContextMenu={handleTextContextMenu}>
+        <div className="pdf-canvas-wrap" ref={scrollRef} onContextMenu={handleTextContextMenu}
+          onClick={(event) => {
+            if (window.getSelection()?.toString().trim()) return
+            const id = (event.target as HTMLElement).closest<HTMLElement>('[data-annotation-id]')?.dataset.annotationId
+            if (id) { setActiveAnnotationId(id); setNotesOpen(true); setFiguresOpen(false) }
+          }}>
           <Document
             file={fileOpts ?? undefined}
             options={PDF_DOCUMENT_OPTIONS}
@@ -1048,7 +1086,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
                   width={containerWidth}
                   renderTextLayer
                   renderAnnotationLayer
-                  onRenderSuccess={() => handlePageRendered(pageNumber)}
+                  onRenderTextLayerSuccess={() => handlePageRendered(pageNumber)}
                 />
               </div>
             )}
@@ -1060,29 +1098,46 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
           </Document>
         </div>
         {figuresOpen && figures.length > 0 && (
-          <div className="pdf-figure-strip">
+          <aside className="pdf-figure-strip" aria-label="图表导航">
+            <div className="pdf-overlay-heading"><strong>图表 · {figures.length}</strong><button className="icon-btn" title="关闭图表" onClick={() => setFiguresOpen(false)}><X size={14} /></button></div>
             {figures.map((figure, index) => (
               <button
                 key={index}
                 className="pdf-figure-card"
                 title={figure.caption}
-                onClick={() => {
-                  if (figure.page != null && figure.page > 0) {
-                    gotoPage(figure.page)
-                    setFiguresOpen(false)
-                  } else if (figure.url) {
-                    window.open(figure.url, '_blank', 'noopener,noreferrer')
-                  }
-                }}
+                onClick={() => void locateAndHighlight({
+                  text: figure.locate_text || figure.caption,
+                  highlightText: figure.locate_text || figure.caption,
+                  positionRatio: figure.page ? (figure.page - 1) / Math.max(1, numPages - 1) : index / Math.max(1, figures.length - 1)
+                })}
               >
-                <img src={figure.url} alt={figure.caption || 'figure'} loading="lazy" />
+                {figure.url ? <img src={figure.url} alt={figure.caption || 'figure'} loading="lazy" /> : <span className="pdf-figure-placeholder">{figure.kind === 'table' ? 'Table' : 'Figure'}</span>}
                 <span className="pdf-figure-caption">
                   {figure.caption ? figure.caption.slice(0, 60) : (figure.kind === 'table' ? '表' : '图')}
                   {figure.page != null && figure.page > 0 ? ` · P${figure.page}` : ''}
                 </span>
               </button>
             ))}
-          </div>
+          </aside>
+        )}
+        {notesOpen && !overrideActive && (
+          <aside className="pdf-notes-panel" aria-label="批注笔记">
+            <div className="pdf-overlay-heading"><strong>批注笔记 · {annotations.length}</strong><button className="icon-btn" title="关闭批注笔记" onClick={() => setNotesOpen(false)}><X size={14} /></button></div>
+            <button className="btn" disabled={!annotations.length} onClick={() => onExportNotes?.()}>导出阅读笔记</button>
+            {!annotations.length && <p className="muted">选择 PDF 文字，右键添加高亮和备注。</p>}
+            {annotations.map((annotation) => (
+              <article key={annotation.id} className={`pdf-note-card ${activeAnnotationId === annotation.id ? 'active' : ''}`}
+                ref={(el) => { if (el && activeAnnotationId === annotation.id) el.scrollIntoView({ block: 'nearest' }) }}>
+                <div className="pdf-overlay-heading"><span>第 {annotation.page} 页</span><span className={`menu-swatch swatch-${annotation.color}`} /></div>
+                <blockquote>{annotation.quote}</blockquote>
+                <p className="pdf-note-text">{annotation.note || '未填写备注'}</p>
+                <div className="pdf-note-actions">
+                  <button className="btn" onClick={() => { setActiveAnnotationId(annotation.id); void locateAndHighlight({ text: annotation.quote, positionRatio: annotation.position_ratio }) }}>定位原句</button>
+                  {onDeleteAnnotation && <button className="btn" onClick={() => void onDeleteAnnotation(annotation.id)}>删除批注</button>}
+                </div>
+              </article>
+            ))}
+          </aside>
         )}
       </div>
       {selectionMenu && (
@@ -1145,6 +1200,11 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
                   </div>
                 )}
               </>
+            )}
+            {selectionMenu.annotationId && onDeleteAnnotation && (
+              <button className="context-menu-item" onClick={() => {
+                setActiveAnnotationId(selectionMenu.annotationId); setNotesOpen(true); setFiguresOpen(false); setSelectionMenu(null)
+              }}>查看批注</button>
             )}
             {selectionMenu.annotationId && onDeleteAnnotation && (
               <button

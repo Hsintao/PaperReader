@@ -69,6 +69,7 @@ export function ReaderPage({ user, onUserChange, onLogout }: Props) {
   const [annotations, setAnnotations] = useState<AnnotationItem[]>([])
   const [structureOutline, setStructureOutline] = useState<OutlineItem[] | null>(null)
   const [structureFigures, setStructureFigures] = useState<FigureItem[]>([])
+  const [translatedFigures, setTranslatedFigures] = useState<FigureItem[]>([])
   const [syncScroll, setSyncScroll] = useState(true)
   const [pendingQuote, setPendingQuote] = useState<PendingQuote>(null)
   const [pendingLocate, setPendingLocate] = useState<PendingLocate>(null)
@@ -230,26 +231,30 @@ export function ReaderPage({ user, onUserChange, onLogout }: Props) {
     setAnnotations([])
     setStructureOutline(null)
     setStructureFigures([])
+    setTranslatedFigures([])
     setPendingQuote(null)
   }, [activeId])
 
   // Annotations and the document structure (backend outline + figure gallery)
   // are per-document; reload them whenever the active document changes and
   // again once its pipeline finishes.
-  const annotationsDocIdRef = useRef<string | null>(null)
   useEffect(() => {
     if (!activeId || activeDoc?.status !== 'done') return
-    if (annotationsDocIdRef.current === activeId) return
-    annotationsDocIdRef.current = activeId
-    void listAnnotations(activeId).then(setAnnotations).catch((e) => console.error(e))
+    let cancelled = false
+    void listAnnotations(activeId).then((items) => { if (!cancelled) setAnnotations(items) }).catch((e) => console.error(e))
     void getDocumentStructure(activeId)
       .then((structure) => {
+        if (cancelled) return
         setStructureOutline(structure.outline?.length ? structure.outline : null)
         setStructureFigures(
           (structure.figures || []).map((figure) => ({ ...figure, url: makeDataUrl(figure.url) }))
         )
+        setTranslatedFigures(
+          (structure.translated_figures || []).map((figure) => ({ ...figure, url: makeDataUrl(figure.url) }))
+        )
       })
       .catch((e) => console.error(e))
+    return () => { cancelled = true }
   }, [activeId, activeDoc?.status])
 
   const handleCreateAnnotation = useCallback(async (payload: {
@@ -612,7 +617,7 @@ export function ReaderPage({ user, onUserChange, onLogout }: Props) {
                 onUserScrollRatio={(ratio) => handlePaneScrollRatio('translated', ratio)}
                 syncEnabled={syncScroll}
                 onToggleSync={() => setSyncScroll((v) => !v)}
-                figures={structureFigures}
+                figures={translatedFigures}
                 outline={structureOutline}
                 onActivate={() => setActivePane('translated')}
               />

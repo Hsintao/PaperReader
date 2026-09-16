@@ -160,7 +160,7 @@ def _default_settings(user_id: int) -> UserSettings:
         api_key="",
         base_url=settings.openai_base_url,
         model=settings.openai_model,
-        pdf_parser=settings.pdf_parser or "local",
+        pdf_parser=settings.pdf_parser or "mineru",
         mineru_api_key="",
         mineru_base_url=settings.mineru_base_url,
         mineru_model_version=settings.mineru_model_version,
@@ -190,7 +190,7 @@ def ensure_user_settings(user_id: int) -> UserSettings:
                 api_key=decrypt_secret(row["llm_api_key_enc"]),
                 base_url=row["llm_base_url"] or settings.openai_base_url,
                 model=row["llm_model"] or settings.openai_model,
-                pdf_parser=row["pdf_parser"] or "local",
+                pdf_parser=row["pdf_parser"] or "mineru",
                 mineru_api_key=decrypt_secret(row["mineru_api_key_enc"]),
                 mineru_base_url=row["mineru_base_url"] or settings.mineru_base_url,
                 mineru_model_version=row["mineru_model_version"] or settings.mineru_model_version,
@@ -436,12 +436,12 @@ def update_user_settings(
     current = ensure_user_settings(user_id)
     next_settings = UserSettings(
         user_id=user_id,
-        api_key="" if clear_api_key else (current.api_key if not api_key else api_key.strip()),
+        api_key="" if clear_api_key else ((api_key or "").strip() or current.api_key),
         base_url=current.base_url if base_url is None else base_url.strip(),
         model=current.model if model is None else model.strip(),
         pdf_parser=current.pdf_parser if pdf_parser is None else pdf_parser.strip(),
         mineru_api_key="" if clear_mineru_api_key else (
-            current.mineru_api_key if not mineru_api_key else mineru_api_key.strip()
+            (mineru_api_key or "").strip() or current.mineru_api_key
         ),
         mineru_base_url=current.mineru_base_url if mineru_base_url is None else mineru_base_url.strip(),
         mineru_model_version=(
@@ -486,8 +486,6 @@ def update_user_settings(
         raise HTTPException(status_code=400, detail="LLM Base URL must start with http:// or https://")
     if not next_settings.mineru_base_url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="MinerU Base URL must start with http:// or https://")
-    if next_settings.pdf_parser == "mineru" and not next_settings.mineru_api_key:
-        raise HTTPException(status_code=400, detail="MinerU API Key is required for MinerU parsing")
 
     with db_cursor() as conn:
         conn.execute(
@@ -569,7 +567,7 @@ def claim_bootstrap_provider(user_id: int) -> None:
         clear_bootstrap_secrets()
 
 
-def require_provider_settings(user_id: int) -> UserSettings:
+def require_provider_settings(user_id: int, *, for_pdf: bool = False) -> UserSettings:
     provider = ensure_user_settings(user_id)
     if not provider.api_key:
         raise HTTPException(
@@ -579,7 +577,7 @@ def require_provider_settings(user_id: int) -> UserSettings:
                 "message": "请先在个人中心配置大模型 API Key。",
             },
         )
-    if provider.pdf_parser == "mineru" and not provider.mineru_api_key:
+    if for_pdf and provider.pdf_parser == "mineru" and not provider.mineru_api_key:
         raise HTTPException(
             status_code=409,
             detail={

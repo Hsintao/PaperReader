@@ -34,8 +34,8 @@ async def upload(
     vision_check_mode: str = Form("auto"),
     user: User = Depends(get_current_user),
 ) -> UploadResponse:
-    require_provider_settings(user.id)
     suffix = Path(file.filename or "").suffix.lower()
+    require_provider_settings(user.id, for_pdf=suffix == ".pdf")
     if suffix not in {".pdf", ".tex"}:
         raise HTTPException(status_code=400, detail="Only .pdf and .tex are supported in MVP")
 

@@ -4,6 +4,7 @@ from app.core.config import settings
 from app.core.local_config import read_env_file
 from app.main import app
 from app.services.auth_service import ensure_user_settings
+import pytest
 
 
 def _register(client: TestClient, username: str) -> dict:
@@ -102,3 +103,41 @@ def test_upload_requires_account_provider_configuration(isolated_storage):
         response = client.post("/api/upload", files={"file": ("paper.pdf", b"%PDF-1.4")})
         assert response.status_code == 409
         assert response.json()["detail"]["code"] == "config_required"
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_provider_key_updates_are_independent(isolated_storage, blank):
+    with TestClient(app) as client:
+        user = _register(client, "independent-keys")
+        response = client.put("/api/settings/me/providers", json={
+            "api_key": "llm-one", "mineru_api_key": "mineru-one", "pdf_parser": "mineru",
+        })
+        assert response.status_code == 200
+        response = client.put("/api/settings/me/providers", json={"api_key": "llm-two", "mineru_api_key": blank})
+        assert response.status_code == 200, response.text
+        stored = ensure_user_settings(user["id"])
+        assert (stored.api_key, stored.mineru_api_key) == ("llm-two", "mineru-one")
+        response = client.put("/api/settings/me/providers", json={"api_key": blank, "mineru_api_key": "mineru-two"})
+        assert response.status_code == 200, response.text
+        stored = ensure_user_settings(user["id"])
+        assert (stored.api_key, stored.mineru_api_key) == ("llm-two", "mineru-two")
+        response = client.put("/api/settings/me/providers", json={"clear_mineru_api_key": True})
+        assert response.status_code == 200
+        assert ensure_user_settings(user["id"]).api_key == "llm-two"
+        assert ensure_user_settings(user["id"]).mineru_api_key == ""
+        assert client.put("/api/settings/me/providers", json={"api_key": "llm-three"}).status_code == 200
+
+
+def test_new_account_defaults_to_mineru(isolated_storage):
+    with TestClient(app) as client:
+        assert _register(client, "mineru-default")["settings"]["pdf_parser"] == "mineru"
+
+
+def test_missing_mineru_key_only_blocks_pdf_upload(isolated_storage, monkeypatch):
+    from app.api import routes_upload
+    monkeypatch.setattr(routes_upload, "_run_pipeline", lambda *args: None)
+    with TestClient(app) as client:
+        _register(client, "independent-services")
+        assert client.put("/api/settings/me/providers", json={"api_key": "llm-only"}).status_code == 200
+        assert client.post("/api/upload", files={"file": ("paper.pdf", b"%PDF-1.4")}).status_code == 409
+        assert client.post("/api/upload", files={"file": ("paper.tex", b"\\documentclass{article}")}).status_code == 200

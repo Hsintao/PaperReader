@@ -3,7 +3,7 @@
 // extraction quirks (line breaks, hyphenation, spacing) do not break matches.
 
 export function normalized(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, '')
+  return value.normalize('NFKC').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, '')
 }
 
 export type SpanIndex = {
@@ -38,9 +38,10 @@ export type Match = { page: number; start: number; length: number }
 // `pageText`.  Mirrors the granularity of the locate pipeline.
 export function prefixMatchScore(pageText: string, target: string): number {
   if (!pageText || !target) return 0
+  if (pageText.includes(target)) return target.length
   for (const len of [120, 60, 24]) {
     const needle = target.slice(0, len)
-    if (needle.length >= 12 && pageText.includes(needle)) return len
+    if (needle.length >= 12 && pageText.includes(needle)) return needle.length
   }
   return 0
 }
