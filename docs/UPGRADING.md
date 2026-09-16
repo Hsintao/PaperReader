@@ -1,5 +1,13 @@
 # Upgrading PaperReader
 
+## Upgrading from v2.1.11 to v2.1.12
+
+Keep the existing `DATA_DIR`, database, `AUTH_SECRET_KEY`, provider settings, and TeX Live installation. No manual database migration is required.
+
+LaTeX figure/table thumbnails now crop the artwork beside each caption — vector graphics, embedded images, multi-panel composites, and booktabs-style rules — instead of showing the whole page when no hyperref float anchor exists. Original and translated PDFs are cropped independently, and caption lookup prefers real caption lines over mid-sentence references such as "in Table 2.". Stored previews refresh automatically when the compiled PDF changes. PDF (MinerU) documents are unaffected.
+
+Frontend, API, and desktop packages are version `2.1.12`; the release tag is `v2.1.12`.
+
 ## Upgrading from v2.1.10 to v2.1.11
 
 Keep the existing `DATA_DIR`, database, `AUTH_SECRET_KEY`, provider settings, and TeX Live installation. No manual database migration is required. Existing parser choices remain unchanged; new configurations default to MinerU. Set its key before uploading PDFs, or explicitly choose local parsing. LLM and MinerU credentials retain their existing values when left blank and are cleared only by their respective delete controls.

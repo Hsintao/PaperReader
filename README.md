@@ -1,12 +1,12 @@
-# PaperReader v2.1.11
+# PaperReader v2.1.12
 
 English | [简体中文](docs/zh-cn/README.zh-cn.md)
 
-[Download Windows / macOS v2.1.11](https://github.com/Mars-Dingdang/PaperReader/releases/tag/v2.1.11) · [Upgrade guide](docs/UPGRADING.md) · [Release notes](docs/releases/v2.1.11.md)
+[Download Windows / macOS v2.1.12](https://github.com/Mars-Dingdang/PaperReader/releases/tag/v2.1.12) · [Upgrade guide](docs/UPGRADING.md) · [Release notes](docs/releases/v2.1.12.md)
 
 > 📖 **Please read the [User Guide (中文)](docs/user_instruction.md) before downloading.** It covers installation (including the Windows "unblock ZIP" step that prevents most launch failures), first-run provider setup, paper submission, history, artifacts, and AI chat.
 
-v2.1.11 fixes first-click counterpart highlighting, adds in-app annotation previews, and places figure navigation in a translucent vertical overlay beside each PDF. LaTeX galleries follow the paper's Figure/Table sequence, and LLM/MinerU keys can be updated independently. MinerU is the default for new configurations. See the [release notes](docs/releases/v2.1.11.md). Frontend/API package version: `2.1.11`.
+v2.1.12 crops LaTeX figure/table thumbnails to the actual artwork instead of showing the whole page, for both the original and the translated PDF. Caption lookup prefers real caption lines over mid-sentence references. See the [release notes](docs/releases/v2.1.12.md). Frontend/API package version: `2.1.12`.
 
 ![](./images/demo1.png)
 

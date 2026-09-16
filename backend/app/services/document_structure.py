@@ -121,21 +121,95 @@ def _tex_project_figures(record: DocumentRecord) -> list[dict]:
     return figures
 
 
-def _float_crop(page, item: dict, anchors: list[tuple[float, float]]) -> tuple | None:
-    """Crop a TeX float between its hyperref anchor and first caption line."""
-    textpage = page.get_textpage()
-    try:
-        label = re.match(r".*?\d+\s*[.:：．]", item.get("locate_text", ""))
-        if not label or not anchors:
-            return None
-        search = textpage.search(label.group())
+def _artwork_crop(page, textpage, start: int, length: int, kind: str) -> tuple | None:
+    """Locate embedded artwork or table rules beside a caption in page coordinates."""
+    import pypdfium2.raw as pdfium_c
+
+    boxes = [textpage.get_charbox(i) for i in range(start, start + length)]
+    caption = (min(b[0] for b in boxes), min(b[1] for b in boxes),
+               max(b[2] for b in boxes), max(b[3] for b in boxes))
+    other_captions = []
+    for match in re.finditer(r"^\s*((?:Figure|Fig\.?|Table|图|表)\s*\d+\s*[.:：．])", textpage.get_text_bounded(), re.M):
+        search = textpage.search(match.group(1))
         try:
             found = search.get_next()
         finally:
             search.close()
-        if not found:
+        if found and found[0] != start:
+            other_captions.append(textpage.get_charbox(found[0]))
+
+    def same_region(box):
+        low, high = sorted(((caption[1] + caption[3]) / 2, (box[1] + box[3]) / 2))
+        return not any(box[0] - 4 <= c[0] <= box[2] + 4 and low < c[1] < high
+                       for c in other_captions)
+
+    candidates = []
+    for obj in page.get_objects(max_depth=1):
+        box = obj.get_pos()
+        width, height = box[2] - box[0], box[3] - box[1]
+        if kind == "table":
+            usable = obj.type == pdfium_c.FPDF_PAGEOBJ_PATH and width >= 36 and height <= 3
+        else:
+            usable = obj.type in (pdfium_c.FPDF_PAGEOBJ_IMAGE, pdfium_c.FPDF_PAGEOBJ_FORM) and width >= 12 and height >= 12
+        if usable and same_region(box):
+            candidates.append(box)
+    nearby = [box for box in candidates if box[0] <= caption[2] and box[2] >= caption[0]]
+    if not nearby:
+        return None
+
+    def distance(box):
+        return max(0, caption[1] - box[3], box[1] - caption[3])
+
+    nearest = min(nearby, key=distance)
+    if distance(nearest) > 72:
+        return None
+    if kind == "table":
+        # Full-width rules delimit the table; cmidrules and text stay inside.
+        selected = [box for box in candidates
+                    if abs(box[0] - nearest[0]) < 3 and abs(box[2] - nearest[2]) < 3
+                    and (box[1] > caption[3]) == (nearest[1] > caption[3])]
+        if len(selected) < 2:
             return None
-        start, length = found
+    else:
+        selected = [nearest]
+        # Separate images/forms can make up a single multi-panel figure.
+        remaining = [box for box in candidates if box != nearest]
+        while remaining:
+            adjacent = [box for box in remaining if any(
+                max(0, box[0] - b[2], b[0] - box[2]) <= 12
+                and max(0, box[1] - b[3], b[1] - box[3]) <= 12 for b in selected)]
+            if not adjacent:
+                break
+            selected.extend(adjacent)
+            remaining = [box for box in remaining if box not in adjacent]
+    width, height = page.get_size()
+    return (max(0, min(b[0] for b in selected) - 4),
+            max(0, min(b[1] for b in selected) - 4),
+            max(0, width - max(b[2] for b in selected) - 4),
+            max(0, height - max(b[3] for b in selected) - 4))
+
+
+def _float_crop(page, item: dict, anchors: list[tuple[float, float]]) -> tuple | None:
+    """Crop artwork beside the caption, falling back to a TeX float anchor."""
+    textpage = page.get_textpage()
+    try:
+        label = re.match(r".*?\d+\s*[.:：．]", item.get("locate_text", ""))
+        if not label:
+            return None
+        search = textpage.search(label.group())
+        hits: list[tuple[int, int]] = []
+        try:
+            while (found := search.get_next()) and len(hits) < 8:
+                hits.append(found)
+        finally:
+            search.close()
+        if not hits:
+            return None
+        for start, length in hits:
+            crop = _artwork_crop(page, textpage, start, length, item["kind"])
+            if crop:
+                return crop
+        start, length = hits[0]
         left, bottom, _, top = textpage.get_charbox(start)
         preceding = [(x, y) for x, y in anchors if abs(x - left) < 20 and y >= top]
         if not preceding:
@@ -185,21 +259,28 @@ def _with_pdf_previews(record: DocumentRecord, figures: list[dict], side: str) -
             page_index = None
             if number:
                 names = r"(?:Figure|Fig\.?|图)" if item["kind"] == "figure" else r"(?:Table|表)"
-                pattern = re.compile(rf"({names}\s*{number.group()}\s*[.:：．][^\n]*)", re.I)
-                for index, text in enumerate(pages):
-                    match = pattern.search(text)
-                    if match:
-                        page_index = index
-                        item["locate_text"] = match.group(1).strip()
-                        if side == "translated" or len(item["caption"]) <= len(label):
-                            item["caption"] = item["locate_text"]
+                # Extraction can merge subfigure labels onto the caption line
+                # ("…bFigure 2:…"), so accept a mid-line label only when no
+                # page anchors the caption at a line start.
+                patterns = (re.compile(rf"^\s*({names}\s*{number.group()}\s*[.:：．][^\n]*)", re.I | re.M),
+                            re.compile(rf"({names}\s*{number.group()}\s*[.:：．][^\n]*)", re.I))
+                for pattern in patterns:
+                    for index, text in enumerate(pages):
+                        match = pattern.search(text)
+                        if match:
+                            page_index = index
+                            item["locate_text"] = match.group(1).strip()
+                            if side == "translated" or len(item["caption"]) <= len(label):
+                                item["caption"] = item["locate_text"]
+                            break
+                    if page_index is not None:
                         break
             if page_index is None and side == "original" and item.get("page"):
                 page_index = item["page"] - 1
             if page_index is not None:
                 item["page"] = page_index + 1
                 preview_dir.mkdir(parents=True, exist_ok=True)
-                preview = preview_dir / f"{side}-float-{figure_index + 1}.png"
+                preview = preview_dir / f"{side}-crop-{figure_index + 1}.png"
                 if not preview.exists() or preview.stat().st_mtime < path.stat().st_mtime:
                     page = pdf[page_index]
                     try:

@@ -1,12 +1,12 @@
-# PaperReader v2.1.11
+# PaperReader v2.1.12
 
 [English](../../README.md) | 简体中文
 
-[下载 Windows / macOS v2.1.11](https://github.com/Mars-Dingdang/PaperReader/releases/tag/v2.1.11) · [升级指南](../UPGRADING.md) · [发布说明](releases/v2.1.11.md)
+[下载 Windows / macOS v2.1.12](https://github.com/Mars-Dingdang/PaperReader/releases/tag/v2.1.12) · [升级指南](../UPGRADING.md) · [发布说明](releases/v2.1.12.md)
 
 > 📖 **下载前请先阅读[用户说明书](../user_instruction.md)**，其中包含安装（含 Windows 安装包"解除锁定"步骤，可避免绝大多数启动失败）、首次运行的服务商配置、论文提交、历史记录、产物文件与 AI 对话等说明。
 
-v2.1.11 修复对照高亮首次点击不显示及跨页定位偏差，新增批注笔记预览，并将图表导航改为每个 PDF 左侧的竖向半透明浮层。LaTeX 图表按论文中 Figure/Table 的顺序展示；大模型与 MinerU 密钥独立更新，新配置默认使用 MinerU。详见[发布说明](releases/v2.1.11.md)。前端/API 版本号：`2.1.11`。
+v2.1.12 将 LaTeX 图表缩略图裁剪为图表本身，不再显示整个页面，原文与译文 PDF 均独立生效。标题定位优先识别真正的标题行，而不是正文中的引用。详见[发布说明](releases/v2.1.12.md)。前端/API 版本号：`2.1.12`。
 
 ![](../../images/demo1.png)
 
