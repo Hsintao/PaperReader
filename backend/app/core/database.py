@@ -8,6 +8,22 @@ from pathlib import Path
 from app.core.config import settings
 
 
+# Tables that belonged to the multi-account and TeX-project designs. Nothing
+# reads them anymore, so startup clears them instead of carrying dead columns.
+_LEGACY_TABLES = ("sessions", "user_settings", "users", "projects")
+
+# Document and annotation columns added since the multi-account schema. A
+# rebuilt table starts without them; ALTER TABLE re-adds whatever is missing.
+_DOCUMENT_ADDED_COLUMNS = {
+    "failure_json": "TEXT",
+    "retry_count": "INTEGER NOT NULL DEFAULT 0",
+    "latex_recovery_json": "TEXT",
+    "last_read_page": "INTEGER NOT NULL DEFAULT 0",
+    "last_read_ratio": "REAL NOT NULL DEFAULT 0",
+    "metadata_json": "TEXT NOT NULL DEFAULT '{}'",
+}
+
+
 def _db_path() -> Path:
     path = settings.data_dir / settings.sqlite_db_name
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -31,81 +47,37 @@ def db_cursor():
         conn.close()
 
 
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _rebuild_table(conn: sqlite3.Connection, table: str, create_sql: str) -> None:
+    """Rebuild `table` with the current column set, keeping its data.
+
+    Databases created before the accounts were removed still carry
+    `owner_user_id INTEGER NOT NULL` on `documents` and `annotations`. The new
+    code never supplies that column, so every INSERT and UPDATE fails the
+    constraint. SQLite cannot drop a column that participates in a constraint,
+    hence the copy-and-swap. Columns are carried over by name, so a table that
+    predates a column simply leaves it at its default.
+    """
+    rebuilt = f"{table}__rebuild"
+    conn.execute(f"DROP TABLE IF EXISTS {rebuilt}")
+    conn.execute(create_sql.format(name=rebuilt))
+    keep = sorted(_table_columns(conn, table) & _table_columns(conn, rebuilt))
+    columns = ", ".join(keep)
+    conn.execute(f"INSERT INTO {rebuilt} ({columns}) SELECT {columns} FROM {table}")
+    conn.execute(f"DROP TABLE {table}")
+    conn.execute(f"ALTER TABLE {rebuilt} RENAME TO {table}")
+
+
 def _initialize_schema(conn: sqlite3.Connection) -> None:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL UNIQUE,
-                password_hash TEXT NOT NULL,
-                avatar_path TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                last_login_at TEXT
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS sessions (
-                id TEXT PRIMARY KEY,
-                user_id INTEGER NOT NULL,
-                token_hash TEXT NOT NULL UNIQUE,
-                expires_at TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                last_seen_at TEXT NOT NULL,
-                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS user_settings (
-                user_id INTEGER PRIMARY KEY,
-                llm_api_key_enc TEXT,
-                llm_base_url TEXT,
-                llm_model TEXT,
-                pdf_parser TEXT NOT NULL DEFAULT 'mineru',
-                mineru_api_key_enc TEXT,
-                mineru_base_url TEXT,
-                mineru_model_version TEXT,
-                mineru_language TEXT,
-                mineru_enable_formula INTEGER NOT NULL DEFAULT 1,
-                mineru_enable_table INTEGER NOT NULL DEFAULT 1,
-                mineru_is_ocr INTEGER NOT NULL DEFAULT 0,
-                vision_model TEXT,
-                theme TEXT NOT NULL DEFAULT 'light',
-                vision_enabled INTEGER NOT NULL DEFAULT 0,
-                vision_mode TEXT NOT NULL DEFAULT 'auto',
-                favorites_json TEXT NOT NULL DEFAULT '[]',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-            )
-            """
-        )
-        existing_settings_columns = {
-            row["name"] for row in conn.execute("PRAGMA table_info(user_settings)").fetchall()
-        }
-        settings_migrations = {
-            "pdf_parser": "TEXT NOT NULL DEFAULT 'mineru'",
-            "mineru_api_key_enc": "TEXT",
-            "mineru_base_url": "TEXT",
-            "mineru_model_version": "TEXT",
-            "mineru_language": "TEXT",
-            "mineru_enable_formula": "INTEGER NOT NULL DEFAULT 1",
-            "mineru_enable_table": "INTEGER NOT NULL DEFAULT 1",
-            "mineru_is_ocr": "INTEGER NOT NULL DEFAULT 0",
-            "vision_model": "TEXT",
-        }
-        for column, declaration in settings_migrations.items():
-            if column not in existing_settings_columns:
-                conn.execute(f"ALTER TABLE user_settings ADD COLUMN {column} {declaration}")
+        for table in _LEGACY_TABLES:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS documents (
                 document_id TEXT PRIMARY KEY,
-                owner_user_id INTEGER NOT NULL,
                 source_type TEXT NOT NULL,
                 source_path TEXT NOT NULL,
                 source_filename TEXT NOT NULL DEFAULT '',
@@ -127,7 +99,6 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
                 stage_started_at REAL,
                 eta_seconds INTEGER,
                 stages_json TEXT NOT NULL DEFAULT '[]',
-                project_id TEXT,
                 main_tex TEXT,
                 vision_check_enabled INTEGER NOT NULL DEFAULT 0,
                 vision_check_mode TEXT NOT NULL DEFAULT 'auto',
@@ -141,18 +112,50 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             )
             """
         )
-        existing_document_columns = {
-            row["name"] for row in conn.execute("PRAGMA table_info(documents)").fetchall()
-        }
-        document_migrations = {
-            "failure_json": "TEXT",
-            "retry_count": "INTEGER NOT NULL DEFAULT 0",
-            "latex_recovery_json": "TEXT",
-            "last_read_page": "INTEGER NOT NULL DEFAULT 0",
-            "last_read_ratio": "REAL NOT NULL DEFAULT 0",
-            "metadata_json": "TEXT NOT NULL DEFAULT '{}'",
-        }
-        for column, declaration in document_migrations.items():
+        existing_document_columns = _table_columns(conn, "documents")
+        if "owner_user_id" in existing_document_columns:
+            _rebuild_table(
+                conn,
+                "documents",
+                """
+                CREATE TABLE {name} (
+                    document_id TEXT PRIMARY KEY,
+                    source_type TEXT NOT NULL,
+                    source_path TEXT NOT NULL,
+                    source_filename TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL,
+                    original_pdf_url TEXT,
+                    translated_pdf_url TEXT,
+                    extracted_text TEXT NOT NULL DEFAULT '',
+                    translated_text TEXT NOT NULL DEFAULT '',
+                    artifacts_json TEXT NOT NULL DEFAULT '[]',
+                    references_json TEXT NOT NULL DEFAULT '[]',
+                    logs_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    last_opened_at TEXT,
+                    size_bytes INTEGER NOT NULL DEFAULT 0,
+                    progress INTEGER NOT NULL DEFAULT 0,
+                    current_stage TEXT,
+                    current_stage_label TEXT,
+                    stage_started_at REAL,
+                    eta_seconds INTEGER,
+                    stages_json TEXT NOT NULL DEFAULT '[]',
+                    main_tex TEXT,
+                    vision_check_enabled INTEGER NOT NULL DEFAULT 0,
+                    vision_check_mode TEXT NOT NULL DEFAULT 'auto',
+                    pending_reviews_json TEXT NOT NULL DEFAULT '[]',
+                    last_compile_warning TEXT,
+                    translated_tex_path TEXT,
+                    failure_json TEXT,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    latex_recovery_json TEXT,
+                    deleted_at TEXT
+                )
+                """,
+            )
+            existing_document_columns = _table_columns(conn, "documents")
+        for column, declaration in _DOCUMENT_ADDED_COLUMNS.items():
             if column not in existing_document_columns:
                 conn.execute(f"ALTER TABLE documents ADD COLUMN {column} {declaration}")
         conn.execute(
@@ -160,7 +163,6 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             CREATE TABLE IF NOT EXISTS annotations (
                 id TEXT PRIMARY KEY,
                 document_id TEXT NOT NULL,
-                owner_user_id INTEGER NOT NULL,
                 page INTEGER NOT NULL DEFAULT 1,
                 quote TEXT NOT NULL DEFAULT '',
                 color TEXT NOT NULL DEFAULT 'yellow',
@@ -171,32 +173,29 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             )
             """
         )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_annotations_document ON annotations(document_id, owner_user_id)"
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS projects (
-                project_id TEXT PRIMARY KEY,
-                owner_user_id INTEGER NOT NULL,
-                name TEXT NOT NULL,
-                dir TEXT NOT NULL,
-                files_json TEXT NOT NULL DEFAULT '[]',
-                main_tex TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                deleted_at TEXT
+        if "owner_user_id" in _table_columns(conn, "annotations"):
+            _rebuild_table(
+                conn,
+                "annotations",
+                """
+                CREATE TABLE {name} (
+                    id TEXT PRIMARY KEY,
+                    document_id TEXT NOT NULL,
+                    page INTEGER NOT NULL DEFAULT 1,
+                    quote TEXT NOT NULL DEFAULT '',
+                    color TEXT NOT NULL DEFAULT 'yellow',
+                    note TEXT NOT NULL DEFAULT '',
+                    position_ratio REAL NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(document_id) REFERENCES documents(document_id) ON DELETE CASCADE
+                )
+                """,
             )
-            """
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_annotations_document ON annotations(document_id)"
         )
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_documents_owner ON documents(owner_user_id, updated_at DESC)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_projects_owner ON projects(owner_user_id, updated_at DESC)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)"
+            "CREATE INDEX IF NOT EXISTS idx_documents_updated ON documents(updated_at DESC)"
         )
 
 

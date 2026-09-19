@@ -38,17 +38,38 @@ if ! python desktop/setup_macos.py py2app >"$PY2APP_LOG" 2>&1; then
 fi
 PYTHON_SITE="$(python -c 'import site; print(site.getsitepackages()[0])')"
 PYTHON_PREFIX="$(python -c 'import sys; print(sys.prefix)')"
-PYTHON_LIB="$PROJECT_ROOT/dist/PaperReader.app/Contents/Resources/lib/python3.11"
+# Derive the version directory from the interpreter that ran py2app. py2app
+# names it after its own Python, so a hard-coded version silently copies the
+# runtime libraries nowhere and the app dies at launch with a dlopen error.
+PYTHON_VERSION="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+PYTHON_LIB="$PROJECT_ROOT/dist/PaperReader.app/Contents/Resources/lib/python${PYTHON_VERSION}"
+FRAMEWORKS="$PROJECT_ROOT/dist/PaperReader.app/Contents/Frameworks"
+if [[ ! -d "$PYTHON_LIB" ]]; then
+  echo "::error title=unexpected bundle layout::py2app produced no $PYTHON_LIB (python ${PYTHON_VERSION})"
+  exit 1
+fi
 RUNTIME_PACKAGES=(pypdfium2 pypdfium2_raw)
 for RUNTIME_PACKAGE in "${RUNTIME_PACKAGES[@]}"; do
   cp -R "$PYTHON_SITE/$RUNTIME_PACKAGE" "$PYTHON_LIB/$RUNTIME_PACKAGE"
 done
-RUNTIME_LIBS=(libffi.8.dylib libbz2.dylib libcrypto.3.dylib libexpat.1.dylib libncursesw.6.dylib libsqlite3.dylib libssl.3.dylib libz.1.dylib libicudata.78.dylib libicui18n.78.dylib libicuuc.78.dylib)
+RUNTIME_LIBS=(libffi.8.dylib libbz2.dylib libcrypto.3.dylib libexpat.1.dylib libncursesw.6.dylib libsqlite3.0.dylib libssl.3.dylib libz.1.dylib libicudata.78.dylib libicui18n.78.dylib libicuuc.78.dylib)
 for RUNTIME_LIB in "${RUNTIME_LIBS[@]}"; do
   if [[ -f "$PYTHON_PREFIX/lib/$RUNTIME_LIB" ]]; then
-    cp "$PYTHON_PREFIX/lib/$RUNTIME_LIB" "$PROJECT_ROOT/dist/PaperReader.app/Contents/Frameworks/$RUNTIME_LIB"
+    cp "$PYTHON_PREFIX/lib/$RUNTIME_LIB" "$FRAMEWORKS/$RUNTIME_LIB"
   fi
 done
+# A missing runtime library only surfaces as an opaque "Launch error" dialog,
+# so fail the build here instead of shipping an app that cannot start.
+MISSING_LIBS=()
+for RUNTIME_LIB in "${RUNTIME_LIBS[@]}"; do
+  if [[ -f "$PYTHON_PREFIX/lib/$RUNTIME_LIB" && ! -f "$FRAMEWORKS/$RUNTIME_LIB" ]]; then
+    MISSING_LIBS+=("$RUNTIME_LIB")
+  fi
+done
+if (( ${#MISSING_LIBS[@]} )); then
+  echo "::error title=missing runtime libraries::${MISSING_LIBS[*]} were not copied into Contents/Frameworks"
+  exit 1
+fi
 codesign --force --deep --sign - "$PROJECT_ROOT/dist/PaperReader.app"
 
 mkdir -p "$PROJECT_ROOT/release"
