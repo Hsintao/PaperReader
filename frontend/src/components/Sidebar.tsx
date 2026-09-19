@@ -4,8 +4,6 @@ import {
   Eye,
   FileText,
   FolderOpen,
-  LogOut,
-  MessageSquareText,
   Moon,
   PanelLeftClose,
   Pencil,
@@ -13,19 +11,17 @@ import {
   RefreshCw,
   Search,
   Settings,
-  Sparkles,
   Star,
   Sun,
   Trash2,
 } from 'lucide-react'
-import type { ArtifactItem, AuthUser, DocumentSummary, LibrarySearchHit } from '../lib/api'
+import type { ArtifactItem, DocumentSummary, LibrarySearchHit } from '../lib/api'
 import { getDocumentBibtex, makeDataUrl, searchLibrary } from '../lib/api'
 import { ArtifactPreviewTip } from './ArtifactPreviewTip'
 
 type Tab = 'tasks' | 'favorites'
 
 type Props = {
-  user: AuthUser
   documents: DocumentSummary[]
   activeDocumentId?: string
   favorites: string[]
@@ -33,7 +29,6 @@ type Props = {
   artifacts: ArtifactItem[]
   logs: string[]
   theme: 'light' | 'dark'
-  chatVisible: boolean
   visionEnabled: boolean
   visionMode: 'auto' | 'manual'
   activeStatus?: string
@@ -44,16 +39,11 @@ type Props = {
   onRename: (documentId: string, name: string) => void
   onCollapse: () => void
   onOpenInPane?: (artifact: ArtifactItem) => void
-  onEditTex?: (artifact: ArtifactItem) => void
-  onNewProject?: () => void
-  onOpenProfile: () => void
-  onLogout: () => void
-  onToggleChat: () => void
+  onEditTex?: () => void
+  onOpenSettings: () => void
   onToggleVision: () => void
   onToggleTheme: () => void
   onRefreshStatus: () => void
-  onOpenLiteratureChat: () => void
-  literatureChatOpen: boolean
   onSearchLocate: (hit: LibrarySearchHit) => void
 }
 
@@ -75,7 +65,6 @@ function formatTime(value?: string | null): string {
 }
 
 export function Sidebar({
-  user,
   documents,
   activeDocumentId,
   favorites,
@@ -83,7 +72,6 @@ export function Sidebar({
   artifacts,
   logs,
   theme,
-  chatVisible,
   visionEnabled,
   visionMode,
   activeStatus,
@@ -95,15 +83,10 @@ export function Sidebar({
   onCollapse,
   onOpenInPane,
   onEditTex,
-  onNewProject,
-  onOpenProfile,
-  onLogout,
-  onToggleChat,
+  onOpenSettings,
   onToggleVision,
   onToggleTheme,
   onRefreshStatus,
-  onOpenLiteratureChat,
-  literatureChatOpen,
   onSearchLocate,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -171,26 +154,7 @@ export function Sidebar({
         </button>
       </div>
 
-      <button
-        className={`literature-chat-entry ${literatureChatOpen ? 'active' : ''}`}
-        onClick={onOpenLiteratureChat}
-      >
-        <span className="literature-chat-icon"><Sparkles size={17} /></span>
-        <span>
-          <strong>AI Literature Chat</strong>
-          <small>跨论文检索、比较与讨论</small>
-        </span>
-        <ChevronRight size={14} />
-      </button>
-
       <div className="sidebar-toolbar" role="toolbar" aria-label="工具">
-        <button
-          className={`icon-btn ${chatVisible ? 'active' : ''}`}
-          title={chatVisible ? '关闭对话' : '打开对话'}
-          onClick={onToggleChat}
-        >
-          <MessageSquareText size={16} />
-        </button>
         <button
           className={`icon-btn vision-btn ${visionEnabled ? 'active' : ''}`}
           title={`视觉校验：${visionEnabled ? `开 (${visionMode === 'manual' ? '人工' : '自动'})` : '关'} · 点击切换`}
@@ -215,6 +179,9 @@ export function Sidebar({
         >
           {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
         </button>
+        <button className="icon-btn" title="设置" onClick={onOpenSettings}>
+          <Settings size={16} />
+        </button>
       </div>
 
       <button
@@ -225,19 +192,10 @@ export function Sidebar({
         <Plus size={16} />
         {uploading ? '上传中…' : '新解析'}
       </button>
-      {onNewProject && (
-        <button
-          className="new-parse-btn secondary"
-          onClick={onNewProject}
-        >
-          <FolderOpen size={16} />
-          TeX 项目
-        </button>
-      )}
       <input
         ref={fileInputRef}
         type="file"
-        accept=".pdf,.tex,.zip,.tar,.tar.gz,.tgz"
+        accept=".pdf,application/pdf"
         style={{ display: 'none' }}
         onChange={(e) => {
           const file = e.target.files?.[0]
@@ -246,9 +204,6 @@ export function Sidebar({
           e.currentTarget.value = ''
         }}
       />
-      <div className="sidebar-latex-recommendation">
-        有 LaTeX 源码时请优先上传，结构与翻译质量更好。
-      </div>
 
       <nav className="sidebar-nav">
         <button
@@ -315,7 +270,7 @@ export function Sidebar({
         <div className="doc-list">
         {visible.length === 0 ? (
           <div className="muted small" style={{ padding: '12px' }}>
-            {tab === 'favorites' ? '尚无收藏' : '暂无历史记录，点击「新解析」上传文件'}
+            {tab === 'favorites' ? '尚无收藏' : '暂无历史记录，点击「新解析」上传 PDF'}
           </div>
         ) : (
           visible.map((doc) => {
@@ -439,7 +394,7 @@ export function Sidebar({
                                 title="编辑并重新编译"
                                 onClick={(e) => {
                                   e.stopPropagation()
-                                  onEditTex(item)
+                                  onEditTex()
                                 }}
                               >
                                 <Pencil size={12} />
@@ -477,31 +432,6 @@ export function Sidebar({
           </div>
         </>
         )}
-      </div>
-
-      <div className="sidebar-divider" />
-      <div className="account-card">
-        <div className="account-main">
-          {user.avatar_url ? (
-            <img src={makeDataUrl(user.avatar_url)} alt={user.username} className="avatar-image" />
-          ) : (
-            <div className="avatar-fallback">{user.username.slice(0, 1).toUpperCase()}</div>
-          )}
-          <div className="account-meta">
-            <div className="account-name">{user.username}</div>
-            <div className="muted small">最近登录：{formatTime(user.last_login_at)}</div>
-          </div>
-        </div>
-        <div className="account-actions">
-          <button className="btn small-btn" onClick={onOpenProfile}>
-            <Settings size={14} />
-            个人中心
-          </button>
-          <button className="btn small-btn" onClick={onLogout}>
-            <LogOut size={14} />
-            退出
-          </button>
-        </div>
       </div>
 
       {hoverPreview && hoverPreview.artifact.url && (

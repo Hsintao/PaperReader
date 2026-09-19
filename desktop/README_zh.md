@@ -5,25 +5,24 @@ PaperReader v2.1.12 Windows 可移植版
 --------
 
 1. 解压整个 ZIP，不能只把 PaperReader.exe 单独复制出来。
-2. 双击 PaperReader.exe。首次启动会先打开配置向导，请填写大模型 API Key、Base URL、模型，以及可选的 MinerU 设置。
-3. 注册或登录后，密钥会转存到当前账号的本机加密数据库；之后可在「个人中心 → AI 服务」修改。
-4. 用户上传的论文、翻译结果和聊天记录保存在 %LOCALAPPDATA%\PaperReader\data。
-5. 可上传 `.zip`、`.tar`、`.tar.gz`、`.tgz` LaTeX 工程包；导入后检查文件并确认主 `.tex` 再开始处理。arXiv 或论文有 LaTeX 源码时请优先使用，结构与翻译质量更好。
-6. v2.1.12 会优先读取 arXiv `00README.json` 的 `process.compiler`，也支持 `% !TeX program = ...`；支持 pdflatex、xelatex、lualatex 和 latex，未声明或声明不受支持时保持 XeLaTeX 默认行为。
-7. 翻译或 LaTeX 编译失败时，可在进度面板点击“从此处重试”；已完成的 MinerU 解析和译块不会重复调用。
+2. 双击 PaperReader.exe。首次启动没有注册和登录，直接进入工作台。
+3. 点击左侧栏工具栏最右侧的齿轮按钮打开「设置」，填写大模型 API Key、Base URL、模型，以及可选的 MinerU 设置。配置保存在本机数据目录，只需填写一次。
+4. 上传的论文、翻译结果和批注保存在 %LOCALAPPDATA%\PaperReader\data。
+5. 目前只支持上传 PDF 文件（点击「新解析」选择文件）。处理流程为：PDF → MinerU 云解析 → 翻译 → LaTeX 构建 → 译文 PDF；译文仍由 LaTeX 编译生成。
+6. 翻译或 LaTeX 编译失败时，可在进度面板点击“从此处重试”；已完成的 MinerU 解析和译块不会重复调用。
 
 运行要求
 --------
 
 - Windows 10/11 64 位，并需要 Microsoft WebView2 Runtime（大多数当前 Windows 安装已包含）。
 - 接收者不需要安装 Python 或 Node.js。
-- 要生成保持 LaTeX 排版的中文 PDF，电脑仍需安装 TeX Live，并确保 `latexmk` 与源码所声明的 TeX 引擎可从 PATH 访问；未声明时默认使用 XeLaTeX。
-- 不要分享 %LOCALAPPDATA%\PaperReader 下的隐藏配置或 data 用户数据。
+- 要生成保持 LaTeX 排版的中文 PDF，电脑仍需安装 TeX Live，并确保 `latexmk` 与 XeLaTeX 可从 PATH 访问。
+- 不要分享 %LOCALAPPDATA%\PaperReader 下的隐藏配置或 data 用户数据：其中 settings.json 保存着你的 API Key。
 
 分享方法
 --------
 
-直接分享 PaperReader-v2.1.12-Windows-x64.zip。每位使用者应在首次启动向导中填写自己的 API 密钥。
+直接分享 PaperReader-v2.1.12-Windows-x64.zip。每位使用者应在自己机器的「设置」中填写自己的 API 密钥。
 
 开发者重新打包
 --------------
@@ -35,8 +34,7 @@ PaperReader v2.1.12 Windows 可移植版
 ----------
 
 发布标签为 v2.1.12，程序/前端版本为 2.1.12。下载包同时提供 SHA-256 校验文件。
-EXE 未做 Authenticode 签名。v2.0 的 config.env 和 data 会在首次启动时复制到新的本机目录，原文件保留作为恢复副本。源码版的详细升级说明见 docs/UPGRADING.md。
-新账号默认关闭视觉检查，现有账号保存的选择不会被覆盖。本版本提高了译文 LaTeX 自动修复的成功率：缺少日志行号时仍会诊断，最多连续尝试五轮，并可修复导言区、宏包与跨行环境。每次自动修改前都会保存源码备份。
+EXE 未做 Authenticode 签名。本版本去掉了账号体系、TeX 工程上传与 AI 对话：首次启动会清空旧的用户/会话/项目数据，需要在「设置」中重新填写一次密钥，旧论文需要重新上传解析。文件仍保留在 data 目录下。详见 docs/UPGRADING.md。
 
 重新构建前安装 Node.js 20 和 Python 3.11，然后运行：
 python -m pip install -r desktop/requirements-build.txt

@@ -390,7 +390,7 @@ def test_pipeline_treats_lenient_result_as_recovery_input(
 ):
     source = isolated_storage / "source.pdf"
     source.write_bytes(b"pdf")
-    record = store.DocumentRecord("strict-gate", 1, "pdf", source)
+    record = store.DocumentRecord("strict-gate", "pdf", source)
     tex_path = isolated_storage / "translated.tex"
     tex_path.write_text(_fixture_tex().replace("Big & Tall", "Safe text"), encoding="utf-8")
     lenient_pdf = isolated_storage / "lenient.pdf"
@@ -431,7 +431,7 @@ def test_pipeline_accepts_strict_compile_with_missing_glyph_warning(
 ):
     source = isolated_storage / "source.pdf"
     source.write_bytes(b"pdf")
-    record = store.DocumentRecord("glyph-warning", 1, "pdf", source)
+    record = store.DocumentRecord("glyph-warning", "pdf", source)
     tex_path = isolated_storage / "translated.tex"
     tex_path.write_text(_fixture_tex().replace("Big & Tall", "Safe text"), encoding="utf-8")
     pdf = isolated_storage / "translated.pdf"
@@ -466,7 +466,6 @@ def test_clean_recompile_clears_stale_recovery_failure(isolated_storage, monkeyp
     source.write_bytes(b"pdf")
     record = store.DocumentRecord(
         "stale-recovery",
-        1,
         "pdf",
         source,
         latex_recovery=LatexRecoveryEntry(

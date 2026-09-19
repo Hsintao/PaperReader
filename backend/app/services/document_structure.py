@@ -1,7 +1,7 @@
 """Backend-generated document outline and figure gallery.
 
-PDFs use extracted layout blocks. LaTeX projects use the main document's
-included Figure and Table environments, with previews from the compiled PDF.
+Structure comes from the PDF's extracted layout blocks; every figure and
+table gets a preview cropped from the original or translated PDF.
 """
 
 from __future__ import annotations
@@ -13,8 +13,6 @@ from pathlib import Path
 from app.core.config import settings
 from app.models.store import DocumentRecord
 from app.services.alignment_service import _content_list_path
-from app.services.alignment_service import _plain_target
-from app.services.latex_service import flatten_tex_project
 
 _FIGURE_LIMIT = 200
 
@@ -88,37 +86,6 @@ def _structure_from_blocks(pages, base_dir: Path) -> dict:
                 if entry:
                     figures.append(entry)
     return {"outline": outline, "figures": figures}
-
-
-def _tex_project_figures(record: DocumentRecord) -> list[dict]:
-    text = flatten_tex_project(record.source_path)
-    text = re.sub(r"(?<!\\)%[^\n]*", "", text)
-    text = text.split(r"\begin{document}", 1)[-1].split(r"\end{document}", 1)[0]
-    figures: list[dict] = []
-    counters = {"figure": 0, "table": 0}
-    for match in re.finditer(r"\\begin\{(figure|table)(\*?)\}(.*?)\\end\{\1\2\}", text, re.DOTALL):
-        kind, _, body = match.groups()
-        captions = list(re.finditer(r"\\caption(\*?)\s*(?:\[[^\]]*\])?\s*\{", body))
-        for caption in captions or [None]:
-            value = ""
-            if caption:
-                depth = 1
-                start = caption.end()
-                for end in range(start, len(body)):
-                    if body[end] == "{" and body[end - 1] != "\\":
-                        depth += 1
-                    elif body[end] == "}" and body[end - 1] != "\\":
-                        depth -= 1
-                    if depth == 0:
-                        value = _plain_target(body[start:end])
-                        break
-            numbered = caption is not None and not caption.group(1)
-            if numbered:
-                counters[kind] += 1
-            label = f"{kind.title()} {counters[kind]}" if numbered else kind.title()
-            figures.append({"kind": kind, "label": label, "caption": f"{label}: {value}" if value else label,
-                            "page": None, "url": ""})
-    return figures
 
 
 def _artwork_crop(page, textpage, start: int, length: int, kind: str) -> tuple | None:
@@ -303,20 +270,16 @@ def _with_pdf_previews(record: DocumentRecord, figures: list[dict], side: str) -
 
 
 def build_document_structure(record: DocumentRecord) -> dict:
-    if record.source_type in {"tex", "tex_project"}:
-        figures = _tex_project_figures(record)
-        return {"outline": [], "figures": _with_pdf_previews(record, figures, "original"),
-                "translated_figures": _with_pdf_previews(record, figures, "translated")}
     content_path = _content_list_path(record)
     if content_path:
         try:
             pages = json.loads(content_path.read_text(encoding="utf-8"))
             structure = _structure_from_blocks(pages, content_path.parent)
-            if structure["outline"] or structure["figures"]:
-                structure["translated_figures"] = _with_pdf_previews(record, structure["figures"], "translated")
-                return structure
         except Exception:
             pass
+        else:
+            if structure["outline"] or structure["figures"]:
+                return _with_previews(record, structure)
     checkpoint = settings.output_dir / record.document_id / "extraction-checkpoint.json"
     if checkpoint.is_file():
         try:
@@ -325,8 +288,24 @@ def build_document_structure(record: DocumentRecord) -> dict:
             if pages:
                 structure = _structure_from_blocks(pages, checkpoint.parent)
                 if structure["outline"] or structure["figures"]:
-                    structure["translated_figures"] = _with_pdf_previews(record, structure["figures"], "translated")
-                    return structure
+                    return _with_previews(record, structure)
         except Exception:
             pass
     return {"outline": [], "figures": []}
+
+
+def _with_previews(record: DocumentRecord, structure: dict) -> dict:
+    """Attach page previews without letting a rendering failure drop the outline."""
+    try:
+        structure["figures"] = _with_pdf_previews(record, structure["figures"], "original")
+    except Exception:
+        structure["figures"] = [
+            {**figure, "url": figure.get("url") or ""} for figure in structure["figures"]
+        ]
+    try:
+        structure["translated_figures"] = _with_pdf_previews(
+            record, structure["figures"], "translated"
+        )
+    except Exception:
+        structure["translated_figures"] = []
+    return structure

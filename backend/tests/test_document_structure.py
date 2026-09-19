@@ -1,4 +1,3 @@
-import shutil
 from pathlib import Path
 
 import pytest
@@ -6,7 +5,7 @@ from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from app.models.store import DocumentRecord
-from app.services.document_structure import build_document_structure
+from app.services.document_structure import _with_pdf_previews, build_document_structure
 
 
 def _write_pdf(path, texts):
@@ -49,15 +48,18 @@ def _write_pdf_with_artwork(path, figure_caption, table_caption):
 def test_previews_crop_embedded_artwork_beside_captions(isolated_storage):
     from PIL import Image
 
-    source = isolated_storage / 'main.tex'
-    source.write_text(r'\begin{document}\begin{figure}\caption{Demo}\end{figure}\begin{table}\caption{Stats}\end{table}\end{document}')
     _write_pdf_with_artwork(isolated_storage / 'original.pdf', 'Figure 1. Demo', 'Table 1. Stats')
     _write_pdf_with_artwork(isolated_storage / 'translated.pdf', 'Figure 1. Translated demo', 'Table 1. Translated stats')
-    record = DocumentRecord(document_id='artwork', owner_user_id=1, source_type='tex', source_path=source,
+    record = DocumentRecord(document_id='artwork', source_type='pdf',
+                            source_path=isolated_storage / 'artwork.pdf',
                             original_pdf_url='/data/original.pdf', translated_pdf_url='/data/translated.pdf')
-    structure = build_document_structure(record)
-    for side in ('figures', 'translated_figures'):
-        figure, table = structure[side]
+    figures = [
+        {'kind': 'figure', 'label': 'Figure 1', 'caption': 'Figure 1. Demo', 'page': 1, 'url': ''},
+        {'kind': 'table', 'label': 'Table 1', 'caption': 'Table 1. Stats', 'page': 1, 'url': ''},
+    ]
+    for side in ('original', 'translated'):
+        structure = {'figures': _with_pdf_previews(record, figures, side)}
+        figure, table = structure['figures']
         assert figure['page'] == 1 and table['page'] == 1
         assert figure['caption'].startswith('Figure 1') and table['caption'].startswith('Table 1')
         images = [Image.open((isolated_storage / item['url'].removeprefix('/data/')))
@@ -69,53 +71,44 @@ def test_previews_crop_embedded_artwork_beside_captions(isolated_storage):
 
 
 def test_caption_line_anchor_wins_over_body_reference(isolated_storage):
-    source = isolated_storage / 'main.tex'
-    source.write_text(r'\begin{document}\begin{table}\caption{A}\end{table}\begin{table}\caption{B}\end{table}\end{document}')
     _write_pdf(isolated_storage / 'original.pdf', ['See results in Table 2. They are body text.', 'Table 2. Real caption'])
-    record = DocumentRecord(document_id='anchored', owner_user_id=1, source_type='tex', source_path=source,
+    record = DocumentRecord(document_id='anchored', source_type='pdf',
+                            source_path=isolated_storage / 'anchored.pdf',
                             original_pdf_url='/data/original.pdf')
-    figures = build_document_structure(record)['figures']
-    assert figures[1]['page'] == 2
-    assert figures[1]['locate_text'] == 'Table 2. Real caption'
+    figures = [
+        {'kind': 'table', 'label': 'Table 1', 'caption': 'Table 1. First', 'page': 1, 'url': ''},
+        {'kind': 'table', 'label': 'Table 2', 'caption': 'Table 2', 'page': 1, 'url': ''},
+    ]
+    located = _with_pdf_previews(record, figures, 'original')
+    # The line-start caption wins over the mid-sentence reference on page 1.
+    assert located[1]['page'] == 2
+    assert located[1]['locate_text'] == 'Table 2. Real caption'
 
 
 def test_merged_subfigure_caption_still_locates(isolated_storage):
-    source = isolated_storage / 'main.tex'
-    source.write_text(r'\begin{document}\begin{figure}\caption{Demo}\end{figure}\end{document}')
     _write_pdf(isolated_storage / 'original.pdf', ['Legend a bFigure 1. Real caption here'])
-    record = DocumentRecord(document_id='merged', owner_user_id=1, source_type='tex', source_path=source,
+    record = DocumentRecord(document_id='merged', source_type='pdf',
+                            source_path=isolated_storage / 'merged.pdf',
                             original_pdf_url='/data/original.pdf')
-    figures = build_document_structure(record)['figures']
-    assert figures[0]['page'] == 1
-    assert figures[0]['locate_text'] == 'Figure 1. Real caption here'
-    source = isolated_storage / 'main.tex'
-    source.write_text(r'\begin{document}\begin{table}\caption{First}\caption{Second}\end{table}\end{document}')
+    figures = [{'kind': 'figure', 'label': 'Figure 1', 'caption': 'Figure 1. Demo', 'page': 1, 'url': ''}]
+    located = _with_pdf_previews(record, figures, 'original')
+    assert located[0]['page'] == 1
+    assert located[0]['locate_text'] == 'Figure 1. Real caption here'
+
+
+def test_captions_locate_independently_in_each_pdf(isolated_storage):
     _write_pdf(isolated_storage / 'original.pdf', ['Table 1. First', 'Table 2. Second'])
     _write_pdf(isolated_storage / 'translated.pdf', ['Introduction', 'Table 1. Translated first', 'Table 2. Translated second'])
-    record = DocumentRecord(document_id='previews', owner_user_id=1, source_type='tex', source_path=source,
+    record = DocumentRecord(document_id='previews', source_type='pdf',
+                            source_path=isolated_storage / 'previews.pdf',
                             original_pdf_url='/data/original.pdf', translated_pdf_url='/data/translated.pdf')
-    structure = build_document_structure(record)
-    assert [x['page'] for x in structure['figures']] == [1, 2]
-    assert [x['page'] for x in structure['translated_figures']] == [2, 3]
-    assert structure['translated_figures'][0]['locate_text'] == 'Table 1. Translated first'
-    assert all((isolated_storage / x['url'].removeprefix('/data/')).is_file() for x in structure['figures'])
-
-
-_EXAMPLES = Path(__file__).resolve().parents[2] / 'testexamples'
-
-
-@pytest.mark.skipif(not (_EXAMPLES / 'Denoise.tar.gz').exists(), reason='local Denoise samples are not distributed')
-def test_denoise_pdf_and_tex_figures(isolated_storage):
-    from app.services.project_archive import extract_project_archive
-    project = isolated_storage / 'project'
-    extract_project_archive((_EXAMPLES / 'Denoise.tar.gz').read_bytes(), 'Denoise.tar.gz', project,
-                            max_file_bytes=100 * 1024**2, max_total_bytes=500 * 1024**2)
-    shutil.copy2(_EXAMPLES / 'Denoise.pdf', isolated_storage / 'Denoise.pdf')
-    record = DocumentRecord(document_id='denoise', owner_user_id=1, source_type='tex_project',
-                            source_path=project / 'main.tex', original_pdf_url='/data/Denoise.pdf')
-    figures = build_document_structure(record)['figures']
-    assert len(figures) == 24
-    assert [x['label'] for x in figures if x['kind'] == 'figure'] == [f'Figure {n}' for n in range(1, 12)]
-    assert [x['label'] for x in figures if x['kind'] == 'table'] == [f'Table {n}' for n in range(1, 14)]
-    assert [x['page'] for x in figures] == [1, 4, 4, 5, 6, 6, 6, 7, 7, 7, 8, 8, 8, 9, 9, 10, 11, 11, 11, 11, 15, 16, 17, 18]
-    assert all(x['url'].endswith('.png') for x in figures)
+    figures = [
+        {'kind': 'table', 'label': 'Table 1', 'caption': 'Table 1. First', 'page': 1, 'url': ''},
+        {'kind': 'table', 'label': 'Table 2', 'caption': 'Table 2. Second', 'page': 2, 'url': ''},
+    ]
+    original = _with_pdf_previews(record, figures, 'original')
+    translated = _with_pdf_previews(record, figures, 'translated')
+    assert [x['page'] for x in original] == [1, 2]
+    assert [x['page'] for x in translated] == [2, 3]
+    assert translated[0]['locate_text'] == 'Table 1. Translated first'
+    assert all((isolated_storage / x['url'].removeprefix('/data/')).is_file() for x in original)

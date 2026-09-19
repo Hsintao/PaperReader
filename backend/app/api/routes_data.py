@@ -1,40 +1,23 @@
-"""Serve existing artifact URLs while enforcing the account's ownership."""
+"""Serve stored artifacts and uploaded sources.
 
-from pathlib import Path
+Only files the application itself produced are reachable: the database, the
+settings file, and anything else outside the upload and output directories
+stay private even though the server is reachable on localhost.
+"""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
-from app.api.deps import get_current_user
 from app.core.config import settings
-from app.core.database import db_cursor
-from app.models.store import list_documents_for_user
-from app.services.auth_service import User
+
 
 router = APIRouter()
 
 
 @router.api_route("/data/{file_path:path}", methods=["GET", "HEAD"])
-def get_data_file(file_path: str, user: User = Depends(get_current_user)) -> FileResponse:
-    root = settings.data_dir.resolve()
-    target = (root / file_path).resolve()
-    if not target.is_relative_to(root) or not target.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
-
-    allowed = bool(user.avatar_path and f"/data/{file_path}" == user.avatar_path)
-    for record in list_documents_for_user(user.id):
-        if target == record.source_path.resolve() or target.is_relative_to(
-            (settings.output_dir / record.document_id).resolve()
-        ):
-            allowed = True
-            break
-    if not allowed:
-        with db_cursor() as conn:
-            projects = conn.execute(
-                "SELECT dir FROM projects WHERE owner_user_id = ? AND deleted_at IS NULL",
-                (user.id,),
-            ).fetchall()
-        allowed = any(target.is_relative_to(Path(row["dir"]).resolve()) for row in projects)
-    if not allowed:
+def get_data_file(file_path: str) -> FileResponse:
+    target = (settings.data_dir / file_path).resolve()
+    allowed_roots = (settings.upload_dir.resolve(), settings.output_dir.resolve())
+    if not target.is_file() or not any(target.is_relative_to(root) for root in allowed_roots):
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(target, headers={"Cache-Control": "private, no-store"})

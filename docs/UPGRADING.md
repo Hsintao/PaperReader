@@ -1,5 +1,18 @@
 # Upgrading PaperReader
 
+## Upgrading from v2.1.12 to the accounts-free release
+
+This release removes the account system, LaTeX-project upload, and AI chat. There is no migration path: the catalog is rebuilt from empty and credentials must be entered again.
+
+What changes on first start:
+
+1. `users`, `sessions`, `user_settings`, and `projects` tables are dropped automatically, along with every `owner_user_id` column. Stored API keys disappear with `user_settings`.
+2. Previously parsed documents, annotations, and favorites are not carried over. Upload and parse the PDFs again.
+3. Set your LLM and MinerU credentials once in the in-app **设置** dialog. They now live in `DATA_DIR/settings.json` with owner-only permissions instead of the encrypted user database.
+4. `AUTH_SECRET_KEY`, `SESSION_DAYS`, and `REMEMBER_ME_DAYS` are no longer read; remove them from `.env` and from a desktop `config.env` at your convenience.
+
+Files under `DATA_DIR/uploads` and `DATA_DIR/outputs` are left untouched. If you want to keep anything reachable only through the old catalog, copy it out before the first start.
+
 ## Upgrading from v2.1.11 to v2.1.12
 
 Keep the existing `DATA_DIR`, database, `AUTH_SECRET_KEY`, provider settings, and TeX Live installation. No manual database migration is required.
@@ -139,25 +152,15 @@ npm --prefix frontend run build
 
 Keep your existing `.env`; add desired new options from `.env.example` instead of overwriting credentials or paths. An old configuration with `MINERU_API_KEY` and no `PDF_PARSER` retains MinerU parsing. New installations use `PDF_PARSER=mineru`. Set `PDF_PARSER=local` to explicitly use local extraction.
 
-`make backend` / `make frontend` remain supported. A built frontend is also served by FastAPI at port 8000. Production builds use same-origin API and file URLs by default, including `127.0.0.1` in the Windows app. For a separately hosted UI, set `VITE_BACKEND_URL` at frontend build time and configure `CORS_ORIGINS` on the backend. Keep UI and API on the same site for the existing SameSite=Lax cookie policy.
+`make backend` / `make frontend` remain supported. A built frontend is also served by FastAPI at port 8000. Production builds use same-origin API and file URLs by default, including `127.0.0.1` in the Windows app. For a separately hosted UI, set `VITE_BACKEND_URL` at frontend build time and configure `CORS_ORIGINS` on the backend. Keep the UI and API on the same origin.
 
 ## Moving from the anonymous v1.0 release
 
-v2.0 requires an account. Existing API clients must log in at `/api/auth/login` and retain the session cookie. Upload/document/project routes and the legacy `{document_id, message}` chat request remain supported after authentication. `/data/...` URLs retain their form but require the owning account's cookie; PDF.js clients on a separate origin must enable `withCredentials`.
+v2.0 required an account; the current release does not. Upload and document routes need no credentials, and `/data/...` URLs keep their form.
 
 v1.0 kept its document/project catalog in Python memory. It did **not** persist usernames, original filename mappings, chat history, or task state. Information already lost at shutdown cannot be recovered automatically. Existing uploaded/generated files remain usable and are never deleted by the upgrade.
 
-To restore readable old `outputs/<document UUID>/original.pdf` and `translated.pdf` pairs into a new account:
-
-1. Start v2.0 with the existing `DATA_DIR`, register the destination account, then stop the server.
-2. From `backend`, preview the import and then apply it:
-
-   ```sh
-   python -m app.services.legacy_import --username YOUR_ACCOUNT
-   python -m app.services.legacy_import --username YOUR_ACCOUNT --apply
-   ```
-
-The importer only adds database records. It keeps existing files and URLs, skips all already-indexed IDs (including deleted records), and never reassigns another user's document. Recovered names are `legacy-<id>.pdf` because v1.0 did not save the original mapping; rename them in the reader. PDFs with no readable original are reported and left untouched. Uploads that never produced an original PDF and multi-file TeX project metadata must be uploaded again. The importer does not resume interrupted translations or recreate missing chat history.
+The `legacy_import` helper that indexed old `outputs/<document UUID>/original.pdf` and `translated.pdf` pairs is gone. Use v2.1.12 for that one-off import, then upgrade; otherwise re-upload the PDFs.
 
 ## Windows portable application
 

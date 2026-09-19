@@ -1,143 +1,101 @@
 from fastapi.testclient import TestClient
 
-from app.core.config import settings
-from app.core.local_config import read_env_file
 from app.main import app
-from app.services.auth_service import ensure_user_settings
-import pytest
+from app.services import app_settings
+from app.services.app_settings import load_settings, settings_path
 
 
-def _register(client: TestClient, username: str) -> dict:
-    response = client.post(
-        "/api/auth/register",
-        json={"username": username, "password": "test-password"},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()
-
-
-def test_desktop_setup_claims_and_removes_bootstrap_secrets(
-    isolated_storage, tmp_path, monkeypatch
-):
-    config_path = tmp_path / ".config.env"
-    monkeypatch.setenv("PAPERREADER_ENV_FILE", str(config_path))
-    monkeypatch.setattr(settings, "desktop_mode", True)
-    for name in (
-        "openai_api_key", "openai_base_url", "openai_model", "pdf_parser",
-        "mineru_api_key", "mineru_base_url", "mineru_model_version",
-        "mineru_language", "mineru_enable_formula", "mineru_enable_table",
-        "mineru_is_ocr", "vision_model",
-    ):
-        monkeypatch.setattr(settings, name, getattr(settings, name))
-
+def test_settings_roundtrip_masks_keys(isolated_storage):
     with TestClient(app) as client:
-        assert client.get("/api/setup/status").json()["required"] is True
         response = client.put(
-            "/api/setup",
-            json={
-                "api_key": "bootstrap-llm-key",
-                "base_url": "https://llm.example/v1",
-                "model": "paper-model",
-                "pdf_parser": "mineru",
-                "mineru_api_key": "bootstrap-mineru-key",
-                "mineru_base_url": "https://mineru.example/api/v4",
-                "mineru_model_version": "vlm",
-                "mineru_language": "en",
-                "vision_model": "vision-model",
-            },
-        )
-        assert response.status_code == 200, response.text
-        user = _register(client, "setup-owner")
-        assert user["settings"]["api_key_configured"] is True
-        assert user["settings"]["mineru_api_key_configured"] is True
-        assert "api_key" not in user["settings"]
-
-        stored = ensure_user_settings(user["id"])
-        assert stored.api_key == "bootstrap-llm-key"
-        assert stored.mineru_api_key == "bootstrap-mineru-key"
-        env_values = read_env_file(config_path)
-        assert "OPENAI_API_KEY" not in env_values
-        assert "MINERU_API_KEY" not in env_values
-        assert env_values["PAPERREADER_BOOTSTRAP_PENDING"] == "false"
-
-
-def test_provider_settings_are_isolated_and_masked(isolated_storage):
-    with TestClient(app) as first, TestClient(app) as second:
-        first_user = _register(first, "provider-first")
-        second_user = _register(second, "provider-second")
-        response = first.put(
             "/api/settings/me/providers",
             json={
-                "api_key": "first-secret",
-                "base_url": "https://first.example/v1",
-                "model": "first-model",
-                "pdf_parser": "mineru",
-                "mineru_api_key": "first-mineru-secret",
+                "api_key": "secret-key",
+                "base_url": "https://llm.example/v1",
+                "model": "paper-model",
+                "pdf_parser": "local",
+                "mineru_api_key": "mineru-secret",
             },
         )
         assert response.status_code == 200, response.text
-        assert response.json()["api_key_configured"] is True
-        assert "first-secret" not in response.text
+        payload = response.json()
+        assert payload["api_key_configured"] is True
+        assert payload["mineru_api_key_configured"] is True
+        assert "secret-key" not in response.text
+        assert "mineru-secret" not in response.text
+        assert payload["base_url"] == "https://llm.example/v1"
+        assert payload["model"] == "paper-model"
 
-        assert ensure_user_settings(first_user["id"]).api_key == "first-secret"
-        assert ensure_user_settings(second_user["id"]).api_key == ""
-        second_me = second.get("/api/auth/me").json()
-        assert second_me["settings"]["api_key_configured"] is False
-        assert "api_key" not in second_me["settings"]
+        stored = client.get("/api/settings/me")
+        assert stored.status_code == 200
+        assert stored.json() == payload
 
 
-def test_new_accounts_default_vision_check_off_and_preserve_explicit_choice(isolated_storage):
+def test_settings_file_is_owner_only(isolated_storage):
+    path = settings_path()
+    assert path == isolated_storage / "settings.json"
+    app_settings.update_settings(
+        api_key="secret-key", base_url="https://llm.example/v1", model="m"
+    )
+
+    assert path.is_file()
+    assert path.stat().st_mode & 0o077 == 0
+
+
+def test_blank_key_keeps_stored_value_and_clear_resets_it(isolated_storage):
+    app_settings.update_settings(
+        api_key="first-key", base_url="https://llm.example/v1", model="m"
+    )
+    app_settings.update_settings(api_key="", base_url="https://llm.example/v1", model="m")
+    assert load_settings().api_key == "first-key"
+
+    app_settings.update_settings(clear_api_key=True)
+    assert load_settings().api_key == ""
+
+
+def test_provider_keys_update_independently(isolated_storage):
+    from app.services.app_settings import load_settings
+
+    app_settings.update_settings(api_key="llm-one", mineru_api_key="mineru-one")
+    app_settings.update_settings(api_key="llm-two", mineru_api_key="  ")
+    stored = load_settings()
+    assert (stored.api_key, stored.mineru_api_key) == ("llm-two", "mineru-one")
+
+    app_settings.update_settings(api_key="", mineru_api_key="mineru-two")
+    stored = load_settings()
+    assert (stored.api_key, stored.mineru_api_key) == ("llm-two", "mineru-two")
+
+    app_settings.update_settings(clear_mineru_api_key=True)
+    stored = load_settings()
+    assert (stored.api_key, stored.mineru_api_key) == ("llm-two", "")
+
+
+def test_provider_validation_rejects_bad_urls(isolated_storage):
     with TestClient(app) as client:
-        user = _register(client, "vision-default")
-        assert user["settings"]["vision_enabled"] is False
+        response = client.put(
+            "/api/settings/me/providers",
+            json={"base_url": "llm.example.com", "model": "m"},
+        )
+        assert response.status_code == 400, response.text
+
+
+def test_preferences_persist_across_clients(isolated_storage):
+    with TestClient(app) as first:
+        response = first.put("/api/settings/me", json={"theme": "dark", "favorites": ["doc-1"]})
+        assert response.status_code == 200, response.text
+        assert response.json()["theme"] == "dark"
+
+    with TestClient(app) as second:
+        payload = second.get("/api/settings/me").json()
+        assert payload["theme"] == "dark"
+        assert payload["favorites"] == ["doc-1"]
+
+
+def test_vision_check_defaults_off_and_keeps_explicit_choice(isolated_storage):
+    with TestClient(app) as client:
+        assert client.get("/api/settings/me").json()["vision_enabled"] is False
 
         updated = client.put("/api/settings/me", json={"vision_enabled": True})
         assert updated.status_code == 200
         assert updated.json()["vision_enabled"] is True
-        assert client.get("/api/auth/me").json()["settings"]["vision_enabled"] is True
-
-
-def test_upload_requires_account_provider_configuration(isolated_storage):
-    with TestClient(app) as client:
-        _register(client, "missing-provider")
-        response = client.post("/api/upload", files={"file": ("paper.pdf", b"%PDF-1.4")})
-        assert response.status_code == 409
-        assert response.json()["detail"]["code"] == "config_required"
-
-
-@pytest.mark.parametrize("blank", ["", "   "])
-def test_provider_key_updates_are_independent(isolated_storage, blank):
-    with TestClient(app) as client:
-        user = _register(client, "independent-keys")
-        response = client.put("/api/settings/me/providers", json={
-            "api_key": "llm-one", "mineru_api_key": "mineru-one", "pdf_parser": "mineru",
-        })
-        assert response.status_code == 200
-        response = client.put("/api/settings/me/providers", json={"api_key": "llm-two", "mineru_api_key": blank})
-        assert response.status_code == 200, response.text
-        stored = ensure_user_settings(user["id"])
-        assert (stored.api_key, stored.mineru_api_key) == ("llm-two", "mineru-one")
-        response = client.put("/api/settings/me/providers", json={"api_key": blank, "mineru_api_key": "mineru-two"})
-        assert response.status_code == 200, response.text
-        stored = ensure_user_settings(user["id"])
-        assert (stored.api_key, stored.mineru_api_key) == ("llm-two", "mineru-two")
-        response = client.put("/api/settings/me/providers", json={"clear_mineru_api_key": True})
-        assert response.status_code == 200
-        assert ensure_user_settings(user["id"]).api_key == "llm-two"
-        assert ensure_user_settings(user["id"]).mineru_api_key == ""
-        assert client.put("/api/settings/me/providers", json={"api_key": "llm-three"}).status_code == 200
-
-
-def test_new_account_defaults_to_mineru(isolated_storage):
-    with TestClient(app) as client:
-        assert _register(client, "mineru-default")["settings"]["pdf_parser"] == "mineru"
-
-
-def test_missing_mineru_key_only_blocks_pdf_upload(isolated_storage, monkeypatch):
-    from app.api import routes_upload
-    monkeypatch.setattr(routes_upload, "_run_pipeline", lambda *args: None)
-    with TestClient(app) as client:
-        _register(client, "independent-services")
-        assert client.put("/api/settings/me/providers", json={"api_key": "llm-only"}).status_code == 200
-        assert client.post("/api/upload", files={"file": ("paper.pdf", b"%PDF-1.4")}).status_code == 409
-        assert client.post("/api/upload", files={"file": ("paper.tex", b"\\documentclass{article}")}).status_code == 200
+        assert client.get("/api/settings/me").json()["vision_enabled"] is True

@@ -5,18 +5,16 @@ import subprocess
 import sys
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.api.deps import get_current_user
 from app.core.config import settings
 from app.models.store import (
     ArtifactEntry,
-    require_document_owner,
+    require_document,
     save_document,
     translated_pdf_filename,
 )
-from app.services.auth_service import User
 from app.services.latex_sanitizer import sanitize_and_repair
 from app.services.latex_service import (
     CREATION_FLAGS,
@@ -77,8 +75,8 @@ def _resolve_translated_tex(record) -> Path:
 
 
 @router.get("/document/{document_id}/tex")
-def get_document_tex(document_id: str, user: User = Depends(get_current_user)) -> dict:
-    record = require_document_owner(document_id, user.id)
+def get_document_tex(document_id: str) -> dict:
+    record = require_document(document_id)
     tex_path = _resolve_translated_tex(record)
     return {
         "tex_content": tex_path.read_text(encoding="utf-8", errors="ignore"),
@@ -102,9 +100,8 @@ def _ensure_artifact(record, name: str, kind: str, path: Path) -> None:
 def recompile_document_tex(
     document_id: str,
     payload: RecompileRequest,
-    user: User = Depends(get_current_user),
 ) -> RecompileResponse:
-    record = require_document_owner(document_id, user.id)
+    record = require_document(document_id)
     tex_path = _resolve_translated_tex(record)
     output_dir = tex_path.parent
 
@@ -172,13 +169,12 @@ def recompile_document_tex(
 def reveal_translated_tex(
     document_id: str,
     payload: RevealRequest,
-    user: User = Depends(get_current_user),
 ) -> RevealResponse:
     """Reveal translated.tex in the system file manager, or open it in the
     VS Code CLI when available. The revealed path is always the document's
     own output artifact — no user-supplied paths are executed.
     """
-    record = require_document_owner(document_id, user.id)
+    record = require_document(document_id)
     tex_path = _resolve_translated_tex(record).resolve()
 
     output_root = (settings.output_dir / record.document_id).resolve()

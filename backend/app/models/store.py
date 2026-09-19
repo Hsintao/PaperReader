@@ -84,7 +84,6 @@ class LatexRecoveryEntry:
 class AnnotationEntry:
     id: str
     document_id: str
-    owner_user_id: int
     page: int = 1
     quote: str = ""
     color: str = "yellow"
@@ -96,7 +95,6 @@ class AnnotationEntry:
 @dataclass
 class DocumentRecord:
     document_id: str
-    owner_user_id: int
     source_type: str
     source_path: Path
     source_filename: str = ""
@@ -118,8 +116,6 @@ class DocumentRecord:
     stage_started_at: float | None = None
     eta_seconds: int | None = None
     stages: list[StageEntry] = field(default_factory=list)
-    project_id: str | None = None
-    main_tex: str | None = None
     vision_check_enabled: bool = False
     vision_check_mode: str = "auto"
     pending_reviews: list[ReviewProposal] = field(default_factory=list)
@@ -134,28 +130,7 @@ class DocumentRecord:
     deleted_at: datetime | None = None
 
 
-@dataclass
-class ProjectFile:
-    relative_path: str
-    size: int
-    kind: str
-
-
-@dataclass
-class ProjectRecord:
-    project_id: str
-    owner_user_id: int
-    name: str
-    dir: Path
-    files: list[ProjectFile] = field(default_factory=list)
-    main_tex: str | None = None
-    created_at: datetime = field(default_factory=_utcnow)
-    updated_at: datetime = field(default_factory=_utcnow)
-    deleted_at: datetime | None = None
-
-
 DOCUMENTS: dict[str, DocumentRecord] = {}
-PROJECTS: dict[str, ProjectRecord] = {}
 _RETRY_LOCK = threading.RLock()
 
 
@@ -170,7 +145,7 @@ def normalized_source_filename(name: str, original_name: str = "document.pdf") -
     stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", stem).strip(" .")
     if not stem:
         raise ValueError("invalid document name")
-    if original_suffix in {".pdf", ".tex"}:
+    if original_suffix == ".pdf":
         suffix = original_suffix
     elif not suffix:
         suffix = ".pdf"
@@ -193,7 +168,6 @@ def _document_from_row(row) -> DocumentRecord:
     recovery_payload = json.loads(row["latex_recovery_json"] or "null")
     return DocumentRecord(
         document_id=row["document_id"],
-        owner_user_id=int(row["owner_user_id"]),
         source_type=row["source_type"],
         source_path=Path(row["source_path"]),
         source_filename=row["source_filename"] or "",
@@ -215,8 +189,6 @@ def _document_from_row(row) -> DocumentRecord:
         stage_started_at=row["stage_started_at"],
         eta_seconds=row["eta_seconds"],
         stages=[StageEntry(**item) for item in json.loads(row["stages_json"] or "[]")],
-        project_id=row["project_id"],
-        main_tex=row["main_tex"],
         vision_check_enabled=bool(row["vision_check_enabled"]),
         vision_check_mode=row["vision_check_mode"] or "auto",
         pending_reviews=[ReviewProposal(**item) for item in json.loads(row["pending_reviews_json"] or "[]")],
@@ -236,20 +208,6 @@ def _document_from_row(row) -> DocumentRecord:
     )
 
 
-def _project_from_row(row) -> ProjectRecord:
-    return ProjectRecord(
-        project_id=row["project_id"],
-        owner_user_id=int(row["owner_user_id"]),
-        name=row["name"],
-        dir=Path(row["dir"]),
-        files=[ProjectFile(**item) for item in json.loads(row["files_json"] or "[]")],
-        main_tex=row["main_tex"],
-        created_at=_from_iso(row["created_at"]),
-        updated_at=_from_iso(row["updated_at"]),
-        deleted_at=_from_iso(row["deleted_at"]) if row["deleted_at"] else None,
-    )
-
-
 def save_document(record: DocumentRecord) -> DocumentRecord:
     record.updated_at = _utcnow()
     DOCUMENTS[record.document_id] = record
@@ -257,15 +215,14 @@ def save_document(record: DocumentRecord) -> DocumentRecord:
         conn.execute(
             """
             INSERT INTO documents (
-                document_id, owner_user_id, source_type, source_path, source_filename, status,
+                document_id, source_type, source_path, source_filename, status,
                 original_pdf_url, translated_pdf_url, extracted_text, translated_text,
                 artifacts_json, references_json, logs_json, created_at, updated_at, last_opened_at,
                 size_bytes, progress, current_stage, current_stage_label, stage_started_at,
-                eta_seconds, stages_json, project_id, main_tex, vision_check_enabled,
+                eta_seconds, stages_json, vision_check_enabled,
                 vision_check_mode, pending_reviews_json, last_compile_warning, translated_tex_path, deleted_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(document_id) DO UPDATE SET
-                owner_user_id = excluded.owner_user_id,
                 source_type = excluded.source_type,
                 source_path = excluded.source_path,
                 source_filename = excluded.source_filename,
@@ -286,8 +243,6 @@ def save_document(record: DocumentRecord) -> DocumentRecord:
                 stage_started_at = excluded.stage_started_at,
                 eta_seconds = excluded.eta_seconds,
                 stages_json = excluded.stages_json,
-                project_id = excluded.project_id,
-                main_tex = excluded.main_tex,
                 vision_check_enabled = excluded.vision_check_enabled,
                 vision_check_mode = excluded.vision_check_mode,
                 pending_reviews_json = excluded.pending_reviews_json,
@@ -297,7 +252,6 @@ def save_document(record: DocumentRecord) -> DocumentRecord:
             """,
             (
                 record.document_id,
-                record.owner_user_id,
                 record.source_type,
                 str(record.source_path),
                 record.source_filename,
@@ -319,8 +273,6 @@ def save_document(record: DocumentRecord) -> DocumentRecord:
                 record.stage_started_at,
                 record.eta_seconds,
                 _serialize_items(record.stages),
-                record.project_id,
-                record.main_tex,
                 1 if record.vision_check_enabled else 0,
                 record.vision_check_mode,
                 _serialize_items(record.pending_reviews),
@@ -347,39 +299,6 @@ def save_document(record: DocumentRecord) -> DocumentRecord:
     return record
 
 
-def save_project(project: ProjectRecord) -> ProjectRecord:
-    project.updated_at = _utcnow()
-    PROJECTS[project.project_id] = project
-    with db_cursor() as conn:
-        conn.execute(
-            """
-            INSERT INTO projects (
-                project_id, owner_user_id, name, dir, files_json, main_tex, created_at, updated_at, deleted_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(project_id) DO UPDATE SET
-                owner_user_id = excluded.owner_user_id,
-                name = excluded.name,
-                dir = excluded.dir,
-                files_json = excluded.files_json,
-                main_tex = excluded.main_tex,
-                updated_at = excluded.updated_at,
-                deleted_at = excluded.deleted_at
-            """,
-            (
-                project.project_id,
-                project.owner_user_id,
-                project.name,
-                str(project.dir),
-                _serialize_items(project.files),
-                project.main_tex,
-                _to_iso(project.created_at),
-                _to_iso(project.updated_at),
-                _to_iso(project.deleted_at),
-            ),
-        )
-    return project
-
-
 def get_document(document_id: str) -> DocumentRecord | None:
     cached = DOCUMENTS.get(document_id)
     if cached and not cached.deleted_at:
@@ -396,36 +315,17 @@ def get_document(document_id: str) -> DocumentRecord | None:
     return record
 
 
-def get_project(project_id: str) -> ProjectRecord | None:
-    cached = PROJECTS.get(project_id)
-    if cached and not cached.deleted_at:
-        return cached
-    with db_cursor() as conn:
-        row = conn.execute(
-            "SELECT * FROM projects WHERE project_id = ? AND deleted_at IS NULL",
-            (project_id,),
-        ).fetchone()
-    if not row:
-        return None
-    project = _project_from_row(row)
-    PROJECTS[project_id] = project
-    return project
-
-
-def list_documents_for_user(owner_user_id: int) -> list[DocumentRecord]:
+def list_documents() -> list[DocumentRecord]:
     results: dict[str, DocumentRecord] = {
-        doc_id: doc
-        for doc_id, doc in DOCUMENTS.items()
-        if doc.owner_user_id == owner_user_id and not doc.deleted_at
+        doc_id: doc for doc_id, doc in DOCUMENTS.items() if not doc.deleted_at
     }
     with db_cursor() as conn:
         rows = conn.execute(
             """
             SELECT * FROM documents
-            WHERE owner_user_id = ? AND deleted_at IS NULL
+            WHERE deleted_at IS NULL
             ORDER BY COALESCE(last_opened_at, updated_at, created_at) DESC
-            """,
-            (owner_user_id,),
+            """
         ).fetchall()
     for row in rows:
         if row["document_id"] not in results:
@@ -473,13 +373,12 @@ def create_annotation(entry: AnnotationEntry) -> AnnotationEntry:
     with db_cursor() as conn:
         conn.execute(
             """
-            INSERT INTO annotations (id, document_id, owner_user_id, page, quote, color, note, position_ratio, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO annotations (id, document_id, page, quote, color, note, position_ratio, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry.id,
                 entry.document_id,
-                entry.owner_user_id,
                 entry.page,
                 entry.quote,
                 entry.color,
@@ -491,21 +390,20 @@ def create_annotation(entry: AnnotationEntry) -> AnnotationEntry:
     return entry
 
 
-def list_annotations_for_document(document_id: str, owner_user_id: int) -> list[AnnotationEntry]:
+def list_annotations_for_document(document_id: str) -> list[AnnotationEntry]:
     with db_cursor() as conn:
         rows = conn.execute(
             """
             SELECT * FROM annotations
-            WHERE document_id = ? AND owner_user_id = ?
+            WHERE document_id = ?
             ORDER BY created_at ASC
             """,
-            (document_id, owner_user_id),
+            (document_id,),
         ).fetchall()
     return [
         AnnotationEntry(
             id=row["id"],
             document_id=row["document_id"],
-            owner_user_id=int(row["owner_user_id"]),
             page=int(row["page"] or 1),
             quote=row["quote"] or "",
             color=row["color"] or "yellow",
@@ -517,37 +415,33 @@ def list_annotations_for_document(document_id: str, owner_user_id: int) -> list[
     ]
 
 
-def delete_annotation(annotation_id: str, document_id: str, owner_user_id: int) -> bool:
+def delete_annotation(annotation_id: str, document_id: str) -> bool:
     with db_cursor() as conn:
         deleted = conn.execute(
-            "DELETE FROM annotations WHERE id = ? AND document_id = ? AND owner_user_id = ?",
-            (annotation_id, document_id, owner_user_id),
+            "DELETE FROM annotations WHERE id = ? AND document_id = ?",
+            (annotation_id, document_id),
         ).rowcount
     return deleted == 1
 
 
-def require_document_owner(document_id: str, owner_user_id: int) -> DocumentRecord:
+def require_document(document_id: str) -> DocumentRecord:
     record = get_document(document_id)
-    if not record or record.owner_user_id != owner_user_id:
+    if not record:
         raise HTTPException(status_code=404, detail="Document not found")
     return record
 
 
-def queue_document_retry(document_id: str, owner_user_id: int) -> tuple[DocumentRecord, str]:
+def queue_document_retry(document_id: str) -> tuple[DocumentRecord, str]:
     """Claim one failed document using a process lock plus SQLite compare-and-set."""
     with _RETRY_LOCK:
-        record = require_document_owner(document_id, owner_user_id)
+        record = require_document(document_id)
         if record.status != "failed":
             raise HTTPException(status_code=409, detail="Document is not in a retryable failed state")
         if record.failure and not record.failure.retryable:
             raise HTTPException(status_code=409, detail="This failure cannot be retried automatically")
         failed_stage = (record.failure.stage if record.failure else record.current_stage) or "upload"
         if failed_stage in {"latex_diagnose", "latex_repair", "latex_rebuild"}:
-            resume_from = (
-                "compile_translated"
-                if record.source_type in {"tex", "tex_project"}
-                else "latex_build"
-            )
+            resume_from = "latex_build"
         else:
             resume_from = failed_stage
         with db_cursor() as conn:
@@ -555,9 +449,9 @@ def queue_document_retry(document_id: str, owner_user_id: int) -> tuple[Document
                 """
                 UPDATE documents
                 SET status = 'queued', retry_count = retry_count + 1
-                WHERE document_id = ? AND owner_user_id = ? AND status = 'failed'
+                WHERE document_id = ? AND status = 'failed'
                 """,
-                (document_id, owner_user_id),
+                (document_id,),
             )
             if claimed.rowcount != 1:
                 raise HTTPException(
@@ -597,23 +491,8 @@ def mark_document_failed(document_id: str, stage: str, message: str) -> None:
         pass
 
 
-def require_project_owner(project_id: str, owner_user_id: int) -> ProjectRecord:
-    project = get_project(project_id)
-    if not project or project.owner_user_id != owner_user_id:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return project
-
-
-def soft_delete_document(document_id: str, owner_user_id: int) -> None:
-    record = require_document_owner(document_id, owner_user_id)
+def soft_delete_document(document_id: str) -> None:
+    record = require_document(document_id)
     record.deleted_at = _utcnow()
     save_document(record)
     DOCUMENTS.pop(document_id, None)
-
-
-def delete_project(project_id: str, owner_user_id: int) -> ProjectRecord:
-    project = require_project_owner(project_id, owner_user_id)
-    project.deleted_at = _utcnow()
-    save_project(project)
-    PROJECTS.pop(project_id, None)
-    return project

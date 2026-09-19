@@ -1,13 +1,12 @@
 from pathlib import Path
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 
-from app.api.deps import get_current_user
 from app.core.config import settings
 from app.models.schemas import UploadResponse
 from app.models.store import get_document, mark_document_failed
-from app.services.auth_service import User, ensure_user_settings, require_provider_settings
+from app.services.app_settings import load_settings, require_provider_settings
 from app.services.document_pipeline import create_document_record, process_document
 
 
@@ -16,12 +15,12 @@ router = APIRouter()
 _UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 
-def _run_pipeline(record_id: str, user_id: int) -> None:
+def _run_pipeline(record_id: str) -> None:
     record = get_document(record_id)
     if not record:
         return
     try:
-        process_document(record, provider_settings=ensure_user_settings(user_id))
+        process_document(record, provider_settings=load_settings())
     except Exception as exc:  # noqa: BLE001 - never strand the document as queued
         mark_document_failed(record_id, "upload", f"Pipeline failed to start: {exc}")
 
@@ -32,12 +31,11 @@ async def upload(
     file: UploadFile = File(...),
     vision_check_enabled: bool = Form(False),
     vision_check_mode: str = Form("auto"),
-    user: User = Depends(get_current_user),
 ) -> UploadResponse:
     suffix = Path(file.filename or "").suffix.lower()
-    require_provider_settings(user.id, for_pdf=suffix == ".pdf")
-    if suffix not in {".pdf", ".tex"}:
-        raise HTTPException(status_code=400, detail="Only .pdf and .tex are supported in MVP")
+    if suffix != ".pdf":
+        raise HTTPException(status_code=400, detail="Only .pdf files are supported")
+    require_provider_settings(for_pdf=True)
 
     safe_name = Path(file.filename or "uploaded_file").name
     target_path = settings.upload_dir / f"{uuid.uuid4()}_{safe_name}"
@@ -45,10 +43,9 @@ async def upload(
         while chunk := await file.read(_UPLOAD_CHUNK_BYTES):
             sink.write(chunk)
 
-    source_type = "tex" if suffix == ".tex" else "pdf"
-    record = create_document_record(target_path, source_type, owner_user_id=user.id)
+    record = create_document_record(target_path, "pdf")
     record.vision_check_enabled = bool(vision_check_enabled)
     record.vision_check_mode = vision_check_mode if vision_check_mode in ("auto", "manual") else "auto"
 
-    background_tasks.add_task(_run_pipeline, record.document_id, user.id)
+    background_tasks.add_task(_run_pipeline, record.document_id)
     return UploadResponse(document_id=record.document_id, status=record.status)

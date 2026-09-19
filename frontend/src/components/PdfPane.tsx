@@ -54,7 +54,6 @@ type Props = {
     page: number
     pageCount: number
   }) => void
-  onAskAI?: (payload: { selectedText: string; page: number }) => void
   annotations?: AnnotationItem[]
   onCreateAnnotation?: (payload: {
     page: number
@@ -112,7 +111,6 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
   downloadName,
   counterpartLabel,
   onLocateCounterpart,
-  onAskAI,
   annotations = [],
   onCreateAnnotation,
   onDeleteAnnotation,
@@ -1179,18 +1177,6 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
                 >
                   跳转到{counterpartLabel || '对应内容'}并高亮
                 </button>
-                {onAskAI && (
-                  <button
-                    className="context-menu-item"
-                    onClick={() => {
-                      const selected = selectionMenu
-                      setSelectionMenu(null)
-                      onAskAI({ selectedText: selected.text, page: selected.page })
-                    }}
-                  >
-                    问 AI
-                  </button>
-                )}
                 {onCreateAnnotation && !overrideActive && (
                   <div className="menu-annotation">
                     <div className="menu-annotation-colors">

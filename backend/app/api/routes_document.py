@@ -3,9 +3,8 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 
-from app.api.deps import get_current_user
 from app.core.config import settings
 from app.models.schemas import (
     ArtifactItem,
@@ -22,30 +21,30 @@ from app.models.schemas import (
     StageItem,
 )
 from app.models.store import (
-    list_documents_for_user,
+    list_documents as store_list_documents,
     mark_document_failed,
     normalized_source_filename,
     queue_document_retry,
-    require_document_owner,
+    require_document,
     save_document,
     soft_delete_document,
     touch_document_opened,
     translated_pdf_filename,
 )
 from app.services.alignment_service import load_alignment_entries, locate_in_alignment, proportional_highlight
-from app.services.auth_service import User, ensure_user_settings
+from app.services.app_settings import load_settings
 from app.services.document_pipeline import process_document
 
 
 router = APIRouter()
 
 
-def _run_retry_pipeline(document_id: str, user_id: int, resume_from: str) -> None:
-    record = require_document_owner(document_id, user_id)
+def _run_retry_pipeline(document_id: str, resume_from: str) -> None:
+    record = require_document(document_id)
     try:
         process_document(
             record,
-            provider_settings=ensure_user_settings(user_id),
+            provider_settings=load_settings(),
             resume_from=resume_from,
         )
     except Exception as exc:  # noqa: BLE001 - never strand the document as queued
@@ -85,7 +84,6 @@ def _best_block_index(blocks: list[str], selected: str, fallback_ratio: float) -
 
 @router.get("/documents", response_model=list[DocumentSummary])
 def list_documents(
-    user: User = Depends(get_current_user),
 ) -> list[DocumentSummary]:
     summaries = [
         DocumentSummary(
@@ -99,7 +97,7 @@ def list_documents(
             title=str(record.metadata.get("title") or ""),
             year=str(record.metadata.get("year") or ""),
         )
-        for record in list_documents_for_user(user.id)
+        for record in store_list_documents()
     ]
     summaries.sort(key=lambda s: s.created_at or "", reverse=True)
     return summaries
@@ -107,9 +105,9 @@ def list_documents(
 
 @router.get("/document/{document_id}", response_model=DocumentStatusResponse)
 def get_document(
-    document_id: str, user: User = Depends(get_current_user)
+    document_id: str
 ) -> DocumentStatusResponse:
-    record = touch_document_opened(require_document_owner(document_id, user.id))
+    record = touch_document_opened(require_document(document_id))
 
     return DocumentStatusResponse(
         document_id=record.document_id,
@@ -170,10 +168,9 @@ def get_document(
 def retry_document(
     document_id: str,
     background_tasks: BackgroundTasks,
-    user: User = Depends(get_current_user),
 ) -> RetryDocumentResponse:
-    record, resume_from = queue_document_retry(document_id, user.id)
-    background_tasks.add_task(_run_retry_pipeline, record.document_id, user.id, resume_from)
+    record, resume_from = queue_document_retry(document_id)
+    background_tasks.add_task(_run_retry_pipeline, record.document_id, resume_from)
     return RetryDocumentResponse(
         document_id=record.document_id,
         status="queued",
@@ -185,9 +182,8 @@ def retry_document(
 def rename_document(
     document_id: str,
     payload: RenameDocumentRequest,
-    user: User = Depends(get_current_user),
 ) -> DocumentStatusResponse:
-    record = require_document_owner(document_id, user.id)
+    record = require_document(document_id)
     try:
         record.source_filename = normalized_source_filename(
             payload.name, record.source_filename or "document.pdf"
@@ -218,7 +214,7 @@ def rename_document(
             artifact.path = str(target)
             artifact.url = url
     save_document(record)
-    return get_document(document_id, user)
+    return get_document(document_id)
 
 
 @router.post(
@@ -228,9 +224,8 @@ def rename_document(
 def locate_counterpart(
     document_id: str,
     payload: LocateCounterpartRequest,
-    user: User = Depends(get_current_user),
 ) -> LocateCounterpartResponse:
-    record = require_document_owner(document_id, user.id)
+    record = require_document(document_id)
     if payload.source_side not in {"original", "translated"}:
         raise HTTPException(status_code=400, detail="source_side must be original or translated")
 
@@ -288,7 +283,7 @@ def locate_counterpart(
 
 @router.delete("/document/{document_id}")
 def delete_document(
-    document_id: str, user: User = Depends(get_current_user)
+    document_id: str
 ) -> dict:
-    soft_delete_document(document_id, user.id)
+    soft_delete_document(document_id)
     return {"ok": True, "document_id": document_id}

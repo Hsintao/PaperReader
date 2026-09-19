@@ -1,6 +1,6 @@
 """Pipeline stage tracking + ETA helpers.
 
-Stages are declared up-front (per source_type) so the frontend can render a
+Stages are declared up-front so the frontend can render a
 deterministic progress bar.  Per-stage durations are persisted in a small
 JSON cache (sliding average) under ``data/cache/stage_stats.json`` so future
 runs can compute a meaningful ETA.
@@ -27,14 +27,6 @@ PDF_STAGES: list[tuple[str, str, float]] = [
     ("vision_check", "视觉模型校验", 10.0),
     ("translate", "翻译", 35.0),
     ("latex_build", "LaTeX 编译", 6.0),
-]
-
-TEX_STAGES: list[tuple[str, str, float]] = [
-    ("upload", "接收文件", 1.0),
-    ("compile_original", "编译原始 TeX", 15.0),
-    ("translate", "翻译", 60.0),
-    ("vision_check", "视觉模型校验", 15.0),
-    ("compile_translated", "编译译文 TeX", 9.0),
 ]
 
 
@@ -92,16 +84,9 @@ def _stage_avg(source_type: str, stage_key: str) -> float | None:
         return None
 
 
-def stages_for(source_type: str) -> list[tuple[str, str, float]]:
-    if source_type == "pdf":
-        return PDF_STAGES
-    # tex and tex_project share the same stage table
-    return TEX_STAGES
-
-
 def init_stages(record: DocumentRecord, *, vision_check_enabled: bool = False) -> None:
     """Populate record.stages with declared stages (status=pending)."""
-    plan = stages_for(record.source_type)
+    plan = list(PDF_STAGES)
     if not vision_check_enabled:
         plan = [s for s in plan if s[0] != "vision_check"]
     record.stages = [
@@ -189,14 +174,7 @@ def ensure_stage(record: DocumentRecord, key: str, label: str, weight: float = 1
 
 def prepare_stages_for_retry(record: DocumentRecord, resume_from: str) -> None:
     """Keep completed prerequisites and reset the failed stage and successors."""
-    if resume_from.startswith("latex_"):
-        normalized = (
-            "compile_translated"
-            if record.source_type in {"tex", "tex_project"}
-            else "latex_build"
-        )
-    else:
-        normalized = resume_from
+    normalized = "latex_build" if resume_from.startswith("latex_") else resume_from
     keys = [stage.key for stage in record.stages]
     try:
         start = keys.index(normalized)

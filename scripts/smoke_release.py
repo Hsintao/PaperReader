@@ -72,7 +72,7 @@ def main():
             command = [sys.executable, str(root / 'desktop' / 'launcher.py')]
         env = os.environ.copy()
         env.update(PAPERREADER_NO_WINDOW='1', DATA_DIR=str(base / '用户数据'),
-                   PAPERREADER_ENV_FILE=str(base / 'config.env'), AUTH_SECRET_KEY='smoke-test-only',
+                   PAPERREADER_ENV_FILE=str(base / 'config.env'),
                    OPENAI_API_KEY='', MINERU_API_KEY='', PDF_PARSER='local',
                    PAPERREADER_PORT=str(args.port))
         if args.web:
@@ -122,15 +122,16 @@ def main():
             for worker in workers:
                 _, headers = first.request('/assets/' + Path(worker).name)
                 assert 'javascript' in headers['Content-Type']
-            first.request('/api/documents', expected=401)
-            owner = first.json('/api/auth/register', {'username': 'smoke-owner', 'password': 'smoke-password'})
-            second.json('/api/auth/register', {'username': 'smoke-other', 'password': 'smoke-password'})
-            assert first.json('/api/auth/me')['id'] == owner['id']
-            first.json('/api/settings/me', {'theme': 'dark', 'api_key': 'local-test-key'}, 'PUT')
-            session = first.json('/api/chat/sessions', {'scope': 'library', 'title': 'Smoke conversation'})
-            second.request('/api/chat/sessions/' + session['session_id'], expected=404)
+            assert first.json('/api/documents') == []
+            settings = first.json('/api/settings/me/providers', {
+                'api_key': 'local-test-key', 'base_url': 'https://llm.example/v1',
+                'model': 'smoke-model', 'pdf_parser': 'local'}, 'PUT')
+            assert settings['api_key_configured'] is True
+            first.json('/api/settings/me', {'theme': 'dark'}, 'PUT')
+            # Only generated artifacts are reachable; the database and the
+            # settings file holding the API key are not.
             first.request('/data/paperreader.db', expected=404)
-            first.request('/data/chat_sessions.json', expected=404)
+            first.request('/data/settings.json', expected=404)
             # Upload a source without calling the LLM: invalid file types are
             # rejected, and a blank PDF can be persisted for reading.
             boundary = 'PaperReaderSmokeBoundary'
@@ -153,21 +154,14 @@ def main():
                     break
                 time.sleep(0.2)
             assert document['status'] in ('done', 'failed'), 'Upload pipeline did not settle'
-            second.request('/api/document/' + document_id, expected=404)
             source_url = '/data/outputs/' + document_id + '/original.pdf'
             content, _ = first.request(source_url)
             assert content.startswith(b'%PDF')
-            second.request(source_url, expected=404)
             stop(process)
             process = start()
-            assert first.json('/api/auth/me')['settings']['theme'] == 'dark'
-            assert first.json('/api/auth/me')['settings']['api_key_configured'] is True
+            assert first.json('/api/settings/me')['theme'] == 'dark'
+            assert first.json('/api/settings/me')['api_key_configured'] is True
             assert first.json('/api/documents')[0]['document_id'] == document_id
-            assert first.json('/api/chat/sessions/' + session['session_id'])['title'] == 'Smoke conversation'
-            first.json('/api/auth/logout', {}, 'POST')
-            first.request('/api/auth/me', expected=401)
-            first.json('/api/auth/login', {'username': 'smoke-owner', 'password': 'smoke-password'})
-            assert first.json('/api/auth/me')['id'] == owner['id']
             if args.archive and os.name == 'nt':
                 # v2.1.1 shipped with a healthy backend but a broken window:
                 # PAPERREADER_NO_WINDOW skipped webview entirely, so the .NET
@@ -185,7 +179,7 @@ def main():
                     detail = error_log.read_text(encoding='utf-8') if error_log.exists() else ''
                     raise AssertionError(f'Packaged GUI stack failed to initialize:\n{detail}')
                 print('PASS: packaged GUI stack initializes (pythonnet/.NET + WebView2 bindings)')
-            print('PASS: frontend, PDF worker MIME, cookies, upload/read, user isolation, profile, chat persistence, restart, login/logout')
+            print('PASS: frontend, PDF worker MIME, settings, upload/read, artifact access, restart persistence')
         finally:
             for process in processes:
                 if process.poll() is None:

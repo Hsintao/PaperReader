@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import secrets
 import stat
 import tempfile
 import threading
@@ -9,7 +8,6 @@ from pathlib import Path
 
 
 _LOCK = threading.RLock()
-_TRUE_VALUES = {"1", "true", "yes", "on"}
 
 
 def desktop_app_root() -> Path:
@@ -89,7 +87,7 @@ def write_env_values(
             values.pop(key, None)
         values.update({key: str(value) if not isinstance(value, bool) else _encode(value) for key, value in updates.items()})
         lines = [
-            "# PaperReader local configuration. Provider secrets move to the encrypted user database after sign-in.",
+            "# PaperReader machine-level configuration. Provider settings live in the data directory.",
             *[f"{key}={_encode(value)}" for key, value in sorted(values.items())],
             "",
         ]
@@ -114,88 +112,8 @@ def ensure_desktop_config(path: Path | None = None) -> Path:
     target = path or desktop_config_path()
     values = read_env_file(target)
     updates: dict[str, object] = {}
-    if not values.get("AUTH_SECRET_KEY"):
-        updates["AUTH_SECRET_KEY"] = secrets.token_urlsafe(48)
     if not values.get("DATA_DIR"):
         updates["DATA_DIR"] = str(desktop_app_root() / "data")
     if not values.get("APP_ENV"):
         updates["APP_ENV"] = "desktop"
-    if not values.get("PAPERREADER_SETUP_COMPLETE"):
-        updates["PAPERREADER_SETUP_COMPLETE"] = "false"
     return write_env_values(updates, path=target) if updates or not target.exists() else target
-
-
-def setup_status(*, desktop_mode: bool) -> dict[str, object]:
-    if not desktop_mode:
-        return {"required": False, "desktop": False}
-    values = read_env_file()
-    completed = values.get("PAPERREADER_SETUP_COMPLETE", "").lower() in _TRUE_VALUES
-    # A legacy portable config with an API key is already usable and should be
-    # imported at the next successful sign-in instead of blocking on the wizard.
-    legacy_ready = bool(values.get("OPENAI_API_KEY"))
-    return {
-        "required": not (completed or legacy_ready),
-        "desktop": True,
-        "defaults": {
-            "base_url": values.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-            "model": values.get("OPENAI_MODEL", "gpt-4o-mini"),
-            "pdf_parser": values.get("PDF_PARSER", "mineru") or "mineru",
-            "mineru_base_url": values.get("MINERU_BASE_URL", "https://mineru.net/api/v4"),
-            "mineru_model_version": values.get("MINERU_MODEL_VERSION", "vlm"),
-            "mineru_language": values.get("MINERU_LANGUAGE", "en"),
-            "mineru_enable_formula": values.get("MINERU_ENABLE_FORMULA", "true").lower() in _TRUE_VALUES,
-            "mineru_enable_table": values.get("MINERU_ENABLE_TABLE", "true").lower() in _TRUE_VALUES,
-            "mineru_is_ocr": values.get("MINERU_IS_OCR", "false").lower() in _TRUE_VALUES,
-            "vision_model": values.get("VISION_MODEL", "GLM-4.5V"),
-        },
-    }
-
-
-def save_bootstrap_provider(values: dict[str, object]) -> None:
-    write_env_values(
-        {
-            "OPENAI_API_KEY": values["api_key"],
-            "OPENAI_BASE_URL": values["base_url"],
-            "OPENAI_MODEL": values["model"],
-            "PDF_PARSER": values["pdf_parser"],
-            "MINERU_API_KEY": values.get("mineru_api_key", ""),
-            "MINERU_BASE_URL": values["mineru_base_url"],
-            "MINERU_MODEL_VERSION": values["mineru_model_version"],
-            "MINERU_LANGUAGE": values["mineru_language"],
-            "MINERU_ENABLE_FORMULA": values["mineru_enable_formula"],
-            "MINERU_ENABLE_TABLE": values["mineru_enable_table"],
-            "MINERU_IS_OCR": values["mineru_is_ocr"],
-            "VISION_MODEL": values["vision_model"],
-            "PAPERREADER_SETUP_COMPLETE": "true",
-            "PAPERREADER_BOOTSTRAP_PENDING": "true",
-        }
-    )
-
-
-def pending_bootstrap_provider() -> dict[str, object] | None:
-    values = read_env_file()
-    if values.get("PAPERREADER_BOOTSTRAP_PENDING", "").lower() not in _TRUE_VALUES:
-        # Legacy configs have no marker but should still migrate once.
-        if not values.get("OPENAI_API_KEY"):
-            return None
-    return {
-        "api_key": values.get("OPENAI_API_KEY", ""),
-        "base_url": values.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-        "model": values.get("OPENAI_MODEL", "gpt-4o-mini"),
-        "pdf_parser": values.get("PDF_PARSER", "mineru") or "mineru",
-        "mineru_api_key": values.get("MINERU_API_KEY", ""),
-        "mineru_base_url": values.get("MINERU_BASE_URL", "https://mineru.net/api/v4"),
-        "mineru_model_version": values.get("MINERU_MODEL_VERSION", "vlm"),
-        "mineru_language": values.get("MINERU_LANGUAGE", "en"),
-        "mineru_enable_formula": values.get("MINERU_ENABLE_FORMULA", "true").lower() in _TRUE_VALUES,
-        "mineru_enable_table": values.get("MINERU_ENABLE_TABLE", "true").lower() in _TRUE_VALUES,
-        "mineru_is_ocr": values.get("MINERU_IS_OCR", "false").lower() in _TRUE_VALUES,
-        "vision_model": values.get("VISION_MODEL", "GLM-4.5V"),
-    }
-
-
-def clear_bootstrap_secrets() -> None:
-    write_env_values(
-        {"PAPERREADER_BOOTSTRAP_PENDING": "false"},
-        clear={"OPENAI_API_KEY", "MINERU_API_KEY"},
-    )

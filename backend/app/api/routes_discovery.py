@@ -1,13 +1,10 @@
 """Library-wide search, document structure, and BibTeX export."""
 
 import re
-from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 
-from app.api.deps import get_current_user
-from app.models.store import list_documents_for_user, require_document_owner
-from app.services.auth_service import User
+from app.models.store import list_documents, require_document
 from app.services.document_structure import build_document_structure
 
 
@@ -20,16 +17,15 @@ def _normalize(text: str) -> str:
 
 @router.get("/document/{document_id}/structure")
 def get_structure(
-    document_id: str, user: User = Depends(get_current_user)
+    document_id: str
 ) -> dict:
-    record = require_document_owner(document_id, user.id)
+    record = require_document(document_id)
     return build_document_structure(record)
 
 
 @router.get("/search")
 def search_library(
     q: str = Query(..., min_length=1),
-    user: User = Depends(get_current_user),
 ) -> list[dict]:
     """Substring search across the user's parsed documents.
 
@@ -40,7 +36,7 @@ def search_library(
     if not needle:
         return []
     hits: list[dict] = []
-    for record in list_documents_for_user(user.id):
+    for record in list_documents():
         if record.status != "done":
             continue
         for side, text in (("translated", record.translated_text), ("original", record.extracted_text)):
@@ -99,26 +95,9 @@ def _generate_bibtex(record, metadata: dict) -> str:
 
 @router.get("/document/{document_id}/bibtex")
 def get_bibtex(
-    document_id: str, user: User = Depends(get_current_user)
+    document_id: str
 ) -> dict:
-    record = require_document_owner(document_id, user.id)
-    if record.source_type in {"tex", "tex_project"}:
-        project_dir = record.source_path.parent
-        candidates = sorted(project_dir.rglob("*.bib")) if project_dir.is_dir() else []
-        if candidates:
-            # Prefer the bib that shares the main tex's stem, else the first.
-            preferred = [
-                path
-                for path in candidates
-                if record.main_tex and path.stem == Path(record.main_tex).stem
-            ]
-            chosen = (preferred or candidates)[0]
-            try:
-                content = chosen.read_text(encoding="utf-8", errors="ignore")
-            except OSError:
-                content = ""
-            if content.strip():
-                return {"bibtex": content, "filename": f"{chosen.stem}.bib"}
+    record = require_document(document_id)
     metadata = dict(record.metadata or {})
     if not metadata:
         raise HTTPException(status_code=404, detail="此文档暂无可导出的元数据")

@@ -15,7 +15,7 @@ npm.cmd --prefix frontend run build
 
 浏览器回归路径：在已显示文字的页首次执行对照高亮；跳转到未渲染的远端页；点击批注查看备注；打开图表浮层，分别点击 Figure、Table 及同页多个 Table；切换论文并确认列表更新。文字高亮在 `onRenderTextLayerSuccess` 后绘制。图表结构接口返回原文 `figures` 与译文 `translated_figures`，预览位于 `outputs/<document_id>/figure-previews/`，编译 PDF 更新后刷新。LaTeX 缩略图按标题旁的矢量插图、嵌入图片与表格横线裁剪，不再依赖 hyperref 浮动体锚点。
 
-个人中心密钥回归需分别验证大模型更新、MinerU 更新、留空保持和明确删除。新配置默认 MinerU；其 Key 缺失只阻止采用 MinerU 的 PDF 上传。
+设置密钥回归需分别验证大模型更新、MinerU 更新、留空保持和明确删除。新配置默认 MinerU；其 Key 缺失只阻止采用 MinerU 的 PDF 上传。
 
 本文档面向需要在 **Windows 或 macOS 本地从源代码运行、构建 PaperReader 原生应用**，以及维护 GitHub Release 的开发者。Windows 部分的命令行均以 **Git Bash**（Git for Windows 自带）为准。
 
@@ -46,7 +46,9 @@ PaperReader 当前桌面端不是 Electron/Tauri，而是以下组合：
 - Xcode Command Line Tools
 - 可选：MacTeX / TeX Live（只有生成译文 PDF 时需要）
 
-> `desktop/build_macos.sh` 和 `desktop/setup_macos.py` 当前都按 Python 3.11 / arm64 构建，因此不要直接使用 Python 3.12 或 x86_64 Python 来制作正式 macOS 包。
+> `desktop/build_macos.sh` 与 `desktop/setup_macos.py` 共用同一个 `python`：脚本从该解释器推导 bundle 内的版本目录（`Resources/lib/python<major>.<minor>`），并把 conda 的运行时库补拷进 `Contents/Frameworks`。因此构建前务必确认 `python -V` 就是你要用来打包的那个环境，并且必须是 arm64；x86_64 Python 仍然不要用于正式包。
+>
+> 补拷的运行时库名字要匹配 `lib-dynload/*.so` 里的 `@rpath` 引用（例如 `_sqlite3.so` 要的是 `libsqlite3.0.dylib`，而不是 `libsqlite3.dylib`）。漏拷或漏配名字时 app 只会在启动时弹一个 `Launch error`，所以脚本在拷贝后会校验这些库是否都已落到 `Contents/Frameworks`，缺失就当场失败并报出库名。
 
 检查环境：
 
@@ -1004,13 +1006,13 @@ git push origin v2.1.2
 PaperReader/
 ├── backend/
 │   └── app/
-│       ├── api/            # routes_*.py：auth / setup / upload / document / chat / project / review / recompile / data
-│       ├── core/           # config.py、database.py
+│       ├── api/            # routes_*.py：settings / upload / document / annotations / discovery / review / recompile / data
+│       ├── core/           # config.py、database.py、local_config.py
 │       ├── models/         # schemas.py、store.py
 │       ├── services/       # document_pipeline、translate_service、alignment_service、llm_client、
 │       │                   # mineru_service、mineru_layout、latex_service、latex_sanitizer、latex_recovery、
-│       │                   # project_archive、vision_check_service、auth_service、chat_store、
-│       │                   # legacy_import、literature_service、stage_tracker
+│       │                   # vision_check_service、document_structure、app_settings、paper_metadata、
+│       │                   # stage_tracker
 │       ├── workers/        # tasks.py（Celery）
 │       └── main.py
 ├── desktop/                # 桌面端启动器与打包脚本（见第 1–18 节）
@@ -1068,20 +1070,17 @@ cp .env.example .env
 - `OPENAI_BASE_URL`
 - `OPENAI_MODEL`
 - `MINERU_API_KEY`（在 https://mineru.net/apiManage/docs 申请）
-- `AUTH_SECRET_KEY` — 账号模式下的本地会话签名/加密密钥
 
 ### 可选 / 调优变量
 
 - `SQLITE_DB_NAME`（默认 `paperreader.db`）— `DATA_DIR` 下的本地持久化数据库文件。
-- `SESSION_DAYS`（默认 `1`）— 普通登录会话有效期。
-- `REMEMBER_ME_DAYS`（默认 `30`）— "记住我"会话有效期。
 - `TRANSLATE_CONCURRENCY`（默认 `4`）— 并行翻译的 chunk 数。
 - `TRANSLATE_MAX_RETRIES`（默认 `5`）— 单次 LLM 调用的重试预算；使用带抖动的指数退避，并遵守 `Retry-After`。
 - `LLM_RATE_LIMIT_RPS`（默认 `4`）— 所有 worker 线程共享的 LLM 全局限速（每秒请求数，令牌桶）。设为 `0` 关闭。建议低于服务商/密钥公布的 RPM 以避免 429。注意：该限速按单个 uvicorn 进程生效；若扩展为 N 个 worker，实际限速为 `N × LLM_RATE_LIMIT_RPS`。
 - `TRANSLATE_BATCH_MAX_CHARS`（默认 `6000`）— 每个 IR 批量请求拼接字符数上限。调大可摊薄往返延迟，但单次请求体更大。
 - `TRANSLATE_SEGMENT_MAX_CHARS`（默认 `2000`）— 单个散文本段落的硬上限。超长 MinerU 段落会被拆分再重组，避免模型输出上限截断后半段。
 - `VISION_MODEL`（默认 `GLM-4.5V`）— Phase D 视觉校验使用的多模态模型，必须与 `OPENAI_BASE_URL` 同一 OpenAI 兼容端点且支持视觉（如 `GLM-4.5V`、`GLM-4.6V`、`Qwen3-VL-30B-A3B-Instruct`、`Qwen3-VL-235B-A22B-Instruct`）。
-- `VISION_CHECK_ENABLED`（默认 `false`）、`VISION_CHECK_MODE`（`auto` | `manual`）、`VISION_CHECK_MAX_PAGES`（默认 `8`）— Phase D 的部署默认值。新账号默认关闭校验，可在侧边栏或个人中心开启自动/手动校验。
+- `VISION_CHECK_ENABLED`（默认 `false`）、`VISION_CHECK_MODE`（`auto` | `manual`）、`VISION_CHECK_MAX_PAGES`（默认 `8`）— Phase D 的部署默认值。默认关闭校验，可在「设置 → 阅读偏好」中开启自动/手动校验。
 - `LATEXMK_PATH` — 当 `latexmk` 不在 `PATH` 上时，指向其绝对路径。
 
 ### MinerU PDF 解析
@@ -1124,25 +1123,15 @@ python -m compileall backend/app     # 快速语法检查
 
 > 上传与解析在请求链路中是同步执行的；处理较大 PDF 时前端会持续轮询 `GET /api/document/{id}` 直至 `status` 变为 `done` 或 `failed`。
 
-## 19.5 账号系统
+## 19.5 本机设置
 
-- 上传、项目、历史、对话、视觉校验与重新编译等 API 均需登录。
-- 登录使用用户名 + 密码，凭据为 HttpOnly 会话 Cookie。
-- "记住我"仅延长 Cookie 有效期，不会明文存储密码。
-- 用户数据持久化在本地 SQLite：`users`、`sessions`、`user_settings`、`documents`、`projects`。
-- 按用户隔离的设置包括：主题、视觉校验偏好、收藏、个人 LLM `API Key` / `Base URL` / `Model`、个人 parser / MinerU 密钥与选项、视觉模型。
+应用没有账号体系：单个本地操作者直接使用全部功能，没有登录、向导或个人中心。
 
-### 个人中心
-
-登录后点击侧边栏账号区域进入个人中心，可以：
-
-- 上传/更换头像
-- 修改用户名
-- 修改密码
-- 配置个人 LLM 设置
-- 管理持久化的阅读偏好
-
-对话默认使用当前用户保存的 LLM 设置；为空时回退到后端 `.env` 默认值。
+- 设置（LLM `API Key` / `Base URL` / `Model`、parser 与 MinerU 选项、视觉模型、主题、视觉校验偏好、收藏）
+  统一存放在 `DATA_DIR/settings.json`，文件权限为 `0600`，写入采用临时文件 + `os.replace` 的原子替换。
+- 读取接口只返回 `api_key_configured` / `mineru_api_key_configured` 布尔值，不会回显密钥明文。
+- 文档与批注持久化在本地 SQLite：`documents`、`annotations`。没有 `owner_user_id`，也没有用户/会话表。
+- 前端首次进入时若未配置 API Key，会在工作台空白页给出「开始前需要配置 AI 服务」的入口，点击打开「设置」弹窗。
 
 ## 19.6 Docker 部署
 
@@ -1159,57 +1148,35 @@ docker compose up --build
 ## 19.7 API 端点
 
 - `GET /health`
-- **认证 / 设置（routes_auth.py）**
-  - `POST /api/auth/register`
-  - `POST /api/auth/login`
-  - `POST /api/auth/logout`
-  - `GET /api/auth/me`
-  - `PATCH /api/auth/profile`
-  - `POST /api/auth/change-password`
-  - `POST /api/auth/avatar`
+- **设置（routes_settings.py）**
+  - `GET /api/settings/me`
   - `PUT /api/settings/me`
   - `PUT /api/settings/me/providers`
-- **首次运行向导（routes_setup.py）**
-  - `GET /api/setup/status`
-  - `PUT /api/setup`
 - **上传**
-  - `POST /api/upload`（multipart 文件：`.pdf` 或 `.tex`；表单字段 `vision_check_enabled`、`vision_check_mode`）
+  - `POST /api/upload`（multipart，仅接受 `.pdf`；表单字段 `vision_check_enabled`、`vision_check_mode`）
 - **文档**
-  - `GET /api/documents` — 列出当前登录用户的文档摘要
+  - `GET /api/documents` — 列出本机文档摘要
   - `GET /api/document/{document_id}`
   - `PATCH /api/document/{document_id}`
-  - `DELETE /api/document/{document_id}` — 软删除当前用户的一条历史记录
+  - `DELETE /api/document/{document_id}` — 软删除一条历史记录
   - `POST /api/document/{document_id}/retry` — 重新排队失败文档，从最近校验点续跑
   - `POST /api/document/{document_id}/locate-counterpart` — 双语对应定位，返回 `highlight_text` 用于片段级高亮
   - `GET|POST /api/document/{document_id}/annotations`、`DELETE /api/document/{document_id}/annotations/{id}` — 持久化批注
   - `GET /api/document/{document_id}/notes.md` — 导出双语 Markdown 阅读笔记
   - `PATCH /api/document/{document_id}/progress` — 保存阅读位置（`last_read_page` / `last_read_ratio`）
   - `GET /api/document/{document_id}/structure` — 后端解析的章节目录与图表列表
-  - `GET /api/document/{document_id}/bibtex` — BibTeX 导出（TeX 工程优先返回工程内 `.bib`）
+  - `GET /api/document/{document_id}/bibtex` — 依据 Semantic Scholar 元数据导出 BibTeX
   - `GET /api/search?q=` — 跨文档全文搜索
-- **项目（TeX 工程）**
-  - `POST /api/project` — 创建 TeX 项目
-  - `GET /api/project/{project_id}` — 查看文件与主文件候选
-  - `POST /api/project/{project_id}/files` — 多次上传项目文件
-  - `POST /api/project/{project_id}/archive` — 安全导入 `.zip`、`.tar`、`.tar.gz` 或 `.tgz` LaTeX 工程包
-  - `POST /api/project/{project_id}/delete-files`
-  - `POST /api/project/{project_id}/build` — 选定主 `.tex` 后启动编译流水线
-  - `DELETE /api/project/{project_id}`
 - **视觉校验（Phase D）**
   - `GET /api/document/{document_id}/review`
   - `POST /api/document/{document_id}/review` — 接受 / 拒绝视觉模型提出的修订
-- **手动 TeX 重新编译**
+- **译文 TeX 重新编译**
   - `GET /api/document/{document_id}/tex` — 读取当前 `translated.tex`
   - `POST /api/document/{document_id}/tex` — 保存修改后重新编译（源文件先经 `latex_sanitizer` 清洗，并启用 strict→`-f` 降级编译）
   - `POST /api/document/{document_id}/tex/reveal` — 在系统文件管理器中显示产物
-- **对话**
-  - `POST /api/chat` — 阻塞式回答（保留兼容）；请求体可带 `quote` 注入选中文本的双语上下文
-  - `POST /api/chat/stream` — SSE 流式回答（`meta` / `delta` / `done` / `error` 事件）
-  - `POST /api/chat/sessions`
-  - `GET /api/chat/sessions`
-  - `GET /api/chat/sessions/{session_id}`
 - **产物访问**
-  - `GET|HEAD /data/{file_path}` — 产物文件下载，按账号校验归属
+  - `GET|HEAD /data/{file_path}` — 产物与上传源文件下载；仅 `uploads/` 与 `outputs/` 下的文件可访问，
+    数据库与 `settings.json` 不对外暴露
 
 ### `GET /api/document/{document_id}` 响应要点
 
@@ -1221,24 +1188,6 @@ docker compose up --build
 - `pending_reviews` — `manual` 模式下等待人工决策的视觉模型修订提案（Phase D）
 - `last_compile_warning` — strict 编译失败但宽松 `-f` 编译仍产出 PDF 时设置；UI 会提示用户打开手动 TeX 编辑器清理
 - 以及既有的 `status`、`original_pdf_url`、`translated_pdf_url`、`logs`
-
-### 对话请求体
-
-```json
-{
-  "document_id": "uuid",
-  "message": "What is the main contribution?",
-  "override_api_key": "",
-  "override_base_url": "",
-  "override_model": ""
-}
-```
-
-`override_*` 字段可选。当前 UI 中，对话通常直接使用登录用户保存的个人设置。
-
-### LaTeX 归档安全
-
-项目压缩包按文件名与内容双重识别后本地解压。导入最多允许 2,000 个成员、单文件 20 MB、整包 200 MB。绝对路径、`..` 穿越路径、链接、设备条目、加密 ZIP 成员、重复/冲突路径、损坏压缩包以及不含 `.tex` 的压缩包都会被原子性拒绝。导入后 UI 展示按置信度排序的主文件候选，等待用户确认后才会开始解析或翻译。
 
 ## 19.8 平台说明
 
@@ -1262,7 +1211,7 @@ docker compose up --build
 ## 19.9 当前实现边界
 
 - 上传处理仍在请求链路中同步执行（尚未引入后台任务交接）；文档内的翻译 chunk 通过线程池并发。
-- 文档/项目/账号状态持久化在 SQLite，但应用目前面向本地/小规模部署设计，而非加固的互联网级多租户服务。
+- 文档与批注持久化在 SQLite，设置存放在 `settings.json`；应用面向单个本地操作者，不是加固的互联网级多租户服务。
 - 参考文献提取是启发式的（基于章节/行模式），不是完整的引文解析器。
-- 前端支持登录/注册、个人中心、面板开关、拖拽产物预览、视觉校验人工复核以及浏览器内 `translated.tex` 编辑器。
+- 前端支持设置弹窗、面板开关、拖拽产物预览、视觉校验人工复核以及浏览器内 `translated.tex` 编辑器。
 - LaTeX 编译先跑 strict 一遍，再跑宽松的 `-f` 一遍，使流水线极少以硬失败告终；警告通过 `last_compile_warning` 上报，手动编辑器支持就地修补源码并重新编译。

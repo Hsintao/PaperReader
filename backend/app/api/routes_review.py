@@ -1,9 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.api.deps import get_current_user
-from app.models.store import require_document_owner
-from app.services.auth_service import User
+from app.models.store import require_document
 from app.services.vision_check_service import submit_review_decision
 
 
@@ -16,8 +14,8 @@ class ReviewDecision(BaseModel):
 
 
 @router.get("/document/{document_id}/review")
-def get_review(document_id: str, user: User = Depends(get_current_user)) -> dict:
-    record = require_document_owner(document_id, user.id)
+def get_review(document_id: str) -> dict:
+    record = require_document(document_id)
     return {
         "status": record.status,
         "pending_reviews": [
@@ -37,9 +35,8 @@ def get_review(document_id: str, user: User = Depends(get_current_user)) -> dict
 def post_review(
     document_id: str,
     decision: ReviewDecision,
-    user: User = Depends(get_current_user),
 ) -> dict:
-    require_document_owner(document_id, user.id)
+    require_document(document_id)
     triggered = submit_review_decision(
         document_id, accept=decision.accept, edits=decision.edits
     )

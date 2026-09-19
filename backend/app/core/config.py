@@ -32,10 +32,6 @@ class Settings(BaseSettings):
     openai_base_url: str = Field(default="https://api.openai.com/v1", alias="OPENAI_BASE_URL")
     openai_model: str = Field(default="gpt-4o-mini", alias="OPENAI_MODEL")
 
-    auth_secret_key: str = Field(default="paperreader-dev-secret", alias="AUTH_SECRET_KEY")
-    session_days: int = Field(default=1, alias="SESSION_DAYS")
-    remember_me_days: int = Field(default=30, alias="REMEMBER_ME_DAYS")
-
     # PDF parsing backend: "local" extracts the embedded text layer with pypdf
     # (no external service / API key needed); "mineru" uses the MinerU cloud API.
     pdf_parser: str = Field(default="", alias="PDF_PARSER")
@@ -61,10 +57,6 @@ class Settings(BaseSettings):
     vision_check_enabled: bool = Field(default=False, alias="VISION_CHECK_ENABLED")
     vision_check_mode: str = Field(default="auto", alias="VISION_CHECK_MODE")  # auto | manual
     vision_check_max_pages: int = Field(default=8, alias="VISION_CHECK_MAX_PAGES")
-
-    # TeX project upload limits (Phase B)
-    project_max_file_mb: int = Field(default=20, alias="PROJECT_MAX_FILE_MB")
-    project_max_total_mb: int = Field(default=200, alias="PROJECT_MAX_TOTAL_MB")
 
     # Translation concurrency (chunked LLM calls)
     translate_concurrency: int = Field(default=4, alias="TRANSLATE_CONCURRENCY")
@@ -96,27 +88,6 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-
-
-def apply_runtime_provider_values(values: dict[str, object]) -> None:
-    """Keep bootstrap defaults usable until they are claimed by an account."""
-    mapping = {
-        "api_key": "openai_api_key",
-        "base_url": "openai_base_url",
-        "model": "openai_model",
-        "pdf_parser": "pdf_parser",
-        "mineru_api_key": "mineru_api_key",
-        "mineru_base_url": "mineru_base_url",
-        "mineru_model_version": "mineru_model_version",
-        "mineru_language": "mineru_language",
-        "mineru_enable_formula": "mineru_enable_formula",
-        "mineru_enable_table": "mineru_enable_table",
-        "mineru_is_ocr": "mineru_is_ocr",
-        "vision_model": "vision_model",
-    }
-    for source, target in mapping.items():
-        if source in values:
-            setattr(settings, target, values[source])
 
 settings.upload_dir.mkdir(parents=True, exist_ok=True)
 settings.output_dir.mkdir(parents=True, exist_ok=True)

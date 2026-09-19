@@ -1,19 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
-import { AlertCircle, PanelLeftOpen, PanelRightOpen, UploadCloud } from 'lucide-react'
-import { ChatPanel } from '../components/ChatPanel'
-import { LiteratureChatPage } from '../components/LiteratureChatPage'
+import { AlertCircle, PanelLeftOpen, UploadCloud } from 'lucide-react'
 import { PdfPane } from '../components/PdfPane'
 import type { AnnotationItem, PdfPaneHandle } from '../components/PdfPane'
-import type { FigureItem } from '../lib/api'
+import type { FigureItem, UserSettings } from '../lib/api'
 import type { OutlineItem } from '../lib/pdfOutline'
 import { ProgressBar } from '../components/ProgressBar'
-import { ProfileModal } from '../components/ProfileModal'
-import { ProjectDrawer } from '../components/ProjectDrawer'
 import { ReviewModal } from '../components/ReviewModal'
+import { SettingsModal } from '../components/SettingsModal'
 import { Sidebar } from '../components/Sidebar'
-import { TexEditorModal } from '../components/TexEditorModal'
-import type { ArtifactItem, AuthUser, DocumentStatus, DocumentSummary, SourceRefItem, UserSettings } from '../lib/api'
+import type { ArtifactItem, DocumentStatus, DocumentSummary } from '../lib/api'
 import {
   createAnnotation,
   deleteAnnotation,
@@ -23,7 +19,6 @@ import {
   getDocumentStructure,
   listAnnotations,
   listDocuments,
-  logout,
   locateCounterpart,
   makeDataUrl,
   renameDocument,
@@ -37,32 +32,25 @@ import {
 type OverridePdf = { url: string; name: string } | null
 type PaneSide = 'original' | 'translated'
 type PendingLocate = { text: string; side: 'original' | 'translated' } | null
-type PendingQuote = { text: string; nonce: number } | null
 
 type Props = {
-  user: AuthUser
-  onUserChange: (user: AuthUser) => void
-  onLogout: () => void
+  settings: UserSettings
+  onSettingsChange: (settings: UserSettings) => void
 }
 
-export function ReaderPage({ user, onUserChange, onLogout }: Props) {
+export function ReaderPage({ settings, onSettingsChange }: Props) {
   const [summaries, setSummaries] = useState<DocumentSummary[]>([])
   const [activeId, setActiveId] = useState<string | undefined>(undefined)
   const [docCache, setDocCache] = useState<Record<string, DocumentStatus>>({})
   const [uploading, setUploading] = useState(false)
   const [showSidebar, setShowSidebar] = useState(() => window.innerWidth >= 900)
-  const [showChat, setShowChat] = useState(() => window.innerWidth >= 1100)
   const [overrideLeft, setOverrideLeft] = useState<OverridePdf>(null)
   const [overrideRight, setOverrideRight] = useState<OverridePdf>(null)
-  const [projectOpen, setProjectOpen] = useState(false)
-  const [projectArchive, setProjectArchive] = useState<File | null>(null)
-  const [profileOpen, setProfileOpen] = useState(!user.settings.api_key_configured)
-  const [editTexOpen, setEditTexOpen] = useState(false)
-  const [theme, setTheme] = useState<UserSettings['theme']>(user.settings.theme)
-  const [visionEnabled, setVisionEnabled] = useState(user.settings.vision_enabled)
-  const [visionMode, setVisionMode] = useState<UserSettings['vision_mode']>(user.settings.vision_mode)
-  const [favorites, setFavorites] = useState<string[]>(user.settings.favorites)
-  const [literatureChatOpen, setLiteratureChatOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [theme, setTheme] = useState<UserSettings['theme']>(settings.theme)
+  const [visionEnabled, setVisionEnabled] = useState(settings.vision_enabled)
+  const [visionMode, setVisionMode] = useState<UserSettings['vision_mode']>(settings.vision_mode)
+  const [favorites, setFavorites] = useState<string[]>(settings.favorites)
   const [notice, setNotice] = useState<string | null>(null)
   const [retrying, setRetrying] = useState(false)
   const [pollRevision, setPollRevision] = useState(0)
@@ -71,7 +59,6 @@ export function ReaderPage({ user, onUserChange, onLogout }: Props) {
   const [structureFigures, setStructureFigures] = useState<FigureItem[]>([])
   const [translatedFigures, setTranslatedFigures] = useState<FigureItem[]>([])
   const [syncScroll, setSyncScroll] = useState(true)
-  const [pendingQuote, setPendingQuote] = useState<PendingQuote>(null)
   const [pendingLocate, setPendingLocate] = useState<PendingLocate>(null)
   const [activePane, setActivePane] = useState<PaneSide>('original')
 
@@ -82,11 +69,11 @@ export function ReaderPage({ user, onUserChange, onLogout }: Props) {
   const syncLockRef = useRef<{ side: PaneSide; until: number }>({ side: 'original', until: 0 })
 
   useEffect(() => {
-    setTheme(user.settings.theme)
-    setVisionEnabled(user.settings.vision_enabled)
-    setVisionMode(user.settings.vision_mode)
-    setFavorites(user.settings.favorites)
-  }, [user])
+    setTheme(settings.theme)
+    setVisionEnabled(settings.vision_enabled)
+    setVisionMode(settings.vision_mode)
+    setFavorites(settings.favorites)
+  }, [settings])
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -95,7 +82,6 @@ export function ReaderPage({ user, onUserChange, onLogout }: Props) {
   useEffect(() => {
     const handleResize = () => {
       if (window.innerWidth < 900) setShowSidebar(false)
-      if (window.innerWidth < 1100) setShowChat(false)
     }
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
@@ -104,27 +90,11 @@ export function ReaderPage({ user, onUserChange, onLogout }: Props) {
   const persistPreferences = useCallback(async (payload: Partial<UserSettings>) => {
     try {
       const nextSettings = await updateSettings(payload)
-      onUserChange({ ...user, settings: nextSettings })
+      onSettingsChange(nextSettings)
     } catch (e: any) {
       setNotice(`偏好保存失败：${e?.message || String(e)}`)
     }
-  }, [onUserChange, user])
-
-  const cycleVision = useCallback(() => {
-    let nextEnabled = visionEnabled
-    let nextMode = visionMode
-    if (!visionEnabled) {
-      nextEnabled = true
-      nextMode = 'auto'
-    } else if (visionMode === 'auto') {
-      nextMode = 'manual'
-    } else {
-      nextEnabled = false
-    }
-    setVisionEnabled(nextEnabled)
-    setVisionMode(nextMode)
-    void persistPreferences({ vision_enabled: nextEnabled, vision_mode: nextMode })
-  }, [persistPreferences, visionEnabled, visionMode])
+  }, [onSettingsChange])
 
   const refreshActive = useCallback(() => {
     if (!activeId) return
@@ -139,11 +109,10 @@ export function ReaderPage({ user, onUserChange, onLogout }: Props) {
       setSummaries(list)
       return list
     } catch (e: any) {
-      if (e?.status === 401) onLogout()
-      else console.error(e)
+      console.error(e)
       return []
     }
-  }, [onLogout])
+  }, [])
 
   useEffect(() => {
     void (async () => {
@@ -185,8 +154,7 @@ export function ReaderPage({ user, onUserChange, onLogout }: Props) {
           }
         }
       } catch (e: any) {
-        if (e?.status === 401) onLogout()
-        else console.error(e)
+        console.error(e)
       }
     }
     void fetchOnce()
@@ -197,7 +165,7 @@ export function ReaderPage({ user, onUserChange, onLogout }: Props) {
         pollTimerRef.current = null
       }
     }
-  }, [activeId, onLogout, pollRevision])
+  }, [activeId, pollRevision])
 
   const activeDoc: DocumentStatus | undefined = activeId ? docCache[activeId] : undefined
   const originalPdfUrl = activeDoc?.original_pdf_url ? makeDataUrl(activeDoc.original_pdf_url) : undefined
@@ -232,7 +200,7 @@ export function ReaderPage({ user, onUserChange, onLogout }: Props) {
     setStructureOutline(null)
     setStructureFigures([])
     setTranslatedFigures([])
-    setPendingQuote(null)
+    setPendingLocate(null)
   }, [activeId])
 
   // Annotations and the document structure (backend outline + figure gallery)
@@ -309,12 +277,6 @@ export function ReaderPage({ user, onUserChange, onLogout }: Props) {
     target.scrollToRatio(ratio)
   }, [syncScroll])
 
-  const handleAskAI = useCallback((_side: PaneSide, payload: { selectedText: string }) => {
-    setShowChat(true)
-    setLiteratureChatOpen(false)
-    setPendingQuote({ text: payload.selectedText, nonce: Date.now() })
-  }, [])
-
   // Ctrl/Cmd+F opens in-document search on the pane the user last touched.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -364,29 +326,14 @@ export function ReaderPage({ user, onUserChange, onLogout }: Props) {
     })
   }, [pendingLocate, activeDoc, handleLocateCounterpart])
 
-  // Chat citation badge: jump to the cited passage, switching documents if
-  // the citation points at another paper in the library.
-  const handleCitationJump = useCallback((source: SourceRefItem) => {
-    if (!source.document_id) return
-    const snippet = source.content.slice(0, 400)
-    if (source.document_id === activeId) {
-      void handleLocateCounterpart('translated', { selectedText: snippet, page: 1, pageCount: 1 })
-      return
-    }
-    setActiveId(source.document_id)
-    setLiteratureChatOpen(false)
-    setPendingLocate({ text: snippet, side: 'original' })
-  }, [activeId, handleLocateCounterpart])
-
   const handleUpload = useCallback(async (file: File) => {
     setUploading(true)
     try {
       const result = await uploadFile(file, { visionCheckEnabled: visionEnabled, visionCheckMode: visionMode })
       setActiveId(result.document_id)
-      setLiteratureChatOpen(false)
       await refreshSummaries()
     } catch (e: any) {
-      if (e?.code === 'config_required') setProfileOpen(true)
+      if (e?.code === 'config_required') setSettingsOpen(true)
       setNotice(`上传失败：${e?.message ?? String(e)}`)
     } finally {
       setUploading(false)
@@ -394,18 +341,12 @@ export function ReaderPage({ user, onUserChange, onLogout }: Props) {
   }, [refreshSummaries, visionEnabled, visionMode])
 
   const handleIncomingFile = useCallback((file: File) => {
-    if (/\.(?:zip|tar|tar\.gz|tgz)$/i.test(file.name)) {
-      setProjectArchive(file)
-      setProjectOpen(true)
+    if (!/\.pdf$/i.test(file.name)) {
+      setNotice('仅支持 PDF 文件。')
       return
     }
     void handleUpload(file)
   }, [handleUpload])
-
-  const handleProjectBuilt = useCallback(async (documentId: string) => {
-    setActiveId(documentId)
-    await refreshSummaries()
-  }, [refreshSummaries])
 
   const handleToggleFavorite = useCallback((docId: string) => {
     const next = favorites.includes(docId) ? favorites.filter((x) => x !== docId) : [...favorites, docId]
@@ -447,17 +388,6 @@ export function ReaderPage({ user, onUserChange, onLogout }: Props) {
     setOverrideRight({ url: makeDataUrl(artifact.url), name: artifact.name })
   }, [])
 
-  const handleLogout = useCallback(async () => {
-    try {
-      await logout()
-    } catch (e) {
-      console.error(e)
-    } finally {
-      onLogout()
-    }
-  }, [onLogout])
-
-  const chatRefs = activeDoc?.references ?? []
   const artifacts = activeDoc?.artifacts ?? []
   const logs = activeDoc?.logs ?? []
   const stages = activeDoc?.stages ?? []
@@ -475,7 +405,6 @@ export function ReaderPage({ user, onUserChange, onLogout }: Props) {
       {notice && <div className="app-notice" role="alert"><AlertCircle size={16} /><span>{notice}</span><button aria-label="关闭提示" onClick={() => setNotice(null)}>×</button></div>}
       {showSidebar ? (
         <Sidebar
-          user={user}
           documents={summaries}
           activeDocumentId={activeId}
           favorites={favorites}
@@ -483,42 +412,26 @@ export function ReaderPage({ user, onUserChange, onLogout }: Props) {
           artifacts={artifacts}
           logs={logs}
           theme={theme}
-          chatVisible={showChat}
           visionEnabled={visionEnabled}
           visionMode={visionMode}
           activeStatus={activeDoc?.status}
           onUpload={handleIncomingFile}
-          onSelect={(id) => {
-            setActiveId(id)
-            setLiteratureChatOpen(false)
-          }}
+          onSelect={setActiveId}
           onToggleFavorite={handleToggleFavorite}
           onDelete={handleDelete}
           onRename={(id, name) => void handleRename(id, name)}
           onCollapse={() => setShowSidebar(false)}
           onOpenInPane={handleOpenInPane}
-          onEditTex={() => setEditTexOpen(true)}
-          onNewProject={() => {
-            setProjectArchive(null)
-            setProjectOpen(true)
-          }}
-          onOpenProfile={() => setProfileOpen(true)}
-          onLogout={() => void handleLogout()}
-          onToggleChat={() => setShowChat((v) => !v)}
-          onToggleVision={cycleVision}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onToggleVision={() => setSettingsOpen(true)}
           onToggleTheme={() => {
             const next = theme === 'dark' ? 'light' : 'dark'
             setTheme(next)
             void persistPreferences({ theme: next })
           }}
           onRefreshStatus={refreshActive}
-          onOpenLiteratureChat={() => setLiteratureChatOpen(true)}
-          literatureChatOpen={literatureChatOpen}
           onSearchLocate={(hit) => {
-            if (hit.document_id !== activeId) {
-              setActiveId(hit.document_id)
-              setLiteratureChatOpen(false)
-            }
+            if (hit.document_id !== activeId) setActiveId(hit.document_id)
             setPendingLocate({ text: hit.snippet, side: hit.side })
           }}
         />
@@ -533,13 +446,6 @@ export function ReaderPage({ user, onUserChange, onLogout }: Props) {
       )}
 
       <main className="workspace">
-        {literatureChatOpen ? (
-          <LiteratureChatPage
-            documents={summaries}
-            onClose={() => setLiteratureChatOpen(false)}
-          />
-        ) : (
-        <>
         {activeDoc && (
           <ProgressBar
             status={activeDoc.status}
@@ -557,17 +463,15 @@ export function ReaderPage({ user, onUserChange, onLogout }: Props) {
           <div className="workspace-empty">
             <div className="empty-illustration"><UploadCloud size={32} /></div>
             <span className="eyebrow">你的本地论文工作台</span>
-            <h2>欢迎回来，{user.username}</h2>
-            <p className="muted">上传 PDF 或 LaTeX，PaperReader 会保留原文排版并生成可对照阅读的译文。</p>
-            <div className="latex-recommendation">arXiv 或论文提供 LaTeX 源码时，优先上传 LaTeX，可获得更好的结构与翻译质量。</div>
-            <input ref={emptyUploadRef} type="file" accept=".pdf,.tex,.zip,.tar,.tar.gz,.tgz" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) handleIncomingFile(file); event.currentTarget.value = '' }} />
-            <div className="empty-actions"><button className="btn primary" disabled={uploading} onClick={() => emptyUploadRef.current?.click()}>{uploading ? '正在上传…' : '选择论文'}</button><button className="btn" onClick={() => { setProjectArchive(null); setProjectOpen(true) }}>导入 TeX 项目</button></div>
-            {!user.settings.api_key_configured && <button className="config-callout" onClick={() => setProfileOpen(true)}><AlertCircle size={16} />开始前需要配置 AI 服务</button>}
+            <h2>开始阅读</h2>
+            <p className="muted">上传 PDF，PaperReader 会保留原文排版并生成可对照阅读的译文。</p>
+            <input ref={emptyUploadRef} type="file" accept=".pdf,application/pdf" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) handleIncomingFile(file); event.currentTarget.value = '' }} />
+            <div className="empty-actions"><button className="btn primary" disabled={uploading} onClick={() => emptyUploadRef.current?.click()}>{uploading ? '正在上传…' : '选择 PDF'}</button></div>
+            {!settings.api_key_configured && <button className="config-callout" onClick={() => setSettingsOpen(true)}><AlertCircle size={16} />开始前需要配置 AI 服务</button>}
           </div>
         ) : (
-          <>
           <PanelGroup direction="horizontal" autoSaveId="paperreader.layout">
-            <Panel defaultSize={showChat ? 35 : 50} minSize={20}>
+            <Panel defaultSize={50} minSize={20}>
               <PdfPane
                 ref={originalPaneRef}
                 title={sourceTitle}
@@ -579,7 +483,6 @@ export function ReaderPage({ user, onUserChange, onLogout }: Props) {
                 downloadName={activeDoc?.source_filename}
                 counterpartLabel="右侧译文"
                 onLocateCounterpart={(payload) => void handleLocateCounterpart('original', payload)}
-                onAskAI={(payload) => handleAskAI('original', payload)}
                 annotations={annotations}
                 onCreateAnnotation={handleCreateAnnotation}
                 onDeleteAnnotation={handleDeleteAnnotation}
@@ -595,7 +498,7 @@ export function ReaderPage({ user, onUserChange, onLogout }: Props) {
               />
             </Panel>
             <PanelResizeHandle className="resize-handle" />
-            <Panel defaultSize={showChat ? 35 : 50} minSize={20}>
+            <Panel defaultSize={50} minSize={20}>
               <PdfPane
                 ref={translatedPaneRef}
                 title={`译文 · ${translatedName}`}
@@ -607,7 +510,6 @@ export function ReaderPage({ user, onUserChange, onLogout }: Props) {
                 downloadName={translatedName}
                 counterpartLabel="左侧原文"
                 onLocateCounterpart={(payload) => void handleLocateCounterpart('translated', payload)}
-                onAskAI={(payload) => handleAskAI('translated', payload)}
                 annotations={annotations}
                 onCreateAnnotation={handleCreateAnnotation}
                 onDeleteAnnotation={handleDeleteAnnotation}
@@ -622,70 +524,21 @@ export function ReaderPage({ user, onUserChange, onLogout }: Props) {
                 onActivate={() => setActivePane('translated')}
               />
             </Panel>
-            {showChat && (
-              <>
-                <PanelResizeHandle className="resize-handle" />
-                <Panel defaultSize={30} minSize={20}>
-                  <ChatPanel
-                    documentId={activeId}
-                    references={chatRefs}
-                    onCollapse={() => setShowChat(false)}
-                    pendingQuote={pendingQuote}
-                    onQuoteConsumed={() => setPendingQuote(null)}
-                    onCitationJump={handleCitationJump}
-                  />
-                </Panel>
-              </>
-            )}
           </PanelGroup>
-          {!showChat && (
-            <button
-              className="chat-expand-btn"
-              aria-label="展开 AI Chat"
-              title="展开 AI 对话"
-              onClick={() => setShowChat(true)}
-            >
-              <PanelRightOpen size={18} />
-            </button>
-          )}
-          </>
-        )}
-        </>
         )}
       </main>
 
-      <ProjectDrawer
-        open={projectOpen}
-        onClose={() => {
-          setProjectOpen(false)
-          setProjectArchive(null)
-        }}
-        onBuilt={(id) => void handleProjectBuilt(id)}
-        visionCheckEnabled={visionEnabled}
-        visionCheckMode={visionMode}
-        initialArchive={projectArchive}
-        onArchiveConsumed={() => setProjectArchive(null)}
-      />
-      <ProfileModal
-        open={profileOpen}
-        user={user}
-        onClose={() => setProfileOpen(false)}
-        onUserChange={onUserChange}
+      <SettingsModal
+        open={settingsOpen}
+        settings={settings}
+        onClose={() => setSettingsOpen(false)}
+        onSettingsChange={onSettingsChange}
       />
       {activeId && activeDoc?.status === 'awaiting_review' && pendingReviews.length > 0 && (
         <ReviewModal
           documentId={activeId}
           proposals={pendingReviews}
           onResolved={() => {
-            void getDocumentStatus(activeId).then((d) => setDocCache((c) => ({ ...c, [activeId]: d })))
-          }}
-        />
-      )}
-      {activeId && editTexOpen && (
-        <TexEditorModal
-          documentId={activeId}
-          onClose={() => setEditTexOpen(false)}
-          onCompiled={() => {
             void getDocumentStatus(activeId).then((d) => setDocCache((c) => ({ ...c, [activeId]: d })))
           }}
         />

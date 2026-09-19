@@ -7,16 +7,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes_annotations import router as annotations_router
-from app.api.routes_auth import router as auth_router
-from app.api.routes_chat import router as chat_router
 from app.api.routes_data import router as data_router
 from app.api.routes_discovery import router as discovery_router
 from app.api.routes_document import router as document_router
-from app.api.routes_project import router as project_router
 from app.api.routes_recompile import router as recompile_router
 from app.api.routes_review import router as review_router
+from app.api.routes_settings import router as settings_router
 from app.api.routes_upload import router as upload_router
-from app.api.routes_setup import router as setup_router
 from app.core.config import settings
 from app.core.database import init_database
 
@@ -39,14 +36,11 @@ app.add_middleware(
 
 init_database()
 
-app.include_router(auth_router, prefix="/api", tags=["auth"])
-app.include_router(setup_router, prefix="/api", tags=["setup"])
+app.include_router(settings_router, prefix="/api", tags=["settings"])
 app.include_router(upload_router, prefix="/api", tags=["upload"])
 app.include_router(document_router, prefix="/api", tags=["document"])
 app.include_router(annotations_router, prefix="/api", tags=["annotations"])
 app.include_router(discovery_router, prefix="/api", tags=["discovery"])
-app.include_router(chat_router, prefix="/api", tags=["chat"])
-app.include_router(project_router, prefix="/api", tags=["project"])
 app.include_router(review_router, prefix="/api", tags=["review"])
 app.include_router(recompile_router, prefix="/api", tags=["recompile"])
 
