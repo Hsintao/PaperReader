@@ -125,7 +125,49 @@ export type UserSettings = {
   theme: 'light' | 'dark'
   vision_enabled: boolean
   vision_mode: 'auto' | 'manual'
+  translation_domain: TranslationDomain
   favorites: string[]
+}
+
+export type TranslationDomain = 'cs' | 'medical' | 'general'
+
+export const TRANSLATION_DOMAINS: {
+  id: TranslationDomain
+  label: string
+  hint: string
+}[] = [
+  {
+    id: 'cs',
+    label: '计算机科学',
+    hint: '面向计算机与人工智能研究：模型、系统、算法与数据集名称保留英文，代码标识符不翻译。'
+  },
+  {
+    id: 'medical',
+    label: '医学',
+    hint: '面向医学与生物医学研究：疾病、药物与检验指标使用规范医学译名，基因与量表缩写保留英文。'
+  },
+  {
+    id: 'general',
+    label: '通用学术',
+    hint: '面向各学科论文：使用规范学术书面语，尚无统一译名的术语保留英文原名。'
+  }
+]
+
+export type GlossaryTerm = {
+  en: string
+  zh: string
+  count: number
+  updated_at?: string | null
+}
+
+export type GlossarySnapshot = {
+  domain: TranslationDomain
+  label: string
+  updated_at?: string | null
+  term_count: number
+  pending_count: number
+  interval_minutes: number
+  terms: GlossaryTerm[]
 }
 
 export type ProviderSettingsDraft = {
@@ -207,6 +249,25 @@ export async function updateProviderSettings(
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
+  })
+}
+
+export async function getGlossary(domain: TranslationDomain): Promise<GlossarySnapshot> {
+  return apiFetch(`/api/glossary/${domain}`)
+}
+
+export async function refreshGlossary(domain: TranslationDomain): Promise<GlossarySnapshot> {
+  return apiFetch(`/api/glossary/${domain}/refresh`, { method: 'POST' })
+}
+
+export async function deleteGlossaryTerm(
+  domain: TranslationDomain,
+  en: string
+): Promise<GlossarySnapshot> {
+  return apiFetch(`/api/glossary/${domain}/terms`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ en })
   })
 }
 

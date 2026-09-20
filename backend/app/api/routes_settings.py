@@ -17,6 +17,7 @@ class UpdateSettingsRequest(BaseModel):
     theme: str | None = None
     vision_enabled: bool | None = None
     vision_mode: str | None = None
+    translation_domain: str | None = None
     favorites: list[str] | None = None
 
 
@@ -51,6 +52,7 @@ def put_settings(payload: UpdateSettingsRequest) -> dict:
         theme=payload.theme,
         vision_enabled=payload.vision_enabled,
         vision_mode=payload.vision_mode,
+        translation_domain=payload.translation_domain,
         favorites=payload.favorites,
     )
     return serialize_settings(values)

@@ -495,34 +495,60 @@ def test_translate_ir_injects_translation_context_into_prompts(monkeypatch):
 
     assert prompts
     assert all('The paper title is "Hello World".' in prompt for prompt in prompts)
+    assert all("@@SEG@@" in prompt for prompt in prompts)
 
 
-def test_build_translation_context_parses_glossary(monkeypatch):
+def test_translate_ir_injects_the_domain_into_prompts(monkeypatch):
+    prompts: list[str] = []
+
+    def fake_chat(message, system_prompt, **kwargs):
+        prompts.append(system_prompt)
+        if "@@SEG@@" in message:
+            parts = message.split("@@SEG@@")
+            return "@@SEG@@".join(f"[译]{p.strip()}" for p in parts)
+        return f"[译]{message.strip()}"
+
+    monkeypatch.setattr(translate_service.llm_client, "chat", fake_chat)
+
+    ir = _make_ir()
+    translate_service.translate_ir(ir, domain="medical")
+
+    assert prompts
+    assert all("医学与生物医学领域的研究人员与临床读者" in prompt for prompt in prompts)
+    assert all("心肌梗死" in prompt for prompt in prompts)
+    assert all("@@SEG@@" in prompt for prompt in prompts)
+
+
+def test_checkpoint_namespace_separates_domains():
+    assert translate_service._checkpoint_key("text", "ir:medical") != (
+        translate_service._checkpoint_key("text", "ir")
+    )
+
+
+def test_extract_document_terms_parses_glossary(monkeypatch):
     def fake_chat(message, system_prompt, **kwargs):
         assert "Paper title: DreamGuard" in message
         return '```json\n{"terms": [{"en": "world model", "zh": "世界模型"}, "bad", {"en": ""}], "extra": 1}\n```'
 
     monkeypatch.setattr(translate_service.llm_client, "chat", fake_chat)
 
-    context = translate_service.build_translation_context(
+    terms = translate_service.extract_document_terms(
         "DreamGuard", "We train a world model for agents.", override_api_key="k"
     )
 
-    assert 'The paper title is "DreamGuard"' in context
-    assert "world model = 世界模型" in context
-    assert "bad" not in context
+    assert terms == [("world model", "世界模型")]
 
 
-def test_build_translation_context_fails_open(monkeypatch):
+def test_extract_document_terms_fails_open(monkeypatch):
     def broken_chat(**kwargs):
         raise RuntimeError("provider down")
 
     monkeypatch.setattr(translate_service.llm_client, "chat", broken_chat)
-    assert translate_service.build_translation_context("T", "sample text") == ""
+    assert translate_service.extract_document_terms("T", "sample text") == []
 
     monkeypatch.setattr(
         translate_service.llm_client, "chat", lambda **kwargs: "not json at all"
     )
-    assert translate_service.build_translation_context("T", "sample text") == ""
+    assert translate_service.extract_document_terms("T", "sample text") == []
 
-    assert translate_service.build_translation_context("T", "   ") == ""
+    assert translate_service.extract_document_terms("T", "   ") == []

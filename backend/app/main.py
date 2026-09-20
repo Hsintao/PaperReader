@@ -10,11 +10,13 @@ from app.api.routes_annotations import router as annotations_router
 from app.api.routes_data import router as data_router
 from app.api.routes_discovery import router as discovery_router
 from app.api.routes_document import router as document_router
+from app.api.routes_glossary import router as glossary_router
 from app.api.routes_review import router as review_router
 from app.api.routes_settings import router as settings_router
 from app.api.routes_upload import router as upload_router
 from app.core.config import settings
 from app.core.database import init_database
+from app.services.glossary_service import start_refresh_scheduler
 
 
 # Windows' MIME registry can classify ES module files as text/plain. PDF.js
@@ -34,8 +36,10 @@ app.add_middleware(
 )
 
 init_database()
+start_refresh_scheduler()
 
 app.include_router(settings_router, prefix="/api", tags=["settings"])
+app.include_router(glossary_router, prefix="/api", tags=["glossary"])
 app.include_router(upload_router, prefix="/api", tags=["upload"])
 app.include_router(document_router, prefix="/api", tags=["document"])
 app.include_router(annotations_router, prefix="/api", tags=["annotations"])

@@ -99,3 +99,20 @@ def test_vision_check_defaults_off_and_keeps_explicit_choice(isolated_storage):
         assert updated.status_code == 200
         assert updated.json()["vision_enabled"] is True
         assert client.get("/api/settings/me").json()["vision_enabled"] is True
+
+
+def test_translation_domain_roundtrip_and_validation(isolated_storage):
+    with TestClient(app) as client:
+        assert client.get("/api/settings/me").json()["translation_domain"] == "general"
+
+        updated = client.put("/api/settings/me", json={"translation_domain": "medical"})
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["translation_domain"] == "medical"
+
+    with TestClient(app) as second:
+        assert second.get("/api/settings/me").json()["translation_domain"] == "medical"
+        assert (
+            second.put("/api/settings/me", json={"translation_domain": "astrology"})
+            .json()["translation_domain"]
+            == "general"
+        )

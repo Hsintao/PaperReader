@@ -56,9 +56,19 @@ from app.services.stage_tracker import (
     with_stage,
 )
 from app.services.translate_service import (
-    build_translation_context,
+    extract_document_terms,
     translate_concise,
     translate_ir,
+)
+from app.services.glossary_service import (
+    glossary_terms_for_prompt,
+    record_candidate_terms,
+)
+from app.services.translation_prompts import (
+    DOMAINS,
+    format_glossary_context,
+    merge_glossary_terms,
+    normalize_domain,
 )
 from app.services.vision_check_service import run_vision_check_on_markdown
 from app.services.app_settings import AppSettings
@@ -542,6 +552,7 @@ def _render_translated_pdf(
     override_base_url: str | None = None,
     override_model: str | None = None,
     translation_context: str = "",
+    translation_domain: str = "",
 ) -> Path:
     """Lay out every translated block on its source page and write the PDF."""
     crops = prepare_formula_crops(
@@ -558,6 +569,7 @@ def _render_translated_pdf(
                 override_base_url=override_base_url,
                 override_model=override_model,
                 translation_context=translation_context,
+                domain=translation_domain,
             ),
         )
         if refit:
@@ -603,6 +615,7 @@ def _translate_and_render(
     override_api_key: str | None,
     override_base_url: str | None,
     override_model: str | None,
+    translation_domain: str = "",
 ) -> None:
     """Translate the structured blocks and lay the result out on the source pages."""
     ir_blocks, frames, geometry_notes = _build_ir_and_frames(
@@ -615,14 +628,21 @@ def _translate_and_render(
             "No structured layout could be extracted from this PDF, so no "
             "positioned translation can be produced."
         )
-    translation_context = build_translation_context(
+    domain = normalize_domain(translation_domain)
+    record.metadata["translation_domain"] = domain
+    document_terms = extract_document_terms(
         display_title,
         record.extracted_text,
         override_api_key=override_api_key,
         override_base_url=override_base_url,
         override_model=override_model,
     )
+    translation_context = format_glossary_context(
+        display_title,
+        merge_glossary_terms(glossary_terms_for_prompt(domain), document_terms),
+    )
     with with_stage(record, "translate"):
+        record.logs.append(f"Translation domain: {DOMAINS[domain].label}")
         record.logs.append(f"Parsed {len(ir_blocks)} structured block(s)")
         # A paragraph the parser reported as several adjacent regions is
         # translated once and distributed back over those regions. The text
@@ -657,9 +677,12 @@ def _translate_and_render(
                 f"翻译 {done}/{total} 个片段",
             ),
             translation_context=translation_context,
+            domain=domain,
+            checkpoint_namespace=f"ir:{domain}",
         )
         for note in notes:
             record.logs.append(f"Translation: {note}")
+        record_candidate_terms(domain, document_terms, record.document_id)
         translated_segments = collect_translatable_strings(ir_blocks)
         alignment_path = save_exact_alignment(record, source_segments, translated_segments)
         if alignment_path:
@@ -682,6 +705,7 @@ def _translate_and_render(
             override_base_url=override_base_url,
             override_model=override_model,
             translation_context=translation_context,
+            translation_domain=domain,
         )
         _publish_translated_pdf(record, rendered, output_dir)
 
@@ -727,6 +751,9 @@ def process_document(
         else None
     )
     vision_model = provider_settings.vision_model if provider_settings else settings.vision_model
+    translation_domain = normalize_domain(
+        provider_settings.translation_domain if provider_settings else None
+    )
     record.status = "processing"
     record.logs.append(
         f"Retry processing started from {resume_from}" if resume_from else "Processing started"
@@ -769,6 +796,7 @@ def process_document(
                     override_api_key=override_api_key,
                     override_base_url=override_base_url,
                     override_model=override_model,
+                    translation_domain=translation_domain,
                 )
                 record.status = "done"
                 record.failure = None
@@ -793,6 +821,7 @@ def process_document(
                     override_api_key=override_api_key,
                     override_base_url=override_base_url,
                     override_model=override_model,
+                    translation_domain=translation_domain,
                 )
                 record.status = "done"
                 record.failure = None
@@ -928,6 +957,7 @@ def process_document(
             override_api_key=override_api_key,
             override_base_url=override_base_url,
             override_model=override_model,
+            translation_domain=translation_domain,
         )
 
         record.status = "done"

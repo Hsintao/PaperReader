@@ -27,6 +27,7 @@ PaperReader is a full-stack bilingual paper-reading app. Upload a PDF; PaperRead
 - PDF-only upload: `.pdf` files are parsed with the MinerU cloud API or the built-in local text-layer extractor
 - PDF parsing via the MinerU cloud API — no local OCR or GPU required
 - Concurrent LLM translation with validated per-chunk checkpoints and automatic retry; failed documents resume from the last checkpoint instead of starting over
+- Translation domain setting (computer science / medicine / general academic) that selects the translation prompt and its terminology rules; each domain keeps its own glossary, which accumulates the terms learned from translated documents and is consolidated on a fixed interval
 - Page-faithful translation layout: every block is pinned to its source coordinates with the source's own font size, weight, alignment and line spacing; when the translation does not fit it first uses the whitespace below, then shrinks that block only, then continues into a region the parser dropped, and finally falls back to the source wording
 - Figures, block formulas, captions and running heads are reused verbatim from the source page; tables keep their vector rules and only the translated cell text is replaced
 - Blocks are verified after composition: any source text that survived removal reverts that block, and a page whose original text would be lost falls back to the untouched source page

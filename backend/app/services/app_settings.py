@@ -19,6 +19,7 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from app.core.config import settings
+from app.services.translation_prompts import normalize_domain
 
 
 _LOCK = threading.RLock()
@@ -48,6 +49,7 @@ class AppSettings:
     theme: str = "light"
     vision_enabled: bool = False
     vision_mode: str = "auto"
+    translation_domain: str = "general"
     favorites: list[str] = field(default_factory=list)
 
 
@@ -94,6 +96,7 @@ def _coerce(raw: dict) -> AppSettings:
         else:
             value = str(value)
         setattr(current, name, value)
+    current.translation_domain = normalize_domain(current.translation_domain)
     return current
 
 
@@ -140,6 +143,7 @@ def update_settings(
     theme: str | None = None,
     vision_enabled: bool | None = None,
     vision_mode: str | None = None,
+    translation_domain: str | None = None,
     favorites: list[str] | None = None,
 ) -> AppSettings:
     current = load_settings()
@@ -177,6 +181,8 @@ def update_settings(
         current.vision_enabled = bool(vision_enabled)
     if vision_mode is not None:
         current.vision_mode = vision_mode
+    if translation_domain is not None:
+        current.translation_domain = translation_domain
     if favorites is not None:
         current.favorites = list(favorites)
 
@@ -184,6 +190,7 @@ def update_settings(
         current.theme = "light"
     if current.vision_mode not in _VISION_MODES:
         current.vision_mode = "auto"
+    current.translation_domain = normalize_domain(current.translation_domain)
     if current.pdf_parser not in _PARSERS:
         current.pdf_parser = "local"
     if not current.base_url:
@@ -240,5 +247,6 @@ def serialize_settings(value: AppSettings) -> dict:
         "theme": value.theme,
         "vision_enabled": value.vision_enabled,
         "vision_mode": value.vision_mode,
+        "translation_domain": value.translation_domain,
         "favorites": value.favorites,
     }

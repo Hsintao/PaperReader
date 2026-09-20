@@ -75,6 +75,12 @@ class Settings(BaseSettings):
     # Hard cap for a single prose segment. MinerU can emit a whole page as one
     # paragraph; pre-splitting it avoids model output-limit truncation.
     translate_segment_max_chars: int = Field(default=2000, alias="TRANSLATE_SEGMENT_MAX_CHARS")
+    # How often the per-domain terminology glossary folds newly learned terms
+    # into the stored glossary. Applied by a background thread; the settings
+    # API also catches up on a missed interval after a restart.
+    glossary_refresh_interval_minutes: int = Field(
+        default=30, alias="GLOSSARY_REFRESH_INTERVAL_MINUTES"
+    )
 
     cors_origins_raw: str = Field(default="http://localhost:5173", alias="CORS_ORIGINS")
 

@@ -1376,8 +1376,17 @@ textarea { resize: vertical; }
 .secret-field:focus-within { border-color: var(--accent); }
 .secret-field input { flex: 1; border: 0; background: transparent; }
 .segmented-control { display: grid; grid-template-columns: 1fr 1fr; padding: 4px; background: var(--bg); border: 1px solid var(--border); border-radius: 9px; }
+.segmented-control.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .segmented-control button { padding: 7px 10px; color: var(--text-soft); }
 .segmented-control button.active { color: var(--accent); background: var(--bg-soft); box-shadow: var(--shadow-sm); font-weight: 600; }
+.glossary-meta { margin: 0; color: var(--muted); font-size: 12px; }
+.glossary-list { display: flex; flex-direction: column; max-height: 240px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+.glossary-term { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--border); font-size: 12px; }
+.glossary-term:last-child { border-bottom: 0; }
+.glossary-term-source { color: var(--text-soft); overflow-wrap: anywhere; }
+.glossary-term-target { font-weight: 600; overflow-wrap: anywhere; }
+.glossary-term-count { color: var(--muted); font-variant-numeric: tabular-nums; }
+.glossary-empty { margin: 0; padding: 14px; color: var(--muted); font-size: 12px; text-align: center; border: 1px dashed var(--border); border-radius: var(--radius); }
 .mineru-fields { padding: 14px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--bg-elev); }
 .danger-check { color: var(--danger); }
 

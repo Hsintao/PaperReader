@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
-import { Bot, BookOpen, X } from 'lucide-react'
+import { Bot, BookOpen, Languages, X } from 'lucide-react'
 import {
   updateProviderSettings,
   updateSettings,
   type ProviderSettingsDraft,
+  type TranslationDomain,
   type UserSettings
 } from '../lib/api'
 import { ProviderSettingsForm } from './ProviderSettingsForm'
+import { TranslationSettingsPanel } from './TranslationSettingsPanel'
 
 type Props = {
   open: boolean
@@ -15,7 +17,7 @@ type Props = {
   onSettingsChange: (settings: UserSettings) => void
 }
 
-type Tab = 'providers' | 'reading'
+type Tab = 'providers' | 'translation' | 'reading'
 
 function providerDraft(settings: UserSettings): ProviderSettingsDraft {
   return {
@@ -34,21 +36,27 @@ function providerDraft(settings: UserSettings): ProviderSettingsDraft {
 export function SettingsModal({ open, settings, onClose, onSettingsChange }: Props) {
   const [tab, setTab] = useState<Tab>('providers')
   const [reading, setReading] = useState<UserSettings>(settings)
+  const [domain, setDomain] = useState<TranslationDomain>(settings.translation_domain)
   const [providers, setProviders] = useState<ProviderSettingsDraft>(() => providerDraft(settings))
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const closeButtonRef = useRef<HTMLButtonElement | null>(null)
 
+  // Seed the working copies when the dialog opens. Saving updates `settings`
+  // too, so depending on it here would reset the active tab and drop the
+  // confirmation right after a save.
   useEffect(() => {
     if (!open) return
     setTab(settings.api_key_configured ? 'reading' : 'providers')
     setReading(settings)
+    setDomain(settings.translation_domain)
     setProviders(providerDraft(settings))
     setMessage(null)
     setError(null)
     window.setTimeout(() => closeButtonRef.current?.focus(), 0)
-  }, [open, settings])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -66,6 +74,9 @@ export function SettingsModal({ open, settings, onClose, onSettingsChange }: Pro
       if (tab === 'providers') {
         next = await updateProviderSettings(providers)
         setProviders(providerDraft(next))
+      } else if (tab === 'translation') {
+        next = await updateSettings({ translation_domain: domain })
+        setDomain(next.translation_domain)
       } else {
         next = await updateSettings({
           theme: reading.theme,
@@ -88,10 +99,12 @@ export function SettingsModal({ open, settings, onClose, onSettingsChange }: Pro
         <div className="profile-layout">
           <nav className="profile-tabs" aria-label="设置导航">
             <button className={tab === 'providers' ? 'active' : ''} onClick={() => setTab('providers')}><Bot size={16} />AI 服务{!settings.api_key_configured && <span className="attention-dot" />}</button>
+            <button className={tab === 'translation' ? 'active' : ''} onClick={() => setTab('translation')}><Languages size={16} />翻译设置</button>
             <button className={tab === 'reading' ? 'active' : ''} onClick={() => setTab('reading')}><BookOpen size={16} />阅读偏好</button>
           </nav>
           <div className="modal-body profile-body">
             {tab === 'providers' && <ProviderSettingsForm value={providers} onChange={setProviders} apiKeyConfigured={settings.api_key_configured} mineruKeyConfigured={settings.mineru_api_key_configured} allowClear />}
+            {tab === 'translation' && <TranslationSettingsPanel domain={domain} onDomainChange={setDomain} />}
             {tab === 'reading' && <section className="profile-section borderless"><div className="settings-section-heading"><div><h3>阅读体验</h3><p>这些偏好保存在本机数据目录。</p></div></div><div className="field-grid two"><label className="field"><span>主题</span><select value={reading.theme} onChange={(e) => setReading((v) => ({ ...v, theme: e.target.value as 'light' | 'dark' }))}><option value="light">浅色</option><option value="dark">深色</option></select></label><label className="field"><span>视觉校验</span><select value={reading.vision_enabled ? reading.vision_mode : 'off'} onChange={(e) => { const next = e.target.value; setReading((v) => ({ ...v, vision_enabled: next !== 'off', vision_mode: next === 'manual' ? 'manual' : 'auto' })) }}><option value="auto">开启 · 自动</option><option value="manual">开启 · 人工</option><option value="off">关闭</option></select></label></div></section>}
             {(message || error) && <div className={error ? 'form-error' : 'form-success'} role="status">{error || message}</div>}
           </div>
