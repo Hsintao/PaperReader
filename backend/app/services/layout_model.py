@@ -1101,8 +1101,13 @@ def _split_line_runs(
     runs: list[list[tuple[int, list]]] = []
     for page_index, line in matched:
         box = _line_box(line)
-        if runs:
-            previous_page, previous_line = runs[-1][-1]
+        # Extend the run this line continues. Lines arrive in top-down page
+        # order, so a paragraph that continues in the next column has the other
+        # column's lines in between; looking back for the run in *this* column
+        # keeps such a continuation whole instead of orphaning its first line.
+        target = None
+        for run in reversed(runs):
+            previous_page, previous_line = run[-1]
             previous = _line_box(previous_line)
             narrower = min(box[2] - box[0], previous[2] - previous[0])
             overlap = min(box[2], previous[2]) - max(box[0], previous[0])
@@ -1115,9 +1120,12 @@ def _split_line_runs(
                 and same_column
                 and gap <= max(60.0, 6.0 * (previous[3] - previous[1]))
             ):
-                runs[-1].append((page_index, line))
-                continue
-        runs.append([(page_index, line)])
+                target = run
+                break
+        if target is None:
+            runs.append([(page_index, line)])
+        else:
+            target.append((page_index, line))
     return runs
 
 
@@ -1516,6 +1524,9 @@ _MIN_PROSE_LINES = 2
 _MIN_PROSE_LETTER_RATIO = 0.55
 _MIN_LABEL_CHARS = 26
 _SENTENCE_ENDINGS = (".", "\u3002", "!", "\uff01", "?", "\uff1f", ":", "\uff1a", ";", "\uff1b")
+# Punctuation that can only close a sentence; unlike ":" or ";", which also
+# end labels such as an axis caption.
+_SENTENCE_CLOSING = (".", "\u3002", "!", "\uff01", "?", "\uff1f")
 
 
 def _prose_text_from_lines(lines: Sequence) -> str:
@@ -1550,6 +1561,10 @@ def _is_edge_label(text: str) -> bool:
     stripped = text.strip()
     normalized = _normalize_latex(stripped)
     if len(normalized) >= _MIN_LABEL_CHARS:
+        return False
+    if stripped.endswith(_SENTENCE_CLOSING):
+        # A short line that closes a sentence is the paragraph's own tail, not
+        # a label sitting beside it.
         return False
     if stripped[:1].islower() and len(normalized) >= 16:
         return False

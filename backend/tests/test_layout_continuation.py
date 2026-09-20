@@ -804,3 +804,70 @@ def test_alignment_split_keeps_each_formula_with_its_region(tmp_path):
     assert not any(not isinstance(run, TextRun) for run in second.runs)
     combined = first.source_text + " " + second.source_text
     assert combined.split() == declared.split()
+
+
+def test_continuation_after_a_neighbouring_column_line_stays_one_run(tmp_path):
+    """A paragraph continued across columns keeps its first line.
+
+    The page is scanned top-down, so a line of the neighbouring column sits
+    between a paragraph's first line and its continuation. That used to split
+    the paragraph into an orphan first line -- too short to pass the prose
+    test on its own -- and the rest, leaving the first line in English.
+    """
+    from app.services.mineru_service import MinerUResult
+    from app.services.mineru_layout import plain_paragraph_text
+
+    source = tmp_path / "interleaved-continuation.pdf"
+    canvas = pdf_canvas.Canvas(str(source), pagesize=letter)
+    canvas.setFont("Helvetica", 9)
+    # Right column: the continuation of a paragraph from the previous column.
+    for y, text in zip(
+        (700, 688, 676),
+        (
+            "able. The others are implemented by the authors'",
+            "source codes, and all the tone mapping methods use",
+            "the default parameters as provided in the papers.",
+        ),
+    ):
+        canvas.drawString(330, y, text)
+    # Left column: an unclaimed line whose text falls between the first two
+    # right-column lines in top-down page order.
+    canvas.drawString(72, 694, "shown in Fig. 8(h).")
+    # One parsed block so the page is not entirely unparsed.
+    canvas.drawString(72, 720, "A parsed paragraph that the parser did report.")
+    canvas.showPage()
+    canvas.save()
+
+    payload = {
+        "pdf_info": [
+            {
+                "page_size": [612.0, 792.0],
+                "para_blocks": [
+                    _text_block(
+                        "A parsed paragraph that the parser did report.", 68.0, 82.0
+                    )
+                ],
+            }
+        ]
+    }
+    result = MinerUResult(
+        markdown="A parsed paragraph that the parser did report.",
+        mode_label="fixture",
+        layout_payload=payload,
+    )
+    blocks, frames, _notes = document_pipeline._build_ir_and_frames(result, source)
+
+    layout_model.synthesize_unclaimed_paragraphs(frames, blocks)
+
+    recovered = [
+        block
+        for block in blocks
+        if isinstance(block, Paragraph)
+        and "able. The others are implemented" in (plain_paragraph_text(block) or "")
+    ]
+    assert len(recovered) == 1
+    text = plain_paragraph_text(recovered[0])
+    assert "default parameters as provided" in text
+    assert "shown in Fig" not in text
+    # The box reaches the paragraph's first line, whose top is above y=700.
+    assert recovered[0].bbox[3] > 700.0
