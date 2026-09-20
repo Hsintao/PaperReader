@@ -29,6 +29,7 @@ testexamples/
 data-qa/
 redbook.md
 .zcode/
+.worktrees/
 
 *.zip
 PaperReader-v*.zip
