@@ -30,7 +30,7 @@ from app.services.layout_fit import (
     SMALL_TITLE_SIZE,
     TITLE_SIZES,
     Rect,
-    _escape,
+    _inline_markup,
     formula_key,
 )
 from app.services.layout_model import PageFrame
@@ -81,7 +81,7 @@ def _runs_markup(runs, page_index: int, crops, size: float) -> str:
     parts: list[str] = []
     for run in runs:
         if isinstance(run, TextRun):
-            parts.append(_escape(run.text))
+            parts.append(_inline_markup(run.text))
         elif isinstance(run, InlineMath):
             path = crops.paths.get(formula_key(page_index, run.bbox))
             if path:
@@ -91,7 +91,7 @@ def _runs_markup(runs, page_index: int, crops, size: float) -> str:
                     f'<img src="{path}" width="{width:.2f}" height="{height:.2f}" valign="-2"/>'
                 )
             elif run.latex:
-                parts.append(_escape(f"${run.latex}$"))
+                parts.append(_inline_markup(f"${run.latex}$"))
     return "".join(parts)
 
 
@@ -127,7 +127,7 @@ def _table_flowable(table: Table, content_width: float, style: ParagraphStyle):
         text = cell.translated.strip() or cell.text
         grid[row_of(cell.bbox[1])][column_of(cell.bbox[0])] = text
     data = [
-        [RLParagraph(_escape(text) or " ", style) for text in row] for row in grid
+        [RLParagraph(_inline_markup(text) or " ", style) for text in row] for row in grid
     ]
     widths = [content_width / len(columns)] * len(columns)
     flowable = RLTable(data, colWidths=widths)
@@ -169,10 +169,10 @@ def reflow_page_pdf(
                     leading=size * 1.3,
                 )
             if block.text.strip():
-                story.append(RLParagraph(_escape(block.text), level_style))
+                story.append(RLParagraph(_inline_markup(block.text), level_style))
         elif isinstance(block, Author):
             if block.text.strip():
-                story.append(RLParagraph(_escape(block.text), styles["caption"]))
+                story.append(RLParagraph(_inline_markup(block.text), styles["caption"]))
         elif isinstance(block, IRParagraph):
             markup = _runs_markup(block.runs, page_index, crops, DEFAULT_BODY_SIZE)
             if markup.strip():
@@ -184,22 +184,22 @@ def reflow_page_pdf(
                 if not markup.strip():
                     continue
                 marker = f"{index + 1}. " if ordered else "\u2022 "
-                story.append(RLParagraph(_escape(marker) + markup, styles["body"]))
+                story.append(RLParagraph(_inline_markup(marker) + markup, styles["body"]))
         elif isinstance(block, DisplayMath):
             image = _region_image(crops, page_index, block.bbox, content_width)
             if image is not None:
                 story.append(image)
             elif block.latex.strip():
-                story.append(RLParagraph(_escape(block.latex), styles["caption"]))
+                story.append(RLParagraph(_inline_markup(block.latex), styles["caption"]))
         elif isinstance(block, Image):
             image = _region_image(crops, page_index, block.bbox, content_width)
             if image is not None:
                 story.append(image)
             if block.caption.strip():
-                story.append(RLParagraph(_escape(block.caption), styles["caption"]))
+                story.append(RLParagraph(_inline_markup(block.caption), styles["caption"]))
         elif isinstance(block, Table):
             if block.caption.strip():
-                story.append(RLParagraph(_escape(block.caption), styles["caption"]))
+                story.append(RLParagraph(_inline_markup(block.caption), styles["caption"]))
             flowable = _table_flowable(block, content_width, styles["cell"])
             if flowable is not None:
                 story.append(flowable)

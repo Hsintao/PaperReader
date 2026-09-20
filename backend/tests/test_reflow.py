@@ -159,6 +159,18 @@ def test_reflowed_pages_do_not_count_as_failures(tmp_path):
     assert report.failed == []
 
 
+def test_reflow_draws_preserved_subscripts_instead_of_their_tags(tmp_path):
+    block = _translated_block(
+        "本文提出了一种混合ℓ<sub>1</sub>-ℓ<sub>0</sub>分解模型。", "Body paragraph."
+    )
+    output, report = _render(tmp_path, [block])
+
+    assert report.pages[0].status == "reflow"
+    text = _page_text(output)
+    assert "ℓ" in text
+    assert "<sub>" not in text and "</sub>" not in text
+
+
 def test_masked_overlay_keeps_bbox_anchor_when_removal_is_unclean(tmp_path, monkeypatch):
     """When content-stream surgery fails, the translation is drawn anchored at
     the source boxes over white masks, and the page count is unchanged."""

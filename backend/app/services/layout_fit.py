@@ -142,6 +142,64 @@ def _escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+# The translation contract keeps inline <sub>/<sup>/<br> tags from the source,
+# so the renderer turns them back into typography instead of escaping them into
+# visible markup. A script marker is short and holds no Chinese; the model
+# sometimes drags a tag pair onto a whole clause, and rendering that as a
+# subscript would garble the line, so those pairs lose their tags instead.
+_INLINE_TAG_RE = re.compile(r"</?(?:sub|sup)\s*>|<br\s*/?>", re.IGNORECASE)
+_REPORTLAB_TAG = {"sub": "sub", "sup": "super"}
+_SCRIPT_MAX_CHARS = 12
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
+
+def _is_script_content(content: str) -> bool:
+    stripped = content.strip()
+    if not stripped or len(stripped) > _SCRIPT_MAX_CHARS:
+        return False
+    return _CJK_RE.search(stripped) is None
+
+
+def _inline_markup(text: str) -> str:
+    """Escape reportlab markup, keeping the inline tags the translation keeps.
+
+    ``<sub>``/``<sup>``/``<br>`` become reportlab's own tags; every other
+    angle bracket stays escaped. Unbalanced tags are dropped rather than
+    escaped, because a stray tag is a model artifact and rendering it as
+    literal text is the defect this function exists to remove.
+    """
+    parts: list[str] = []
+    position = 0
+    open_index = -1
+    open_end = 0
+    open_name = ""
+    for match in _INLINE_TAG_RE.finditer(text):
+        parts.append(_escape(text[position:match.start()]))
+        position = match.end()
+        lowered = match.group(0).lower()
+        if lowered.startswith("<br"):
+            parts.append("<br/>")
+            continue
+        name = "sub" if "sub" in lowered else "sup"
+        if lowered.startswith("</"):
+            if open_name == name:
+                if _is_script_content(text[open_end:match.start()]):
+                    parts.append(f"</{_REPORTLAB_TAG[name]}>")
+                else:
+                    parts[open_index] = ""
+                open_name = ""
+                open_index = -1
+        elif not open_name:
+            open_index = len(parts)
+            open_end = match.end()
+            open_name = name
+            parts.append(f"<{_REPORTLAB_TAG[name]}>")
+    parts.append(_escape(text[position:]))
+    if open_name:
+        parts[open_index] = ""
+    return "".join(parts)
+
+
 def _normalize(text: str) -> str:
     return re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", text or "").lower()
 
@@ -280,7 +338,7 @@ class TextMeasurer:
                     f'valign="-2"/>'
                 )
             else:
-                parts.append(_escape(fragment.text))
+                parts.append(_inline_markup(fragment.text))
         return "".join(parts)
 
     def paragraph(

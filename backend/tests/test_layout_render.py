@@ -124,6 +124,31 @@ def test_rendered_page_keeps_size_and_replaces_only_translated_text(tmp_path):
     assert "Page 3" in text
 
 
+def test_translated_page_draws_preserved_subscripts_instead_of_tags(tmp_path):
+    source = tmp_path / "subscripts.pdf"
+    _source(source, ["A hybrid l1-l0 layer decomposition model."], footer="1")
+    blocks, frames, plans, crops, _measurer = _plans(
+        source, translations=["一种混合ℓ<sub>1</sub>-ℓ<sub>0</sub>分解模型。"]
+    )
+    try:
+        output = tmp_path / "translated.pdf"
+        report = layout_render.render_document(
+            source_pdf=source,
+            plans=plans,
+            frames=frames,
+            blocks=blocks,
+            output_pdf=output,
+            crops=crops,
+        )
+    finally:
+        crops.close()
+
+    assert [page.status for page in report.pages] == ["ok"]
+    text = _page_text(output)
+    assert "ℓ" in text
+    assert "<sub>" not in text and "</sub>" not in text
+
+
 def test_translation_uses_whitespace_below_before_shrinking(tmp_path):
     source = tmp_path / "roomy.pdf"
     _source(source, ["Short source line."], caption="Figure 1. Caption.", footer="1")
