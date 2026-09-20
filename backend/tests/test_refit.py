@@ -10,9 +10,9 @@ from app.services.mineru_layout import InlineMath, Paragraph, Table, TableCell, 
 
 _LONG_TRANSLATION = (
     "这段译文非常非常长，既放不下也无处可去，因此只能在自身区域内缩小字号，"
-    "但即使缩到下限也还是放不下，于是整块只能保留原文，等待简洁重试来救它。"
-    "再补充一些内容让它确实超过盒子的容量下限。"
-)
+    "但即使缩到下限也还是放不下，于是整页只能回退为原文，等待简洁重试来救它。"
+    "再补充一些内容让它确实超过整页的容量下限。"
+) * 60
 
 
 def _tight_source(path) -> None:
@@ -62,17 +62,21 @@ def _neighbour() -> Paragraph:
 def test_refit_replaces_unfitting_block(tmp_path):
     block = _tight_paragraph(_LONG_TRANSLATION)
     frames, plans = _plan(tmp_path, [block, _neighbour()])
-    plan = plans[0].blocks[0]
-    assert plan.status == "original"
-    assert "fit" in plan.reason
+    # The page fell back whole because its text does not fit at the 6pt floor.
+    assert plans[0].status == "original"
+    assert "fit" in plans[0].reason
 
     calls: list[str] = []
     retried = document_pipeline.refit_with_concise_translations(
         plans, translate_fn=lambda source: calls.append(source) or "短译文。"
     )
 
-    assert retried == 1
-    assert calls == ["A bounded paragraph that must fit in place."]
+    # Every prose block of the fallen-back page is retried with a brevity budget.
+    assert retried == 2
+    assert calls == [
+        "A bounded paragraph that must fit in place.",
+        "Neighbour block below it.",
+    ]
     assert block.runs[0].text == "短译文。"
 
     # After re-planning, the concise translation fits inside the box.
@@ -106,7 +110,7 @@ def test_refit_skips_blocks_with_inline_formulas(tmp_path):
         source_text="A bounded paragraph that must fit in place.",
     )
     _frames, plans = _plan(tmp_path, [block, _neighbour()])
-    assert plans[0].blocks[0].status == "original"
+    assert plans[0].status == "original"
 
     def forbidden(source):
         raise AssertionError("blocks with inline formulas must not be compressed")
@@ -155,6 +159,7 @@ def test_refit_replaces_unfitting_cell(tmp_path):
 def test_refit_tolerates_translate_failures(tmp_path):
     block = _tight_paragraph(_LONG_TRANSLATION)
     _frames, plans = _plan(tmp_path, [block, _neighbour()])
+    assert plans[0].status == "original"
 
     def broken(source):
         raise RuntimeError("provider unavailable")

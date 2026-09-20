@@ -168,13 +168,13 @@ def test_translation_uses_whitespace_below_before_shrinking(tmp_path):
 
     plan = plans[0].blocks[0]
     assert plan.status == "translated"
-    # Roomy pages may grow slightly past the default size, within the ceiling.
-    assert plan.size >= plan.baseline_size
-    assert plan.size <= layout_fit.SIZE_CEIL_RATIO * plan.baseline_size + 0.05
+    # A short translation is never enlarged: it keeps the template size and
+    # grows its box downwards instead.
+    assert plan.size == plan.baseline_size
     assert plan.target[1] < plan.source_rect[1]  # the box grew downwards
 
 
-def test_block_shrinks_in_place_when_space_is_bounded(tmp_path):
+def test_block_grows_into_the_gap_above_its_neighbour(tmp_path):
     source = tmp_path / "tight.pdf"
     _source(source, ["Line one of a bounded paragraph that must fit."], footer="1")
     frames = layout_model.measure_pages(source)
@@ -204,8 +204,10 @@ def test_block_shrinks_in_place_when_space_is_bounded(tmp_path):
 
     plan = plans[0].blocks[0]
     assert plan.status == "translated"
-    assert plan.size < plan.baseline_size
-    assert plan.size >= layout_fit.MIN_SIZE_RATIO * plan.baseline_size
+    # The page keeps its template size and the block grows down to the
+    # neighbour instead of shrinking on its own.
+    assert plan.size == plan.baseline_size
+    assert plan.target[3] == plan.source_rect[3]
     assert plan.target[1] <= 680.5
 
 

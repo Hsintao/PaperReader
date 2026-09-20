@@ -553,29 +553,30 @@ def _replace_block_text(block, text: str) -> None:
             first = False
 
 
-def refit_with_concise_translations(plans: list, *, translate_fn, max_blocks: int = _REFIT_MAX_BLOCKS) -> int:
-    """Re-translate blocks that did not fit their box with a brevity budget.
+def refit_with_concise_translations(
+    plans: list, *, translate_fn, max_blocks: int = _REFIT_MAX_BLOCKS
+) -> int:
+    """Re-translate the blocks of a page that fell back whole with a brevity budget.
 
-    The layout search reports these blocks as ``original`` with a fit-related
-    reason. A shorter translation usually lands inside the box on the second
-    planning pass. Returns how many blocks received a new translation.
+    The page solver reports a page as ``original`` when its body text cannot fit
+    even at the 6pt floor. A shorter translation of that page's prose usually
+    lands inside the page on the second planning pass. Returns how many blocks
+    received a new translation.
     """
     candidates: list = []
     for plan in plans:
-        for block_plan in plan.blocks:
-            if (
-                block_plan.status == "original"
-                and "fit" in block_plan.reason
-                and block_plan.block is not None
-                and _plain_text_block(block_plan.block)
-            ):
-                candidates.append(block_plan)
+        if plan.status == "original" and "fit" in (plan.reason or ""):
+            for block_plan in plan.blocks:
+                if (
+                    block_plan.status == "translated"
+                    and block_plan.block is not None
+                    and _plain_text_block(block_plan.block)
+                ):
+                    candidates.append(block_plan)
+        # A cell the renderer had to keep in English is retried on its own: it
+        # never moves other content, so its page stays usable either way.
         for cell_plan in plan.cells:
-            if (
-                cell_plan.status == "original"
-                and "fit" in cell_plan.reason
-                and cell_plan.cell is not None
-            ):
+            if cell_plan.status == "original" and "fit" in cell_plan.reason:
                 candidates.append(cell_plan)
     retried = 0
     for candidate in candidates[:max_blocks]:

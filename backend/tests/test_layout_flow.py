@@ -1,0 +1,200 @@
+"""Same-column text chains: the page is solved as a whole, not block by block."""
+
+import pytest
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas as pdf_canvas
+
+from app.services import layout_fit, layout_model
+from app.services.cjk_fonts import require_cjk_font
+from app.services.layout_fit import (
+    Fragment,
+    PagePlan,
+    build_flow_chains,
+    solve_page_layout,
+)
+from app.services.mineru_layout import DisplayMath, Paragraph, TextRun, Title
+
+
+def _frame(width=612.0, height=792.0, index=0):
+    return layout_model.PageFrame(index=index, width=width, height=height)
+
+
+def _body(plan_index: int, box, text: str, *, size: float = 10.5):
+    return layout_fit.BlockPlan(
+        kind="paragraph",
+        page_index=0,
+        source_rect=box,
+        target=box,
+        fragments=[Fragment(kind="text", text=text)],
+        size=size,
+        baseline_size=size,
+        leading=size * 1.5,
+        leading_ratio=1.5,
+        source_text=text,
+    )
+
+
+def _page_plan(frame, blocks) -> PagePlan:
+    return PagePlan(
+        index=frame.index,
+        width=frame.width,
+        height=frame.height,
+        blocks=blocks,
+        columns=layout_model.PageColumns(
+            kind="single", columns=[frame.rect]
+        ),
+    )
+
+
+def test_two_paragraphs_borrow_the_gap_between_them():
+    frame = _frame()
+    # The first paragraph's own box holds four lines but the translation needs
+    # more; the gap before the next paragraph is what it borrows.
+    first = _body(
+        0,
+        (72.0, 540.0, 540.0, 620.0),
+        "第一段的中文译文比较长，需要借用下面段落之前的空白来排下整段文字。" * 8,
+    )
+    second = _body(1, (72.0, 400.0, 540.0, 420.0), "第二段。")
+    plan = _page_plan(frame, [first, second])
+
+    chains = build_flow_chains(frame, plan, plan.columns)
+    assert len(chains) == 1
+    assert [item.block_plan_index for item in chains[0].items] == [0, 1]
+
+    measurer = layout_fit.TextMeasurer(require_cjk_font())
+    solve_page_layout(plan, measurer)
+
+    # The first paragraph keeps its own top, grows down into the gap and stops
+    # above the second paragraph, which keeps its anchor.
+    assert first.target[3] == first.source_rect[3]
+    assert first.target[1] < first.source_rect[1]
+    assert first.target[1] >= second.source_rect[3] - 1.0
+    assert second.target[3] == second.source_rect[3]
+    assert second.target[1] == pytest.approx(second.source_rect[1], abs=6.0)
+
+
+def test_caption_pushes_the_following_body_down():
+    frame = _frame()
+    body = _body(0, (72.0, 300.0, 540.0, 320.0), "图注下面的正文段落。")
+    plan = _page_plan(frame, [body])
+    plan.captions.append(
+        layout_fit.CaptionPlan(
+            owner_kind="figure",
+            source_rect=(72.0, 330.0, 300.0, 350.0),
+            target=(72.0, 300.0, 300.0, 350.0),
+            source_text="Figure 1.",
+            translated="图 1。一段比较长的图注，需要占用更多垂直空间。" * 2,
+            size=8.0,
+            baseline_size=8.0,
+            leading=8.0 * 1.3,
+        )
+    )
+    chains = build_flow_chains(frame, plan, plan.columns)
+    assert any(
+        item.block_plan_index == -1 for chain in chains for item in chain.items
+    )
+
+    measurer = layout_fit.TextMeasurer(require_cjk_font())
+    solve_page_layout(plan, measurer)
+    assert body.target[3] <= plan.captions[0].target[1] + 1.0
+
+
+def test_an_intervening_display_formula_stops_movement():
+    frame = _frame()
+    first = _body(
+        0,
+        (72.0, 600.0, 540.0, 620.0),
+        "需要很多空间的第一段中文译文。" * 6,
+    )
+    formula = (72.0, 500.0, 300.0, 520.0)
+    second = _body(1, (72.0, 400.0, 540.0, 420.0), "公式下面的第二段。")
+    plan = _page_plan(frame, [first, second])
+    plan.obstacles = [formula]
+
+    chains = build_flow_chains(frame, plan, plan.columns)
+    # The equation ends the chain: the second paragraph starts a new one.
+    assert len(chains) == 2
+    assert [item.block_plan_index for item in chains[0].items] == [0]
+    assert [item.block_plan_index for item in chains[1].items] == [1]
+
+
+def test_two_columns_move_independently():
+    frame = _frame()
+    left = _body(0, (72.0, 600.0, 290.0, 620.0), "左栏文字。" * 20)
+    right = _body(1, (320.0, 600.0, 540.0, 620.0), "右栏文字。")
+    plan = _page_plan(frame, [left, right])
+    plan.columns = layout_model.PageColumns(
+        kind="double", columns=[(72.0, 0.0, 290.0, 792.0), (320.0, 0.0, 540.0, 792.0)]
+    )
+
+    chains = build_flow_chains(frame, plan, plan.columns)
+    assert len(chains) == 2
+    measurer = layout_fit.TextMeasurer(require_cjk_font())
+    solve_page_layout(plan, measurer)
+
+    # The right column's short paragraph keeps its own anchor.
+    assert right.target[3] == right.source_rect[3]
+    assert right.target[1] == pytest.approx(right.source_rect[1], abs=6.0)
+    # The left column's long paragraph grows into its own whitespace only.
+    assert left.target[0] == left.source_rect[0]
+    assert left.target[2] == left.source_rect[2]
+
+
+def test_a_full_width_heading_feeds_both_columns():
+    frame = _frame()
+    heading = layout_fit.BlockPlan(
+        kind="title",
+        page_index=0,
+        source_rect=(72.0, 700.0, 540.0, 720.0),
+        target=(72.0, 700.0, 540.0, 720.0),
+        fragments=[Fragment(kind="text", text="1 引言")],
+        size=16.0,
+        baseline_size=16.0,
+        leading=16.0 * 1.2,
+        leading_ratio=1.2,
+        bold=True,
+        serif=False,
+    )
+    left = _body(1, (72.0, 600.0, 290.0, 620.0), "左栏。")
+    right = _body(2, (320.0, 600.0, 540.0, 620.0), "右栏。")
+    plan = _page_plan(frame, [heading, left, right])
+    plan.columns = layout_model.PageColumns(
+        kind="double", columns=[(72.0, 0.0, 290.0, 792.0), (320.0, 0.0, 540.0, 792.0)]
+    )
+
+    chains = build_flow_chains(frame, plan, plan.columns)
+    # The full-width heading owns its own chain; each column gets one.
+    assert len(chains) == 3
+    assert [item.block_plan_index for item in chains[0].items] == [0]
+
+
+def test_one_body_size_is_solved_for_the_whole_page():
+    frame = _frame()
+    dense = _body(
+        0,
+        (72.0, 600.0, 540.0, 620.0),
+        "密集段落的中文译文，需要整页统一缩小才能放下。" * 12,
+    )
+    sparse = _body(1, (72.0, 200.0, 540.0, 220.0), "短段落。")
+    plan = _page_plan(frame, [dense, sparse])
+
+    measurer = layout_fit.TextMeasurer(require_cjk_font())
+    solve_page_layout(plan, measurer)
+
+    assert plan.body_size > 0
+    assert dense.size == plan.body_size
+    assert sparse.size == plan.body_size
+    assert dense.size >= 6.0
+
+
+def test_a_page_that_cannot_fit_at_six_points_falls_back_whole():
+    frame = _frame()
+    huge = _body(0, (72.0, 20.0, 540.0, 30.0), "无法放下的超长译文。" * 400)
+    plan = _page_plan(frame, [huge])
+
+    measurer = layout_fit.TextMeasurer(require_cjk_font())
+    solve_page_layout(plan, measurer)
+
+    assert plan.status == "original"
+    assert "6" in plan.reason or "minimum" in plan.reason

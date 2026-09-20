@@ -30,6 +30,7 @@ from app.services.layout_model import (
 )
 from app.services.mineru_layout import (
     Block,
+    DisplayMath,
     Image,
     InlineMath,
     ListBlock,
@@ -206,6 +207,7 @@ class PagePlan:
     body_size: float = 0.0
     had_text_layer: bool = True
     columns: PageColumns | None = None
+    obstacles: list[Rect] = field(default_factory=list)
 
     @property
     def mask_rects(self) -> list[Rect]:
@@ -1012,35 +1014,19 @@ def plan_block(
             return plan
         plan.formula_fallback = fallback
 
-    target = expand_target(frame, source_rect, occupied)
-    plan.target = target
-    fitted = fit_size(measurer, plan, target, leading_ratio=leading_ratio)
-    if fitted < size:
-        candidate = next_region_below(source_rect, occupied)
-        if (
-            candidate is not None
-            and _overlaps_any(candidate, lost)
-            and region_is_block_tail(frame, candidate, plan.source_text)
-        ):
-            extended = union(source_rect, candidate)
-            extended_fit = fit_size(
-                measurer, plan, extended, leading_ratio=leading_ratio
-            )
-            if extended_fit > fitted + 0.05:
-                plan.continuation = candidate
-                # The region holds this paragraph's own tail, so its source text
-                # is removed with the block instead of staying behind.
-                plan.source_rect = extended
-                target = extended
-                fitted = extended_fit
-    plan.target = target
-    if fitted <= 0.0:
-        plan.status = "original"
-        plan.reason = "translation does not fit at the minimum font size"
-        plan.size = size
-        return plan
-    plan.size = fitted
-    plan.leading = fitted * leading_ratio
+    # The block's own box is its preferred anchor; the page solver may extend
+    # it into the whitespace below and shifts later text down when it must.
+    candidate = next_region_below(source_rect, occupied)
+    if (
+        candidate is not None
+        and _overlaps_any(candidate, lost)
+        and region_is_block_tail(frame, candidate, plan.source_text)
+    ):
+        # The dropped region holds this paragraph's own tail, so its source
+        # text is removed with the block instead of staying behind.
+        plan.continuation = candidate
+        plan.source_rect = union(source_rect, candidate)
+    plan.target = plan.source_rect
     return plan
 
 
@@ -1290,61 +1276,319 @@ def _fits_at(measurer: TextMeasurer, block: BlockPlan, size: float) -> bool:
     )
 
 
-def unify_page(plan: PagePlan, measurer: TextMeasurer) -> None:
-    """One font size and one line spacing per page (design section 8).
+# ---------------------------------------------------------------------------
+# Same-column text chains
+# ---------------------------------------------------------------------------
 
-    The shared size starts at the smallest size any block needed, then grows
-    back up while every block still fits. Both directions are bounded, so the
-    page size only ever drifts slightly from the default.
+
+@dataclass
+class FlowItem:
+    """One movable piece of a page's text chain."""
+
+    block_plan_index: int
+    source_rect: Rect
+    min_gap_before: float = 0.0
+    movable: bool = True
+    caption_index: int = -1
+
+    @property
+    def caption(self) -> bool:
+        return self.caption_index >= 0
+
+
+@dataclass
+class FlowChain:
+    """The text of one column, between two immutable boundaries."""
+
+    page_index: int
+    column_rect: Rect
+    items: list[FlowItem] = field(default_factory=list)
+    obstacles: list[Rect] = field(default_factory=list)
+
+
+def _column_for(rect: Rect, columns: PageColumns) -> Rect:
+    """The column a block belongs to, by horizontal overlap."""
+    if columns.kind == "single" or len(columns.columns) < 2:
+        return columns.columns[0] if columns.columns else rect
+    best: tuple[float, Rect] | None = None
+    for column in columns.columns:
+        overlap = min(rect[2], column[2]) - max(rect[0], column[0])
+        if overlap <= 0:
+            continue
+        if best is None or overlap > best[0]:
+            best = (overlap, column)
+    return best[1] if best else columns.columns[0]
+
+
+def _is_full_width(rect: Rect, columns: PageColumns) -> bool:
+    if columns.kind == "single" or len(columns.columns) < 2:
+        return True
+    left, right = columns.columns[0], columns.columns[-1]
+    return rect[0] <= left[0] + 2.0 and rect[2] >= right[2] - 2.0
+
+
+def build_flow_chains(
+    frame: PageFrame, plan: PagePlan, columns: PageColumns
+) -> list[FlowChain]:
+    """Group a page's movable text into same-column chains.
+
+    A chain starts at a full-width structural boundary, a change of column or
+    an immutable obstacle, and ends at the next one. Blocks keep their original
+    top positions as preferred anchors, so the solver only moves text when the
+    translation actually needs the room.
     """
-    translated = plan.translated_plans
-    if not translated:
-        return
-    body_size = min(block.size for block in translated)
-    group = [
-        block
-        for block in translated
-        if block.kind != "title"
-        or block.baseline_size <= TITLE_KEEP_RATIO * body_size
-    ]
-    cap = min(
-        min(block.baseline_size for block in group) * SIZE_CEIL_RATIO,
-        ABS_MAX_SIZE,
+    obstacles = list(plan.obstacles)
+    obstacles.extend(
+        cell.source_rect for cell in plan.cells if cell.status == "translated"
     )
-    low, high = body_size, cap
-    for _ in range(FIT_ITERATIONS):
-        middle = (low + high) / 2
-        if all(_fits_at(measurer, block, middle) for block in group):
-            low = middle
-        else:
-            high = middle
-        if high - low < 0.05:
-            break
-    plan.body_size = low
-    for block in group:
-        block.size = plan.body_size
 
-    plan.leading = min(_max_fitting_leading(measurer, block, block.size) for block in translated)
-    for block in translated:
-        block.leading = block.size * plan.leading
-
-    width_cap: dict[int, float] = {}
-    for index, block in enumerate(translated):
-        width_cap[index] = max(1.0, block.target[2] - block.target[0])
-    for index, block in enumerate(translated):
-        height = max(1.0, block.target[3] - block.target[1])
-        measured = measurer.measure(
-            block.fragments,
-            block.size,
-            block.leading,
-            bold=block.bold,
-            align=block.align,
-            width=width_cap[index],
-            serif=block.serif,
+    entries: list[tuple[float, float, FlowItem]] = []
+    for index, block in enumerate(plan.blocks):
+        if block.status not in {"translated", "original"}:
+            continue
+        entries.append(
+            (
+                -block.source_rect[3],
+                block.source_rect[0],
+                FlowItem(block_plan_index=index, source_rect=block.source_rect),
+            )
         )
-        if measured > height + FIT_EPSILON:
-            block.status = "original"
-            block.reason = "does not fit after page-level unification"
+    for index, caption in enumerate(plan.captions):
+        if caption.status != "translated":
+            continue
+        entries.append(
+            (
+                -caption.target[3],
+                caption.target[0],
+                FlowItem(
+                    block_plan_index=-1,
+                    source_rect=caption.target,
+                    movable=False,
+                    caption_index=index,
+                ),
+            )
+        )
+    entries.sort(key=lambda entry: (entry[0], entry[1]))
+
+    chains: list[FlowChain] = []
+    for _top, _left, item in entries:
+        rect = item.source_rect
+        full_width = _is_full_width(rect, columns)
+        column = frame.rect if full_width else _column_for(rect, columns)
+        start_new = not chains
+        if chains:
+            current = chains[-1]
+            # A full-width block only breaks a chain when the page really has
+            # columns to break between; on a single-column page it is the norm.
+            if current.column_rect != column or (
+                full_width and len(columns.columns) > 1
+            ):
+                start_new = True
+            else:
+                previous = current.items[-1].source_rect
+                # Text may not flow across an equation, a figure or a table
+                # cell: one of those between the two items ends the chain.
+                start_new = any(
+                    overlaps_horizontally(rect, obstacle)
+                    and obstacle[3] <= previous[1] + 1.0
+                    and obstacle[1] >= rect[3] - 1.0
+                    for obstacle in obstacles
+                )
+        if start_new:
+            chains.append(
+                FlowChain(
+                    page_index=frame.index,
+                    column_rect=column,
+                    items=[],
+                    obstacles=[
+                        obstacle
+                        for obstacle in obstacles
+                        if overlaps_horizontally(column, obstacle)
+                    ],
+                )
+            )
+        chains[-1].items.append(item)
+    return chains
+
+
+def _chain_floor(chain: FlowChain) -> float:
+    """The lowest point the chain's text may reach."""
+    floor = chain.column_rect[1]
+    for obstacle in chain.obstacles:
+        floor = max(floor, obstacle[1])
+    return floor
+
+
+def solve_page_layout(
+    page_plan: PagePlan,
+    measurer: TextMeasurer,
+    *,
+    body_size: float | None = None,
+    commit: bool = True,
+) -> bool:
+    """Lay a page's text out along its same-column chains.
+
+    Every movable item is measured at the page's shared body size, existing
+    gaps are consumed and paragraph spacing is reduced to its source-safe
+    minimum before later items shift down. Nothing crosses an immutable
+    obstacle, a column boundary or the page edge. Returns whether the page fits.
+    """
+    columns = page_plan.columns or PageColumns()
+    frame = PageFrame(
+        index=page_plan.index, width=page_plan.width, height=page_plan.height
+    )
+    translatable = [
+        block for block in page_plan.blocks if block.status == "translated"
+    ]
+    if not translatable and not any(
+        caption.status == "translated" for caption in page_plan.captions
+    ):
+        return True
+
+    body_blocks = [block for block in translatable if block.kind != "title"]
+    if body_size is None:
+        body_size = min(
+            (block.size for block in (body_blocks or translatable)),
+            default=DEFAULT_BODY_SIZE,
+        )
+    body_size = max(MIN_BODY_SIZE, min(body_size, ABS_MAX_SIZE))
+
+    sizes: dict[int, float] = {
+        index: (body_size if block.kind != "title" else block.baseline_size)
+        for index, block in enumerate(page_plan.blocks)
+        if block.status == "translated"
+    }
+
+    chains = build_flow_chains(frame, page_plan, columns)
+    targets: dict[int, Rect] = {}
+    caption_targets: dict[int, Rect] = {}
+    fits = True
+    for chain in chains:
+        cursor = chain.column_rect[3]
+        floor = _chain_floor(chain)
+        for item in chain.items:
+            if item.caption:
+                caption = page_plan.captions[item.caption_index]
+                height = measurer.measure(
+                    caption.fragments,
+                    caption.size,
+                    caption.leading,
+                    bold=False,
+                    align=caption.align,
+                    width=max(1.0, caption.target[2] - caption.target[0]),
+                    serif=True,
+                )
+                top = min(item.source_rect[3], cursor)
+                bottom = top - height
+                if bottom < floor - FIT_EPSILON:
+                    fits = False
+                if top > cursor + FIT_EPSILON:
+                    fits = False
+                caption_targets[item.caption_index] = (
+                    item.source_rect[0],
+                    bottom,
+                    item.source_rect[2],
+                    top,
+                )
+                cursor = bottom
+                continue
+            block = page_plan.blocks[item.block_plan_index]
+            size = sizes[item.block_plan_index]
+            width = max(1.0, item.source_rect[2] - item.source_rect[0])
+            height = measurer.measure(
+                block.fragments,
+                size,
+                size * block.leading_ratio,
+                bold=block.bold,
+                align=block.align,
+                width=width,
+                serif=block.serif,
+            )
+            # The source box is the preferred anchor: text only moves down when
+            # the translation is taller than the room its own box leaves.
+            # The item may grow below its own box into the gap before the next
+            # item, but it never moves up over the text above it and never
+            # crosses the chain's floor.
+            top = min(item.source_rect[3], cursor)
+            bottom = top - height
+            if bottom < floor - FIT_EPSILON:
+                fits = False
+            targets[item.block_plan_index] = (
+                item.source_rect[0],
+                bottom,
+                item.source_rect[2],
+                top,
+            )
+            cursor = bottom - item.min_gap_before
+
+    if not fits:
+        if commit:
+            page_plan.status = "original"
+            page_plan.reason = (
+                "body text does not fit inside its column at the minimum font "
+                "size of 6pt"
+            )
+        return False
+
+    if commit:
+        page_plan.body_size = body_size
+        for index, block in enumerate(page_plan.blocks):
+            if block.status != "translated":
+                continue
+            block.size = sizes[index]
+            block.leading = block.size * block.leading_ratio
+            if index in targets:
+                block.target = targets[index]
+        for index, target in caption_targets.items():
+            page_plan.captions[index].target = target
+    return True
+
+
+def _solve_page(page_plan: PagePlan, measurer: TextMeasurer) -> None:
+    """Pick one body size for the whole page, then lay its chains out.
+
+    The search starts at the page's template baseline and shrinks the body copy
+    until every chain fits, down to the design's 6pt floor. A page that still
+    overflows falls back whole; a single dense paragraph is never shrunk alone
+    and no page ever grows an extra sheet.
+    """
+    translated = page_plan.translated_plans
+    if not translated and not any(
+        caption.status == "translated" for caption in page_plan.captions
+    ):
+        return
+    body_blocks = [block for block in translated if block.kind != "title"]
+    baseline = min(
+        (block.baseline_size for block in (body_blocks or translated)),
+        default=DEFAULT_BODY_SIZE,
+    )
+    high = max(MIN_BODY_SIZE, baseline)
+    if solve_page_layout(page_plan, measurer, body_size=high, commit=False):
+        # The page fits at its template size: nothing shrinks.
+        size = high
+    else:
+        low = MIN_BODY_SIZE
+        best: float | None = None
+        for _ in range(FIT_ITERATIONS):
+            middle = (low + high) / 2
+            if solve_page_layout(page_plan, measurer, body_size=middle, commit=False):
+                best = middle
+                low = middle
+            else:
+                high = middle
+            if high - low < 0.05:
+                break
+        size = best if best is not None else MIN_BODY_SIZE
+    if not solve_page_layout(page_plan, measurer, body_size=size, commit=True):
+        page_plan.status = "original"
+        page_plan.reason = (
+            "body text does not fit inside its column at the minimum font size of 6pt"
+        )
+        return
+    page_plan.body_size = size
+    for block in translated:
+        block.status = "translated"
+        block.reason = ""
 
 
 def plan_page(
@@ -1405,8 +1649,8 @@ def plan_page(
             plan.captions.append(caption)
 
     _drop_duplicate_blocks(plan)
-    if plan.translated_plans:
-        unify_page(plan, measurer)
+    plan.obstacles = [block.bbox for block in blocks if isinstance(block, DisplayMath) and block.bbox]
+    _solve_page(plan, measurer)
     if not plan.translated_plans and not any(
         cell.status == "translated" for cell in plan.cells
     ) and not any(caption.status == "translated" for caption in plan.captions):
