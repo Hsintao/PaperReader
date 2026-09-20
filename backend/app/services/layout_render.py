@@ -317,6 +317,29 @@ def _draw_blocks(
     return drawn
 
 
+def _draw_captions(canvas, measurer: TextMeasurer, page_plan: PagePlan) -> int:
+    drawn = 0
+    for plan in page_plan.captions:
+        if plan.status != "translated":
+            continue
+        width = max(1.0, plan.target[2] - plan.target[0])
+        paragraph = measurer.paragraph(
+            plan.fragments,
+            plan.size,
+            plan.leading,
+            bold=False,
+            align=plan.align,
+            serif=True,
+        )
+        _, height = paragraph.wrapOn(canvas, width, 100000)
+        y = plan.target[3] - height
+        if y < plan.target[1] - 1.0:
+            y = plan.target[1]
+        paragraph.drawOn(canvas, plan.target[0], y)
+        drawn += 1
+    return drawn
+
+
 def _draw_cells(canvas, measurer: TextMeasurer, page_plan: PagePlan) -> int:
     drawn = 0
     for plan in page_plan.cells:
@@ -352,6 +375,7 @@ def _render_overlay(
     if mask:
         _draw_masks(canvas, page_plan)
     drawn = _draw_blocks(canvas, measurer, page_plan)
+    drawn += _draw_captions(canvas, measurer, page_plan)
     drawn += _draw_cells(canvas, measurer, page_plan)
     canvas.showPage()
     canvas.save()
@@ -385,7 +409,7 @@ def _try_masked_overlay(writer, source_page, plan, measurer, result) -> bool:
     """
     if not plan.translated_plans and not any(
         cell.status == "translated" for cell in plan.cells
-    ):
+    ) and not any(caption.status == "translated" for caption in plan.captions):
         return False
     try:
         overlay = _render_overlay(measurer, plan, mask=True)

@@ -1219,7 +1219,7 @@ def locate_caption(caption: str, lines: list[list], anchor: Rect | None) -> Rect
     needle, _positions = _normalized_positions(caption)
     if len(needle) < _CAPTION_MIN_CHARS:
         return None
-    candidates: list[tuple[float, Rect]] = []
+    candidates: list[tuple[float, int, Rect]] = []
     for start in range(len(lines)):
         for count in range(1, _CAPTION_MAX_LINES + 1):
             window = lines[start : start + count]
@@ -1233,20 +1233,28 @@ def locate_caption(caption: str, lines: list[list], anchor: Rect | None) -> Rect
             ratio = SequenceMatcher(None, needle, text, autojunk=False).ratio()
             if ratio >= _CAPTION_MIN_RATIO:
                 candidates.append(
-                    (ratio, _union_rects([_line_box(line) for line in window]))
+                    (ratio, count, _union_rects([_line_box(line) for line in window]))
                 )
     if not candidates:
         return None
     if anchor is None:
-        return max(candidates, key=lambda item: item[0])[1]
+        return max(candidates, key=lambda item: item[0])[2]
     beside = [
         candidate
         for candidate in candidates
-        if candidate[1][2] > anchor[0] and candidate[1][0] < anchor[2]
+        if candidate[2][2] > anchor[0] and candidate[2][0] < anchor[2]
     ]
-    if beside:
-        return min(beside, key=lambda item: _vertical_gap(anchor, item[1]))[1]
-    return max(candidates, key=lambda item: item[0])[1]
+    pool = beside or candidates
+    # A wrapped caption matches as well line by line as it does whole, so the
+    # best ratio alone would keep only the first line: prefer the window that
+    # covers more of the declared caption at a comparable ratio.
+    best_ratio = max(candidate[0] for candidate in pool)
+    complete = [
+        candidate
+        for candidate in pool
+        if candidate[0] >= best_ratio - 0.15
+    ]
+    return max(complete, key=lambda item: (item[1], -_vertical_gap(anchor, item[2])))[2]
 
 
 def _union_rects(rects: list[Rect]) -> Rect:
@@ -1256,6 +1264,35 @@ def _union_rects(rects: list[Rect]) -> Rect:
         max(rect[2] for rect in rects),
         max(rect[3] for rect in rects),
     )
+
+
+def attach_caption_boxes(ir: list, frames: list[PageFrame]) -> int:
+    """Recover caption geometry for blocks whose parser output has none.
+
+    The structured content list reports a caption as text only, so its box is
+    looked up on the page's own text layer. A caption that cannot be located
+    keeps no box and is later left in the source language in place.
+    """
+    lines_by_page: dict[int, list] = {}
+    for frame in frames:
+        if frame.has_text_layer:
+            lines_by_page[frame.index] = _cluster_lines(frame.chars)
+    recovered = 0
+    for block in ir:
+        if not isinstance(block, (Image, Table)) or block.caption_bbox is not None:
+            continue
+        page_index = getattr(block, "page_index", -1)
+        if not (0 <= page_index < len(frames)):
+            continue
+        lines = lines_by_page.get(page_index)
+        if not lines:
+            continue
+        rect = caption_rect(block, frames[page_index], lines)
+        if rect is None:
+            continue
+        block.caption_bbox = rect
+        recovered += 1
+    return recovered
 
 
 def caption_rect(block, frame: PageFrame, lines: list[list]) -> Rect | None:

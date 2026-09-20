@@ -626,6 +626,8 @@ def blocks_to_ir(
         # Other block kinds (page_footer, header, etc.) are intentionally skipped.
 
     if frames:
+        from app.services.layout_model import attach_caption_boxes
+
         attach_caption_boxes(ir, frames)
     classify_roles(ir)
     return ir
@@ -646,39 +648,6 @@ def _join_caption(caption: str, footnotes: object) -> str:
     if not note:
         return caption
     return f"{caption} {note}".strip() if caption else note
-
-
-def attach_caption_boxes(ir: list[Block], frames: list) -> int:
-    """Recover caption geometry for blocks whose parser output has none.
-
-    The structured content list reports a caption as text only, so its box is
-    looked up on the page's own text layer. A caption that cannot be located
-    keeps no box and is later left in the source language in place.
-    """
-    from app.services.layout_model import caption_rect
-
-    lines_by_page: dict[int, list] = {}
-    for frame in frames:
-        if frame.has_text_layer:
-            from app.services.layout_model import _cluster_lines
-
-            lines_by_page[frame.index] = _cluster_lines(frame.chars)
-    recovered = 0
-    for block in ir:
-        if not isinstance(block, (Image, Table)) or block.caption_bbox is not None:
-            continue
-        page_index = getattr(block, "page_index", -1)
-        if not (0 <= page_index < len(frames)):
-            continue
-        lines = lines_by_page.get(page_index)
-        if not lines:
-            continue
-        rect = caption_rect(block, frames[page_index], lines)
-        if rect is None:
-            continue
-        block.caption_bbox = rect
-        recovered += 1
-    return recovered
 
 
 # ---------------------------------------------------------------------------

@@ -30,6 +30,7 @@ from app.services.layout_model import (
 )
 from app.services.mineru_layout import (
     Block,
+    Image,
     InlineMath,
     ListBlock,
     Paragraph as IRParagraph,
@@ -169,12 +170,36 @@ class CellPlan:
 
 
 @dataclass
+class CaptionPlan:
+    """A figure or table caption, drawn as movable text beside its artwork."""
+
+    owner_kind: str
+    source_rect: Rect
+    target: Rect
+    source_text: str
+    translated: str
+    size: float = 0.0
+    baseline_size: float = 0.0
+    leading: float = 0.0
+    leading_ratio: float = 1.3
+    align: str = "left"
+    status: str = "translated"
+    reason: str = ""
+    owner: Block | None = None
+
+    @property
+    def fragments(self) -> list["Fragment"]:
+        return [Fragment(kind="text", text=self.translated)]
+
+
+@dataclass
 class PagePlan:
     index: int
     width: float
     height: float
     blocks: list[BlockPlan] = field(default_factory=list)
     cells: list[CellPlan] = field(default_factory=list)
+    captions: list[CaptionPlan] = field(default_factory=list)
     status: str = "ok"
     reason: str = ""
     leading: float = 0.0
@@ -192,6 +217,11 @@ class PagePlan:
         ]
         rects.extend(
             plan.source_rect for plan in self.cells if plan.status == "translated"
+        )
+        rects.extend(
+            caption.source_rect
+            for caption in self.captions
+            if caption.status == "translated"
         )
         return rects
 
@@ -1025,6 +1055,123 @@ def _box_covers_foreign_text(
     return len(inside) > 1.35 * len(declared_normalized) + 8
 
 
+# A caption may grow into the whitespace below its own box, but never past the
+# artwork or the next block it would otherwise cover.
+CAPTION_MAX_GROWTH = 60.0
+
+
+def _caption_target(
+    frame: PageFrame, source_rect: Rect, occupied: list[Rect]
+) -> Rect:
+    """The caption's own box, extended only into the whitespace below it.
+
+    The top stays at the caption's own top edge, so a caption drawn under an
+    image can never grow up over the artwork.
+    """
+    top = source_rect[3]
+    for region in occupied:
+        if region == source_rect:
+            continue
+        if not overlaps_horizontally(source_rect, region):
+            continue
+        if region[1] >= source_rect[3] - 1.0:
+            top = min(top, region[1])
+    floor = max(frame.origin[1], source_rect[1] - CAPTION_MAX_GROWTH)
+    for region in occupied:
+        if region == source_rect:
+            continue
+        if not overlaps_horizontally(source_rect, region):
+            continue
+        if region[3] <= source_rect[1] + 1.0:
+            floor = max(floor, region[3])
+    return (source_rect[0], floor, source_rect[2], top)
+
+
+def plan_caption(
+    frame: PageFrame,
+    block: Block,
+    *,
+    measurer: TextMeasurer,
+    occupied: list[Rect],
+) -> CaptionPlan | None:
+    """Plan a translated caption beside its immutable owner.
+
+    The caption starts at its own source box and may grow into the whitespace
+    below it; it never moves the artwork, and it drops to the design's 6pt
+    floor before giving up. A caption that cannot be located or cannot fit
+    keeps its source wording in place.
+    """
+    if not isinstance(block, (Image, Table)):
+        return None
+    translated = (getattr(block, "translated_caption", "") or "").strip()
+    if not translated:
+        return None
+    source_rect = getattr(block, "caption_bbox", None)
+    if not source_rect:
+        return None
+    owner_kind = "figure" if isinstance(block, Image) else "table"
+    profile = TypographyProfile.CAPTION
+    owner_box = getattr(block, "bbox", None)
+    obstacles = [region for region in occupied if region != source_rect]
+    target = _caption_target(frame, source_rect, obstacles)
+    fragments = [Fragment(kind="text", text=translated)]
+    align = _measure_alignment(frame, source_rect, False, 1)
+    width = max(1.0, target[2] - target[0])
+
+    plan = CaptionPlan(
+        owner_kind=owner_kind,
+        source_rect=source_rect,
+        target=target,
+        source_text=getattr(block, "caption", "") or "",
+        translated=translated,
+        size=profile.size,
+        baseline_size=profile.size,
+        leading=profile.size * profile.leading_ratio,
+        leading_ratio=profile.leading_ratio,
+        align=align,
+        owner=block,
+    )
+
+    def fits(size: float) -> bool:
+        return (
+            measurer.measure(
+                fragments,
+                size,
+                size * profile.leading_ratio,
+                bold=False,
+                align=align,
+                width=width,
+                serif=True,
+            )
+            <= (target[3] - target[1]) + FIT_EPSILON
+        )
+
+    if fits(profile.size):
+        plan.size = profile.size
+        plan.leading = profile.size * profile.leading_ratio
+        return plan
+    low, high = ABS_MIN_SIZE, profile.size
+    fitted = 0.0
+    for _ in range(FIT_ITERATIONS):
+        middle = (low + high) / 2
+        if fits(middle):
+            fitted = middle
+            low = middle
+        else:
+            high = middle
+        if high - low < 0.05:
+            break
+    if fitted <= 0.0:
+        plan.status = "original"
+        plan.reason = "caption translation does not fit at the minimum font size"
+        plan.size = profile.size
+        plan.leading = profile.size * profile.leading_ratio
+        return plan
+    plan.size = fitted
+    plan.leading = fitted * profile.leading_ratio
+    return plan
+
+
 def plan_table_cells(
     frame: PageFrame, table: Table, *, measurer: TextMeasurer
 ) -> list[CellPlan]:
@@ -1251,13 +1398,18 @@ def plan_page(
     for block in blocks:
         if isinstance(block, Table):
             plan.cells.extend(plan_table_cells(frame, block, measurer=measurer))
+        caption = plan_caption(
+            frame, block, measurer=measurer, occupied=occupied
+        )
+        if caption is not None:
+            plan.captions.append(caption)
 
     _drop_duplicate_blocks(plan)
     if plan.translated_plans:
         unify_page(plan, measurer)
     if not plan.translated_plans and not any(
         cell.status == "translated" for cell in plan.cells
-    ):
+    ) and not any(caption.status == "translated" for caption in plan.captions):
         plan.status = "original"
         plan.reason = "nothing to translate on this page"
     return plan
