@@ -3,7 +3,7 @@
 ## v2.2.0 阅读器回归
 
 ```powershell
-conda activate d2l
+conda activate pt
 $env:PYTHONPATH = "backend"
 python -m pytest backend/tests -q
 npm.cmd --prefix frontend run build
@@ -119,10 +119,10 @@ conda create -n paperreader-dev python=3.11 -y
 conda activate paperreader-dev
 ```
 
-如果你已经按照仓库开发约定使用 `d2l` 环境，也可以：
+如果你已经按照仓库开发约定使用 `pt` 环境，也可以：
 
 ```bash
-conda activate d2l
+conda activate pt
 python --version
 ```
 
@@ -312,7 +312,7 @@ bash scripts/start_web.sh
 脚本会依次处理：
 
 - 缺少 `.env` 时从 `.env.example` 复制一份，并提示填写 `OPENAI_API_KEY` / `MINERU_API_KEY`；
-- 选择解释器：当前环境能 `import uvicorn, fastapi` 就直接用，否则依次尝试 `conda activate pt`、`d2l`；
+- 选择解释器：当前环境能 `import uvicorn, fastapi` 就直接用，否则依次尝试 `conda activate pt`；
 - 端口按 `8000` → `8004` 取第一个空闲端口；若该端口上已有 PaperReader 在跑，直接打开它而不重复启动；也可用 `PAPERREADER_PORT=8010 bash scripts/start_web.sh` 指定端口；
 - `frontend/dist` 缺失或比 `frontend/src` 旧时，自动执行 `npm --prefix frontend run build`；
 - 启动服务并等 `/health` 返回 PaperReader 后打开浏览器，`Ctrl+C` 停止。

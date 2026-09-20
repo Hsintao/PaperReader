@@ -1,7 +1,7 @@
 """Probe the maximum sustained request rate / concurrency for the configured
 OpenAI-compatible LLM endpoint.
 
-Usage (from repo root, with the `d2l` env activated):
+Usage (from repo root, with the `pt` env activated):
 
     python scripts/benchmark_llm_rate.py
     python scripts/benchmark_llm_rate.py --duration 20 --max-concurrency 64

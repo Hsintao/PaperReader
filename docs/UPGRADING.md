@@ -157,7 +157,7 @@ Keep the same `DATA_DIR`, `SQLITE_DB_NAME`, and `AUTH_SECRET_KEY` when upgrading
 Use Python 3.11 (3.12 is also checked in CI), Node.js 20, and the existing TeX Live / XeLaTeX / latexmk installation. After switching to v2.0:
 
 ```sh
-conda activate d2l
+conda activate pt
 python -m pip install -r requirements.txt
 npm --prefix frontend ci
 npm --prefix frontend run build

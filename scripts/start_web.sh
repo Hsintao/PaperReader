@@ -19,7 +19,7 @@ die() {
 
 PYTHON="${PYTHON:-python}"
 if ! "$PYTHON" -c 'import uvicorn, fastapi' >/dev/null 2>&1; then
-  for env_name in pt d2l; do
+  for env_name in pt; do
     conda env list 2>/dev/null | awk '{print $1}' | grep -qx "$env_name" || continue
     # shellcheck disable=SC1091
     source "$(conda info --base)/etc/profile.d/conda.sh"

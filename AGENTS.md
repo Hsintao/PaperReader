@@ -4,7 +4,7 @@
 `backend/app` contains the FastAPI service. Keep API routes in `backend/app/api`, shared settings and DB bootstrapping in `backend/app/core`, persistence models in `backend/app/models`, and pipeline logic in `backend/app/services`. Put Python tests in `backend/tests` using the existing `test_*.py` pattern. `frontend/src` contains the React/Vite app: page-level containers live in `pages`, reusable UI in `components`, and HTTP helpers in `lib`. Runtime data and generated artifacts are stored under `data/`; do not commit temporary outputs from local runs.
 
 ## Build, Test, and Development Commands
-Use the project environment first: `conda activate d2l`.
+Use the project environment first: `conda activate pt`.
 
 - `make backend`: run FastAPI with reload from `backend/`.
 - `make frontend`: start the Vite dev server from `frontend/`.

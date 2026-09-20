@@ -1,4 +1,4 @@
-conda activate d2l
+conda activate pt
 python -m pip install -r requirements.txt
 Set-Location frontend
 npm install
