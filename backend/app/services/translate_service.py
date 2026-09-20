@@ -420,7 +420,7 @@ def translate_text(
             translated_chunks[source_index] = translated
             if translated and checkpoint_path is not None:
                 checkpoint_entries[_checkpoint_key(chunk, "text")] = translated
-                _save_translation_checkpoint(checkpoint_path, checkpoint_entries)
+                _persist_checkpoint(checkpoint_path, checkpoint_entries)
             if progress_callback:
                 progress_callback(sum(bool(value) for value in translated_chunks), len(chunks))
         return translated
@@ -811,6 +811,18 @@ def _load_translation_checkpoint(path: Path | None) -> dict[str, str]:
     return {str(key): str(value) for key, value in entries.items() if isinstance(value, str)}
 
 
+def _persist_checkpoint(path: Path, entries: dict[str, str]) -> None:
+    """Cache a translated segment, never failing the translation over the cache.
+
+    The checkpoint only saves later work; a read-only or full output directory
+    must not turn a good translation into a fallback.
+    """
+    try:
+        _save_translation_checkpoint(path, entries)
+    except OSError as exc:
+        logger.warning("Translation checkpoint could not be written: %s", exc)
+
+
 def _save_translation_checkpoint(path: Path, entries: dict[str, str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
@@ -931,7 +943,7 @@ def translate_ir(
                 translations[slot] = value
                 if checkpoint_path is not None:
                     checkpoint_entries[_checkpoint_key(segments[slot], checkpoint_namespace)] = translations[slot]
-                    _save_translation_checkpoint(checkpoint_path, checkpoint_entries)
+                    _persist_checkpoint(checkpoint_path, checkpoint_entries)
             if progress_callback:
                 with progress_lock:
                     progress_callback(sum(bool(item) for item in translations), len(segments))

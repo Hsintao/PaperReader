@@ -8,6 +8,7 @@ from app.services.layout_model import (
     parse_local_pages,
 )
 from app.services.mineru_layout import (
+    Author,
     DisplayMath,
     Image,
     InlineMath,
@@ -72,7 +73,8 @@ def test_blocks_to_ir_extracts_titles_paragraphs_math_image():
     assert len(ir) == 6
 
     assert isinstance(ir[0], Title) and ir[0].level == 1 and "Math for CS" in ir[0].text
-    assert isinstance(ir[1], Paragraph) and ir[1].runs == [TextRun(text="Sitian Ding ")]
+    # A byline before the first section heading is an author node, not prose.
+    assert isinstance(ir[1], Author) and ir[1].text.strip() == "Sitian Ding"
     assert isinstance(ir[2], Title) and ir[2].text.strip() == "Problem 1"
 
     para = ir[3]
@@ -89,11 +91,10 @@ def test_blocks_to_ir_extracts_titles_paragraphs_math_image():
 def test_captions_enter_the_queue_and_author_names_do_not():
     ir = blocks_to_ir(SAMPLE_PAGES)
     segments = collect_translatable_strings(ir)
-    # Title, author paragraph, Problem 1, the two prose runs around the inline
-    # formula, and the figure caption.
+    # Title, Problem 1, the two prose runs around the inline formula, and the
+    # figure caption. The byline never enters the queue.
     assert segments == [
         "Math for CS & AI: Homework 7",
-        "Sitian Ding ",
         "Problem 1",
         "Denote the first term as ",
         ". We have ",
@@ -101,16 +102,16 @@ def test_captions_enter_the_queue_and_author_names_do_not():
     ]
 
     # Author names stay in the source language; everything else translates.
-    assert translatable_mask(ir) == [True, False, True, True, True, True]
+    assert translatable_mask(ir) == [True, True, True, True, True]
 
     apply_translations(ir, [f"译{i}" for i in range(len(segments))])
     assert ir[0].text == "译0"
-    assert ir[1].runs[0].text == "译1"
-    assert ir[2].text == "译2"
-    assert ir[3].runs[0].text == "译3"
-    assert ir[3].runs[2].text == "译4"
+    assert ir[1].text.strip() == "Sitian Ding"
+    assert ir[2].text == "译1"
+    assert ir[3].runs[0].text == "译2"
+    assert ir[3].runs[2].text == "译3"
     assert ir[5].caption == "A figure caption."
-    assert ir[5].translated_caption == "译5"
+    assert ir[5].translated_caption == "译4"
 
 
 def test_table_cells_and_caption_are_translated():

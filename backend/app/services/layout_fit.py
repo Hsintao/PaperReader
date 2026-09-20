@@ -1344,7 +1344,7 @@ def build_flow_chains(
 
     entries: list[tuple[float, float, FlowItem]] = []
     for index, block in enumerate(plan.blocks):
-        if block.status not in {"translated", "original"}:
+        if block.status != "translated":
             continue
         entries.append(
             (
@@ -1412,11 +1412,12 @@ def build_flow_chains(
 
 
 def _chain_floor(chain: FlowChain) -> float:
-    """The lowest point the chain's text may reach."""
-    floor = chain.column_rect[1]
-    for obstacle in chain.obstacles:
-        floor = max(floor, obstacle[1])
-    return floor
+    """The lowest point the chain's text may reach.
+
+    Only the page edge bounds a chain: an equation or figure inside it already
+    ended the chain, and text may use the whitespace on either side of them.
+    """
+    return chain.column_rect[1]
 
 
 def solve_page_layout(
@@ -1519,7 +1520,10 @@ def solve_page_layout(
                 item.source_rect[2],
                 top,
             )
-            cursor = bottom - item.min_gap_before
+            # The next item's anchor is bounded by this item's top, not by the
+            # text that may hang below it: a paragraph is allowed to grow into
+            # the gap underneath without dragging the rest of the column down.
+            cursor = top - item.min_gap_before
 
     if not fits:
         if commit:
@@ -1580,14 +1584,19 @@ def _solve_page(page_plan: PagePlan, measurer: TextMeasurer) -> None:
                 break
         size = best if best is not None else MIN_BODY_SIZE
     if not solve_page_layout(page_plan, measurer, body_size=size, commit=True):
+        # The page cannot hold its translation: it reverts whole, and every
+        # block on it keeps the source wording at the template size.
         page_plan.status = "original"
         page_plan.reason = (
             "body text does not fit inside its column at the minimum font size of 6pt"
         )
+        for block in page_plan.blocks:
+            block.size = block.baseline_size
+            block.leading = block.baseline_size * block.leading_ratio
+            block.target = block.source_rect
         return
     page_plan.body_size = size
     for block in translated:
-        block.status = "translated"
         block.reason = ""
 
 

@@ -198,3 +198,65 @@ def test_a_page_that_cannot_fit_at_six_points_falls_back_whole():
 
     assert plan.status == "original"
     assert "6" in plan.reason or "minimum" in plan.reason
+
+
+def test_a_long_first_paragraph_does_not_push_the_rest_off_the_page():
+    """A column of source paragraphs is anchored, not stacked."""
+    frame = _frame()
+    blocks = [
+        _body(0, (72.0, 600.0, 300.0, 730.0), "第一段译文。" * 80),
+        _body(1, (72.0, 470.0, 300.0, 590.0), "第二段译文。"),
+        _body(2, (72.0, 340.0, 300.0, 460.0), "第三段译文。"),
+        _body(3, (72.0, 200.0, 300.0, 330.0), "第四段译文。"),
+    ]
+    plan = _page_plan(frame, blocks)
+    measurer = layout_fit.TextMeasurer(require_cjk_font())
+    solve_page_layout(plan, measurer)
+
+    assert plan.status == "ok"
+    # Every block keeps its own source top edge, so the last one stays on page.
+    for block in blocks:
+        assert block.target[3] == block.source_rect[3]
+        assert block.target[1] >= 0.0
+
+
+def test_a_paragraph_may_grow_into_the_gap_without_dragging_the_column():
+    frame = _frame()
+    first = _body(0, (72.0, 600.0, 300.0, 730.0), "第一段译文。" * 30)
+    second = _body(1, (72.0, 470.0, 300.0, 590.0), "第二段。")
+    plan = _page_plan(frame, [first, second])
+    measurer = layout_fit.TextMeasurer(require_cjk_font())
+    solve_page_layout(plan, measurer)
+
+    assert plan.status == "ok"
+    # The first paragraph hangs below its box; the second stays anchored.
+    assert first.target[1] < first.source_rect[1]
+    assert second.target[3] == second.source_rect[3]
+
+
+def test_an_original_block_does_not_break_the_page_solve():
+    """A block kept in the source language is not part of the movable flow."""
+    frame = _frame()
+    kept = _body(0, (72.0, 600.0, 540.0, 620.0), "原文保留。")
+    kept.status = "original"
+    moved = _body(1, (72.0, 400.0, 540.0, 420.0), "需要排版的译文。")
+    plan = _page_plan(frame, [kept, moved])
+
+    measurer = layout_fit.TextMeasurer(require_cjk_font())
+    solve_page_layout(plan, measurer)
+
+    assert plan.status == "ok"
+    assert moved.target[3] == moved.source_rect[3]
+
+
+def test_a_page_that_reverts_keeps_every_block_at_its_source_box():
+    frame = _frame()
+    huge = _body(0, (72.0, 20.0, 540.0, 30.0), "无法放下的超长译文。" * 400)
+    plan = _page_plan(frame, [huge])
+
+    measurer = layout_fit.TextMeasurer(require_cjk_font())
+    solve_page_layout(plan, measurer)
+
+    assert plan.status == "original"
+    assert huge.size == huge.baseline_size
+    assert huge.target == huge.source_rect

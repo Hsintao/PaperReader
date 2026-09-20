@@ -131,8 +131,9 @@ def test_affiliation_paragraph_after_authors_is_its_own_role():
     roles = [block.role for block in ir]
     assert roles[1] == "author"
     assert roles[2] == "affiliation"
-    # Author names stay in the source language; affiliations are translated.
-    assert translatable_mask(ir) == [True, False, True, True]
+    # The byline is an author node with no translation slot; the affiliation
+    # stays a translatable paragraph.
+    assert translatable_mask(ir) == [True, True, True]
 
 
 def test_caption_source_text_and_bbox_survive_content_list_parsing(tmp_path):

@@ -94,10 +94,11 @@ def test_author_names_stay_and_affiliations_translate():
     assert roles[1] == "author"
     assert roles[2] == "affiliation"
     segments = collect_translatable_strings(ir)
-    assert segments[1] == "Jane Doe, John Smith"
+    # The byline is an author node and never enters the queue; the affiliation
+    # stays a translatable paragraph.
+    assert "Jane Doe, John Smith" not in segments
     assert "Department of Computer Science, Example University, jane@example.edu" in segments
-    # Author names stay in the source language; affiliations translate.
-    assert translatable_mask(ir) == [True, False, True, True, True]
+    assert translatable_mask(ir) == [True, True, True, True]
 
 
 def test_references_heading_translates_and_entries_stay_english():
@@ -208,3 +209,26 @@ def test_table_cell_slots_still_translate_and_caption_stays_source():
     )
     ir = [Title(level=1, text="Paper"), table]
     assert collect_translatable_strings(ir) == ["Paper", "Table 1. Results.", "Method"]
+
+
+def test_unwritable_checkpoint_does_not_fail_the_translation(monkeypatch, tmp_path):
+    """A read-only output directory must not turn a translation into a fallback."""
+    from app.services import translate_service as service
+
+    def fake_chat(message, system_prompt, **kwargs):
+        if "@@SEG@@" in message:
+            return "@@SEG@@".join(f"译({part.strip()})" for part in message.split("@@SEG@@"))
+        return f"译({message.strip()})"
+
+    monkeypatch.setattr(service.llm_client, "chat", fake_chat)
+    # A path whose parent is a file can never be written.
+    blocker = tmp_path / "blocked"
+    blocker.write_text("not a directory")
+    checkpoint = blocker / "translation-checkpoint.json"
+
+    ir = _paragraph_ir("A short paragraph to translate.")
+    notes, issues = service.translate_ir(ir, checkpoint_path=checkpoint)
+
+    assert issues == []
+    assert ir[0].runs[0].text.startswith("译(")
+    assert notes == []

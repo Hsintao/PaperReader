@@ -376,16 +376,12 @@ def _paragraph_plain_text(content: dict) -> str:
 def _looks_like_authors(text: str) -> bool:
     """Whether a front-matter paragraph is the paper's byline.
 
-    An affiliation or contact block matches the same vocabulary, so it is
-    excluded here: it stays a translatable paragraph instead of being folded
-    into the untranslated author node.
+    The same test the role classifier uses, so the block that becomes an
+    `Author` node and the block that only carries the ``author`` role always
+    agree. An affiliation or contact block is excluded: it stays a translatable
+    paragraph instead of being folded into the untranslated byline.
     """
-    stripped = text.strip()
-    if _AFFILIATION_PATTERN.search(stripped):
-        return False
-    if any(char in stripped for char in ".!?\u3002\uff01\uff1f"):
-        return False
-    return any(hint in stripped.lower() for hint in _AUTHOR_HINTS)
+    return _looks_like_author_name(text)
 
 
 def _header_key(text: str) -> str:
@@ -459,6 +455,8 @@ def blocks_to_ir(
 
     ir: list[Block] = []
     seen_title = False
+    seen_heading = False
+    title_is_previous = False
     author_handled = False
 
     for page_index, block in positioned:
@@ -472,6 +470,7 @@ def blocks_to_ir(
             text = _title_text(content) if isinstance(content, dict) else ""
             if not text:
                 continue
+            title_is_previous = True
             level = content.get("level") if isinstance(content, dict) else None
             try:
                 level_int = int(level) if level is not None else 1
@@ -479,6 +478,8 @@ def blocks_to_ir(
                 level_int = 1
             level_int = max(1, level_int)
             seen_title = True
+            if _heading_role(text):
+                seen_heading = True
             ir.append(
                 Title(
                     level=level_int,
@@ -490,6 +491,8 @@ def blocks_to_ir(
             )
 
         elif kind == "paragraph":
+            byline_window = title_is_previous
+            title_is_previous = False
             raw_text = _paragraph_plain_text(content)
             if raw_text and _header_key(raw_text) in repeated:
                 continue
@@ -500,6 +503,9 @@ def blocks_to_ir(
             runs = _runs_from_paragraph_content(items or [], split_bare_dollars=split_bare_dollars)
             if (
                 not author_handled
+                and byline_window
+                and not seen_heading
+                and page_index == 0
                 and raw_text
                 and _looks_like_authors(raw_text)
             ):
@@ -712,19 +718,22 @@ def _heading_role(text: str) -> str:
 
 
 def _looks_like_author_name(text: str) -> bool:
-    """A short front-matter line that reads as a byline, not a sentence.
+    """A short byline, not a sentence.
 
-    Author names arrive as their own block before any section heading. The
-    check stays conservative: a byline is short, holds no sentence-ending
-    punctuation, and names no affiliation, which is what tells it apart from
-    the address block that follows it.
+    A byline is short, holds no sentence-ending punctuation, and names no
+    affiliation, which is what tells it apart from the address block that
+    follows it. It is only considered on the paper's first page and before the
+    first section heading: a body paragraph that happens to be short must never
+    be mistaken for an author name and left in English.
     """
     stripped = text.strip()
     if not stripped or len(stripped) > 160:
         return False
     if _AFFILIATION_PATTERN.search(stripped):
         return False
-    return not any(char in stripped for char in ".!?\u3002\uff01\uff1f")
+    if any(char in stripped for char in ".!?\u3002\uff01\uff1f"):
+        return False
+    return True
 
 
 def classify_roles(ir: list[Block]) -> None:
@@ -737,14 +746,22 @@ def classify_roles(ir: list[Block]) -> None:
     """
     section = ""
     in_references = False
-    front_matter = False
+    front_matter = True
+    byline_window = False
     for block in ir:
         parser_role = _PARSER_ROLES.get(getattr(block, "block_type", ""), "")
         if isinstance(block, Title):
             heading = _heading_role(block.text)
             in_references = heading == "reference_heading"
             section = _SECTION_ROLES.get(heading, "")
-            front_matter = not heading
+            # The first real section heading ends the front matter; from then
+            # on no paragraph can be a byline.
+            if heading:
+                front_matter = False
+            # A byline is the paragraph directly under the paper title.
+            byline_window = (
+                not heading and front_matter and getattr(block, "page_index", -1) == 0
+            )
             block.role = heading or "body"
             continue
         if isinstance(block, Author):
@@ -768,14 +785,16 @@ def classify_roles(ir: list[Block]) -> None:
             )
             continue
         if isinstance(block, Paragraph):
+            window = byline_window
+            byline_window = False
             if section:
                 block.role = section
                 continue
             text = block.source_text or ""
-            if _AFFILIATION_PATTERN.search(text):
+            if front_matter and _AFFILIATION_PATTERN.search(text):
                 block.role = "affiliation"
                 continue
-            if front_matter and _looks_like_author_name(text):
+            if front_matter and window and _looks_like_author_name(text):
                 block.role = "author"
                 continue
             block.role = "body" if text.strip() else "unknown"
