@@ -46,7 +46,10 @@ class Settings(BaseSettings):
     mineru_poll_interval: float = Field(default=5.0, alias="MINERU_POLL_INTERVAL")
     mineru_timeout: float = Field(default=600.0, alias="MINERU_TIMEOUT")
 
-    latexmk_path: str = Field(default="latexmk", alias="LATEXMK_PATH")
+    layout_debug: bool = Field(default=False, alias="LAYOUT_DEBUG")
+    # Pages that fail in-place rendering are rebuilt as freshly typeset reflow
+    # pages (translated content, new geometry) instead of staying English.
+    layout_reflow_fallback: bool = Field(default=True, alias="LAYOUT_REFLOW_FALLBACK")
 
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
 

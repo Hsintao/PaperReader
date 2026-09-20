@@ -40,21 +40,6 @@ export type FailureItem = {
   retry_count: number
 }
 
-export type LatexRecoveryItem = {
-  status: 'analyzing' | 'repairing' | 'recompiling' | 'succeeded' | 'failed'
-  diagnosis?: string | null
-  repairs: Array<{
-    start_line?: number
-    end_line?: number
-    original?: string
-    replacement?: string
-    reason?: string
-    round?: number
-  }>
-  rounds: number
-  last_error?: string | null
-}
-
 export type DocumentStatus = {
   document_id: string
   status: string
@@ -73,9 +58,7 @@ export type DocumentStatus = {
   eta_seconds?: number | null
   stages: StageItem[]
   pending_reviews: ReviewProposalItem[]
-  last_compile_warning?: string | null
   failure?: FailureItem | null
-  latex_recovery?: LatexRecoveryItem | null
   last_read_page: number
   last_read_ratio: number
 }
@@ -162,31 +145,6 @@ export type ProviderSettingsDraft = {
   vision_model: string
 }
 
-export type LintIssue = {
-  line: number | null
-  message: string
-}
-
-export type MissingChar = {
-  char: string
-  codepoint: string
-  count: number
-  suggest: string | null
-}
-
-export type RecompileResult = {
-  ok: boolean
-  pdf_url?: string | null
-  warning?: string | null
-  error?: string | null
-  issues?: LintIssue[]
-  missing_chars?: MissingChar[]
-}
-
-export type DocumentTex = {
-  tex_content: string
-  path: string
-}
 
 // Production (including the portable app) serves the frontend and the API from
 // the same origin; only the Vite dev server needs an explicit backend URL.
@@ -385,32 +343,5 @@ export async function postReviewDecision(
   })
 }
 
-export async function getDocumentTex(documentId: string): Promise<DocumentTex> {
-  const data = await apiFetch(`/api/document/${documentId}/tex`)
-  return {
-    tex_content: (data.tex_content as string) || '',
-    path: (data.path as string) || ''
-  }
-}
 
-export async function recompileDocument(
-  documentId: string,
-  texContent: string
-): Promise<RecompileResult> {
-  return apiFetch(`/api/document/${documentId}/tex`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tex_content: texContent })
-  })
-}
 
-export async function revealDocumentTex(
-  documentId: string,
-  target: 'folder' | 'editor'
-): Promise<{ ok: boolean; error?: string | null }> {
-  return apiFetch(`/api/document/${documentId}/tex/reveal`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ target })
-  })
-}

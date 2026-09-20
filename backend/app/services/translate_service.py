@@ -10,8 +10,6 @@ from pathlib import Path
 from typing import Callable, TypeVar
 
 from app.core.config import settings
-from app.services.latex_service import CJK_FONT_FALLBACK_PREAMBLE
-from app.services.latex_sanitizer import sanitize_and_repair
 from app.services.llm_client import LLMOutputTruncatedError, llm_client
 from app.services.mineru_layout import (
     Block,
@@ -64,49 +62,6 @@ _STRUCTURAL_TAG_PATTERN = re.compile(r"</?[A-Za-z][^>\r\n]*>")
 _PLACEHOLDER_TOKEN_RE = re.compile(r"__PR_PH_\d+__")
 _UNESCAPED_DOLLAR_RE = re.compile(r"(?<!\\)\$")
 _LATEX_FENCE_PATTERN = re.compile(r"^```(?:latex)?\s*|\s*```$", re.MULTILINE)
-_DOCUMENT_BODY_PATTERN = re.compile(r"(?s)^(.*?\\begin\{document\})(.*?)(\\end\{document\}.*)$")
-_CJK_PACKAGE_PATTERN = re.compile(r"\\usepackage(?:\[[^\]]*\])?\{(?:ctex|xeCJK|CJKutf8|CJK)\}")
-_DECLARE_UNICODE_CHARACTER_PATTERN = re.compile(r"\\DeclareUnicodeCharacter\s*\{")
-_CJK_PREAMBLE_SNIPPET = (
-    "\n% Injected by PaperReader to render Chinese translation\n"
-    "\\usepackage{xeCJK}\n"
-    + CJK_FONT_FALLBACK_PREAMBLE
-)
-_CJK_EARLY_SNIPPET = (
-    "% Injected by PaperReader to render Chinese translation. Loaded right\n"
-    "% after \\documentclass because font packages that venue styles pull in\n"
-    "% (newtxtext via aaai2027.sty) break fontspec font-name resolution for\n"
-    "% fonts declared after them under XeLaTeX.\n"
-    "\\usepackage{xeCJK}\n"
-    + CJK_FONT_FALLBACK_PREAMBLE
-)
-_DOCUMENTCLASS_PATTERN = re.compile(r"^[ \t]*\\documentclass[ \t]*", re.MULTILINE)
-_XELATEX_UNICODE_COMPAT_SNIPPET = (
-    "% Injected by PaperReader for pdfLaTeX source compatibility under XeLaTeX\n"
-    "\\providecommand{\\DeclareUnicodeCharacter}[2]{}\n"
-)
-_XELATEX_ENGINE_SHIM_SNIPPET = (
-    "% Injected by PaperReader: translated builds always compile with XeLaTeX for CJK\n"
-    "% output. Load the engine tests first, then disarm styles that hard-abort on\n"
-    "% non-pdfTeX engines (e.g. aaai2027.sty's \\RequirePDFTeX gate); the style's own\n"
-    "% later \\RequirePackage{iftex} becomes a no-op and cannot re-arm it. Some of\n"
-    "% those styles also call the pdfTeX-only \\pdfinfo primitive unconditionally,\n"
-    "% so give it a content-absorbing no-op too.\n"
-    "\\RequirePackage{iftex}\n"
-    "\\let\\RequirePDFTeX\\relax\n"
-    "\\providecommand{\\pdfinfo}[1]{}\n"
-)
-_MICROTYPE_PROTRUSION_GUARD_SNIPPET = (
-    "% Injected by PaperReader: microtype protrusion measures glyph widths with\n"
-    "% \\XeTeXglyph, which hard-errors on the Type1 text fonts pdfLaTeX-era venue\n"
-    "% templates still select under XeLaTeX (Cannot use XeTeXglyph with ptmr8c).\n"
-    "% Protrusion only subtly refines margins, so disable it for translated builds\n"
-    "% instead of risking a compile abort. This runs after every preamble package\n"
-    "% and \\microtypesetup call, wherever microtype was loaded from.\n"
-    "\\IfPackageLoadedTF{microtype}{\\microtypesetup{protrusion=false}}{}\n"
-)
-
-
 def _is_escaped_at(text: str, offset: int) -> bool:
     slashes = 0
     offset -= 1
@@ -211,8 +166,97 @@ def split_text_into_chunks(text: str, max_chars: int = _MAX_CHARS_PER_CHUNK) -> 
 
 
 def _fail_incomplete_translation(idx: int, _item: T, exc: Exception) -> str:
-    """Never publish a document whose failed chunks were silently left English."""
-    raise RuntimeError(f"Translation incomplete: chunk {idx + 1} failed") from exc
+    """A chunk that produced nothing at all is omitted, not published in English."""
+    logger.warning("Chunk %d produced no usable translation and was omitted: %s", idx + 1, exc)
+    return ""
+
+
+_MAX_TRANSLATION_ATTEMPTS = 4  # first attempt plus three retries with feedback
+
+
+def _retry_feedback(problem: Exception) -> str:
+    """The rejection reason, appended to the prompt for the next attempt."""
+    return (
+        f"\n\nYour previous attempt was rejected: {problem}. "
+        "Translate the same text again and correct this problem. Output only "
+        "the Chinese translation, keep every placeholder token exactly once "
+        "and in its original order, and add no commentary."
+    )
+
+
+def _salvage_translation(output: str, mapping: dict[str, str]) -> str:
+    """Best-effort cleanup of a rejected translation.
+
+    After repeated rejections the model's last output is still preferable to
+    the English source: strip fences and control characters, drop placeholder
+    tokens the model invented, and restore the tokens that survived.
+    """
+    text = _strip_code_fences(output).replace("\ufffd", "")
+    text = "".join(ch for ch in text if ord(ch) >= 32 or ch in "\n\r\t")
+    if mapping:
+        text = _PLACEHOLDER_TOKEN_RE.sub(
+            lambda match: match.group(0) if match.group(0) in mapping else "",
+            text,
+        )
+        text = restore_placeholders(text, mapping)
+    return text.strip()
+
+
+def _translate_with_feedback(
+    source: str,
+    mapping: dict[str, str],
+    base_prompt: str,
+    override_api_key: str | None,
+    override_base_url: str | None,
+    override_model: str | None,
+    *,
+    strip_fences: bool,
+) -> str:
+    """Translate one piece of text, retrying with the rejection reason in the
+    prompt. When every attempt is rejected, return the best-effort salvage of
+    what the model produced; raise only when it produced nothing usable."""
+    feedback = ""
+    last_error: Exception | None = None
+    salvage = ""
+    for _attempt in range(_MAX_TRANSLATION_ATTEMPTS):
+        try:
+            translated = _translate_complete_chunk(
+                source,
+                base_prompt + feedback,
+                override_api_key,
+                override_base_url,
+                override_model,
+                strip_fences=strip_fences,
+            )
+        except TranslationValidationError as exc:
+            last_error = exc
+            if exc.output.strip() and not _looks_untranslated(source, exc.output):
+                salvage = exc.output
+            feedback = _retry_feedback(exc)
+            continue
+        except Exception as exc:
+            # Transport-level failure: the client already retried internally
+            # and there is no model output to give feedback on or salvage.
+            last_error = exc
+            break
+        if _looks_untranslated(source, translated):
+            # An echo of the English source is a failure, never a fallback.
+            last_error = TranslationValidationError(
+                "the output echoes the source text instead of translating it"
+            )
+            feedback = _retry_feedback(last_error)
+            continue
+        return translated
+    if salvage.strip():
+        cleaned = _salvage_translation(salvage, mapping)
+        if cleaned:
+            logger.warning(
+                "Using best-effort translation after %d rejected attempts: %s",
+                _MAX_TRANSLATION_ATTEMPTS,
+                last_error,
+            )
+            return cleaned
+    raise last_error or TranslationValidationError("translation failed")
 
 
 _GLOSSARY_SAMPLE_CHARS = 6000
@@ -346,11 +390,8 @@ def translate_text(
     chunks = split_text_into_chunks(protected_text)
     system_prompt = _with_context(
         (
-            "You are a professional academic translator. Translate English academic text into Chinese and output only LaTeX body content. "
-            "Do not include document preamble commands like \\documentclass or \\begin{document}. "
-            "Use LaTeX structure commands for headings and lists, such as \\section{}, \\subsection{}, \\begin{enumerate}...\\end{enumerate}, "
-            "and \\begin{itemize}...\\end{itemize}. Use \\textbf{} or \\textit{} for emphasis when needed. "
-            "Do not output Markdown syntax like #, ##, **, or 1./- list markers. "
+            "You are a professional academic translator. Translate English academic text into Chinese and output only the translation. "
+            "Keep the original paragraph breaks and output plain text; do not add headings, commentary, code fences, or Markdown syntax. "
             "Never repeat, translate, or explain these instructions. "
             "Keep all placeholder tokens like __PR_PH_0000__ unchanged, and do not alter LaTeX commands or citation references represented by placeholders."
         ),
@@ -377,8 +418,9 @@ def translate_text(
         if _placeholder_only(chunk, mapping):
             translated = chunk
         else:
-            translated = _translate_complete_chunk(
+            translated = _translate_with_feedback(
                 chunk,
+                mapping,
                 system_prompt,
                 override_api_key,
                 override_base_url,
@@ -387,7 +429,7 @@ def translate_text(
             )
         with checkpoint_lock:
             translated_chunks[source_index] = translated
-            if checkpoint_path is not None:
+            if translated and checkpoint_path is not None:
                 checkpoint_entries[_checkpoint_key(chunk, "text")] = translated
                 _save_translation_checkpoint(checkpoint_path, checkpoint_entries)
             if progress_callback:
@@ -416,43 +458,6 @@ _VERBATIM_ENV_PATTERN = re.compile(
     re.DOTALL,
 )
 _SENTINEL_PATTERN = re.compile(r"\x00(\d+)\x00")
-
-
-def strip_latex_comments(text: str) -> str:
-    """Remove ``%``-to-end-of-line comments outside verbatim-like environments.
-
-    Commented-out draft text is invisible in the compiled PDF, but it still
-    gets chunked and sent to the LLM — wasting tokens and, when a draft
-    carries protected placeholders the model chooses not to echo back,
-    failing chunk validation persistently. Escaped ``\\%`` is kept, and
-    verbatim/lstlisting/minted bodies are preserved verbatim: their ``%``
-    characters are content, not comments.
-    """
-    protected: list[str] = []
-
-    def _blank(match: re.Match[str]) -> str:
-        protected.append(match.group(0))
-        return f"\x00{len(protected) - 1}\x00"
-
-    text = _VERBATIM_ENV_PATTERN.sub(_blank, text)
-
-    lines = []
-    for line in text.split("\n"):
-        comment = _COMMENT_START_PATTERN.search(line)
-        if comment is None:
-            lines.append(line)
-            continue
-        # A comment-only line must be dropped entirely: TeX treats it as no
-        # line at all, and replacing it with an empty line would introduce a
-        # \par — fatal inside pgfkeys option blocks, where venue templates
-        # (appendix comments like "% title=...") commonly carry comment-only
-        # lines. A line with content before the comment keeps that content.
-        before = line[: comment.start()].rstrip()
-        if before:
-            lines.append(before)
-    text = "\n".join(lines)
-
-    return _SENTINEL_PATTERN.sub(lambda match: protected[int(match.group(1))], text)
 
 
 _IR_SEGMENT_DELIMITER = "\n\n@@SEG@@\n\n"
@@ -488,7 +493,11 @@ _TRANSLATION_CONTRACT_VERSION = "ir-translation-v2"
 
 
 class TranslationValidationError(RuntimeError):
-    pass
+    def __init__(self, message: str, output: str = ""):
+        super().__init__(message)
+        # The rejected model output, kept so a later salvage pass can present
+        # whatever the model did produce instead of falling back to English.
+        self.output = output
 
 
 class TranslationChunkError(RuntimeError):
@@ -523,6 +532,24 @@ def _normalize_translation(source: str, translated: str, *, ordered: bool = True
     return repaired
 
 
+def _comparable_text(text: str) -> str:
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", (text or "").lower())
+
+
+def _looks_untranslated(source: str, translated: str) -> bool:
+    """True when the "translation" is the source text handed straight back.
+
+    A model that echoes its input used to be cached as a valid translation, so
+    the page stayed English forever after: every later run reused the echoed
+    text instead of asking again.
+    """
+    if not source or not translated:
+        return False
+    if len(re.findall(r"[A-Za-z]", source)) < 8:
+        return False
+    return _comparable_text(source) == _comparable_text(translated)
+
+
 def _validate_translation(source: str, translated: str, *, ordered: bool = True) -> None:
     """Reject structurally unsafe or clearly non-translation model output.
 
@@ -532,34 +559,34 @@ def _validate_translation(source: str, translated: str, *, ordered: bool = True)
     while the IR path maps translations positionally and needs the sequence.
     """
     if not translated.strip():
-        raise TranslationValidationError("empty translation")
+        raise TranslationValidationError("empty translation", output=translated)
     if "```" in translated:
-        raise TranslationValidationError("unexpected code fence")
+        raise TranslationValidationError("unexpected code fence", output=translated)
     controls = [ch for ch in translated if ord(ch) < 32 and ch not in "\n\r\t"]
     if controls:
-        raise TranslationValidationError("unsafe control character")
+        raise TranslationValidationError("unsafe control character", output=translated)
     source_tokens = _placeholder_tokens(source)
     translated_tokens = _placeholder_tokens(translated)
     if (source_tokens != translated_tokens if ordered
             else Counter(source_tokens) != Counter(translated_tokens)):
-        raise TranslationValidationError("placeholder count or order changed")
+        raise TranslationValidationError("placeholder count or order changed", output=translated)
     # Real math is placeholder-protected before the model sees a segment, so a
     # source without unescaped ``$`` must never gain one: losing the backslash
     # of ``\$10.99`` would later pair into fake inline math and swallow prose
     # such as ``Big & Tall`` into math mode.
     if not _UNESCAPED_DOLLAR_RE.search(source) and _UNESCAPED_DOLLAR_RE.search(translated):
-        raise TranslationValidationError("unescaped '$' introduced (escaped currency/math lost)")
+        raise TranslationValidationError("unescaped '$' introduced (escaped currency/math lost)", output=translated)
     if _STRUCTURAL_TAG_PATTERN.findall(source) != _STRUCTURAL_TAG_PATTERN.findall(translated):
-        raise TranslationValidationError("unexpected structural tag")
+        raise TranslationValidationError("unexpected structural tag", output=translated)
     low_source = source.lower()
     low_output = translated.lower()
     for fragment in _PROMPT_LEAK_FRAGMENTS + _REFUSAL_FRAGMENTS:
         if fragment in low_output and fragment not in low_source:
-            raise TranslationValidationError("model meta-commentary or refusal detected")
+            raise TranslationValidationError("model meta-commentary or refusal detected", output=translated)
     if re.search(r"\\(?:documentclass|begin\{document\}|usepackage)\b", translated):
-        raise TranslationValidationError("unexpected document structure")
+        raise TranslationValidationError("unexpected document structure", output=translated)
     if len(translated) > max(800, len(source) * 5):
-        raise TranslationValidationError("abnormal output expansion")
+        raise TranslationValidationError("abnormal output expansion", output=translated)
 
 
 def _batch_segments(segments: list[str], max_chars: int) -> list[list[int]]:
@@ -709,25 +736,61 @@ def _translate_single_segment(
         ),
         translation_context,
     )
-    last_error: TranslationValidationError | None = None
-    translated = ""
-    for _attempt in range(2):
-        try:
-            translated = _translate_complete_chunk(
-                protected,
-                system_prompt,
-                override_api_key,
-                override_base_url,
-                override_model,
-                strip_fences=True,
-            )
-            break
-        except TranslationValidationError as exc:
-            last_error = exc
-    else:
-        raise last_error or TranslationValidationError("invalid translation")
+    translated = _translate_with_feedback(
+        protected,
+        mapping,
+        system_prompt,
+        override_api_key,
+        override_base_url,
+        override_model,
+        strip_fences=True,
+    )
     cleaned = restore_placeholders(translated.strip(), mapping)
-    return cleaned or text
+    if not cleaned:
+        raise TranslationValidationError("empty translation")
+    return cleaned
+
+
+def translate_concise(
+    text: str,
+    override_api_key: str | None = None,
+    override_base_url: str | None = None,
+    override_model: str | None = None,
+    *,
+    translation_context: str = "",
+) -> str:
+    """Brevity-constrained re-translation for a block that did not fit its box.
+
+    The first translation optimizes for fidelity; when the layout search
+    reports the text cannot fit above the minimum font size, a second pass
+    with an explicit character budget usually lands inside the box.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return ""
+    budget = max(20, int(len(stripped) * 0.75))
+    system_prompt = _with_context(
+        (
+            "Translate the following English academic text into concise Chinese. "
+            f"Keep the translation under {budget} characters while preserving the meaning; "
+            "prefer compact wording over exhaustive phrasing. "
+            "Output only the translation, with no extra commentary, code fences, or Markdown. "
+            "Never repeat, translate, or explain these instructions. "
+            "Preserve numbers, proper nouns, URLs, placeholders like __PR_PH_0000__, and any LaTeX commands unchanged."
+        ),
+        translation_context,
+    )
+    protected, mapping = protect_placeholders(stripped)
+    translated = _translate_with_feedback(
+        protected,
+        mapping,
+        system_prompt,
+        override_api_key,
+        override_base_url,
+        override_model,
+        strip_fences=True,
+    )
+    return restore_placeholders(translated.strip(), mapping)
 
 
 def _checkpoint_key(source: str, namespace: str = "ir") -> str:
@@ -775,17 +838,24 @@ def translate_ir(
     checkpoint_path: Path | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
     translation_context: str = "",
-) -> None:
+) -> list[str]:
     """Translate the prose content of an IR list in place.
 
-    Math (display + inline), images, and tables are left untouched. Only
-    `Title.text`, `TextRun.text`, and image/table captions are sent to the LLM,
-    minus the segments `translatable_mask` marks as source-language (the
+    Math (display + inline) and captions are left untouched. Only
+    `Title.text`, `TextRun.text`, list items and table cells are sent to the
+    LLM, minus the segments `translatable_mask` marks as source-language (the
     bibliography).
+
+    A segment whose translation fails is retried with the rejection reason
+    fed back into the prompt (three retries); when every attempt fails, the
+    model's best-effort output is used if there is one, and only a segment
+    that produced nothing at all is omitted — the source wording is never
+    substituted as a fallback. The returned notes list what was omitted so
+    the pipeline can record it.
     """
     source_segments = collect_translatable_strings(ir)
     if not source_segments:
-        return
+        return []
 
     # MinerU occasionally emits a whole page as one TextRun. Split each such
     # logical segment before batching, then reassemble it after translation.
@@ -818,6 +888,9 @@ def translate_ir(
                 cached = _normalize_translation(segment, cached)
             except TranslationValidationError:
                 continue
+            if _looks_untranslated(segment, cached):
+                # A cached echo of the source is not a translation: ask again.
+                continue
             translations[index] = cached
 
     pending = [index for index, value in enumerate(translations) if not value]
@@ -831,11 +904,41 @@ def translate_ir(
     if progress_callback:
         progress_callback(len(segments) - len(pending), len(segments))
 
+    failed_slots: set[int] = set()
+    failures_lock = threading.Lock()
+
+    def mark_failed(slots) -> None:
+        """Remember these slots as failed; their translation stays empty."""
+        with failures_lock:
+            for slot in slots:
+                failed_slots.add(slot)
+
     def _do_batch(_i: int, batch: list[int]) -> str:
         batch_segments = [segments[j] for j in batch]
+
         def persist_result(relative_index: int, value: str) -> None:
             slot = batch[relative_index]
-            value = _normalize_translation(segments[slot], value)
+            try:
+                value = _normalize_translation(segments[slot], value)
+                usable = not _looks_untranslated(segments[slot], value)
+            except TranslationValidationError:
+                usable = False
+            if not usable:
+                # Retry this slot on its own, feeding the rejection reason
+                # back into the prompt. A segment that still fails is omitted,
+                # never silently kept in English.
+                try:
+                    value = _translate_single_segment(
+                        segments[slot],
+                        override_api_key,
+                        override_base_url,
+                        override_model,
+                        translation_context,
+                    )
+                except Exception as exc:
+                    logger.warning("Segment %d could not be translated: %s", slot, exc)
+                    mark_failed([slot])
+                    return
             with checkpoint_lock:
                 translations[slot] = value
                 if checkpoint_path is not None:
@@ -855,16 +958,20 @@ def translate_ir(
                 translation_context=translation_context,
             )
         except TranslationChunkError as exc:
-            source_index = batch[exc.index]
-            raise RuntimeError(
-                f"Translation incomplete: chunk {source_index + 1} failed"
-            ) from exc
+            slot = batch[exc.index]
+            mark_failed([slot])
+            remaining = [
+                index for index in batch[exc.index + 1 :] if not translations[index]
+            ]
+            if remaining:
+                # The failure is local to one segment; the rest of the batch is
+                # still worth translating one by one.
+                _do_batch(_i, remaining)
         return ""
 
     def _fallback(_i: int, batch: list[int], _exc: Exception) -> str:
-        if isinstance(_exc, RuntimeError) and str(_exc).startswith("Translation incomplete: chunk "):
-            raise _exc
-        return _fail_incomplete_translation(batch[0], batch, _exc)
+        mark_failed([index for index in batch if not translations[index]])
+        return ""
 
     _run_concurrent(batches, worker=_do_batch, fallback=_fallback)
 
@@ -872,7 +979,26 @@ def translate_ir(
     for indices, mapping in segment_groups:
         parts = [translations[idx].strip() for idx in indices]
         if any(not part for part in parts):
-            raise RuntimeError("Translation incomplete: one or more sub-segments are empty")
-        logical_translations.append(restore_placeholders(" ".join(parts), mapping))
+            mark_failed([idx for idx in indices if not translations[idx]])
+        # Pieces that could not be translated are left out; the rest of the
+        # segment is still presented.
+        logical = " ".join(part for part in parts if part)
+        logical_translations.append(restore_placeholders(logical, mapping))
 
     apply_translations(ir, logical_translations)
+
+    notes: list[str] = []
+    if failed_slots:
+        logical_failed = {
+            group_index
+            for group_index, (indices, _mapping) in enumerate(segment_groups)
+            if any(index in failed_slots for index in indices)
+        }
+        sample = ", ".join(
+            source_segments[index][:40] for index in sorted(logical_failed)[:3]
+        )
+        notes.append(
+            f"{len(logical_failed)} segment(s) could not be translated after "
+            f"repeated retries and were omitted (e.g. {sample})"
+        )
+    return notes

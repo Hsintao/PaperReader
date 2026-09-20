@@ -1,23 +1,23 @@
-# PaperReader v2.1.12
+# PaperReader v2.2.0
 
 [English](../../README.md) | 简体中文
 
-[下载 Windows / macOS v2.1.12](https://github.com/Mars-Dingdang/PaperReader/releases/tag/v2.1.12) · [升级指南](../UPGRADING.md) · [发布说明](releases/v2.1.12.md)
+[下载 Windows / macOS v2.2.0](https://github.com/Mars-Dingdang/PaperReader/releases/tag/v2.2.0) · [升级指南](../UPGRADING.md) · [发布说明](releases/v2.2.0.md)
 
 > 📖 **下载前请先阅读[用户说明书](../user_instruction.md)**，其中包含安装（含 Windows 安装包"解除锁定"步骤，可避免绝大多数启动失败）、首次运行的服务商配置、论文提交、历史记录与产物文件等说明。
 
-v2.1.12 将 LaTeX 图表缩略图裁剪为图表本身，不再显示整个页面，原文与译文 PDF 均独立生效。标题定位优先识别真正的标题行，而不是正文中的引用。详见[发布说明](releases/v2.1.12.md)。前端/API 版本号：`2.1.12`。
+v2.2.0 用「钉在原稿坐标上」的排版取代了 LaTeX 整篇重排：每个译文块都回到原稿段落的坐标与字号，图片、公式、图注、表格线条直接沿用原稿，译文 PDF 与原稿同页幅、同页数，也不再需要安装 TeX Live。详见[发布说明](releases/v2.2.0.md)。前端/API 版本号：`2.2.0`。
 
 ![](../../images/demo1.png)
 
-PaperReader 是一款全栈双语论文阅读应用。上传 PDF 后，PaperReader 通过 MinerU 云端 API 解析，使用大模型翻译并保留公式、图片与表格结构，重新编译生成译文 PDF，并支持原文/译文对照阅读。
+PaperReader 是一款全栈双语论文阅读应用。上传 PDF 后，PaperReader 通过 MinerU 云端 API 或内置的文字层解析器解析，用大模型翻译，并把译文按原稿坐标排回原页——页幅与页数不变，图片、公式与表格保持原样，支持原文/译文对照阅读。
 
 ## 桌面版快速开始
 
 - **Windows**：从 Release 页下载 ZIP，完整解压后运行 `PaperReader.exe`。若无法打开，请先对 ZIP "解除锁定"，见[用户说明书](../user_instruction.md)。
 - **macOS（Apple Silicon）**：打开 DMG，将 PaperReader 拷贝到"应用程序"。
 - 两个平台的安装包都在应用内的「设置」中填写你自己的大模型与 [MinerU](https://mineru.net/apiManage/docs) 凭据，其余依赖已全部内置。
-- 生成译文 PDF 需要宿主机额外安装 [TeX Live](https://www.tug.org/texlive/) 与 `latexmk`。
+- 生成译文 PDF 需要宿主机安装中文字体（macOS：Songti SC；Windows：SimSun；Linux：fonts-noto-cjk），无需安装 TeX。
 - 平台说明：[Windows](../../desktop/README_zh.md) · [macOS](../../desktop/README_macos_zh.md)
 
 ## 功能特性
@@ -26,7 +26,9 @@ PaperReader 是一款全栈双语论文阅读应用。上传 PDF 后，PaperRead
 - 本地 SQLite 持久化历史记录；重启后可重新打开已处理的文件
 - 仅支持上传 `.pdf`，解析走 MinerU 云端 API 或内置的本地文本层提取，无需本地 OCR 或 GPU
 - LLM 并发翻译，带逐 chunk 校验检查点与自动重试；失败文档从最近检查点续跑，无需从头再来
-- LaTeX 自动恢复：散文本清洗 → strict/降级两级编译 → 最多五轮编译反馈驱动的模型修复，支持扩大上下文、修复导言区与宏包、自动备份 → 浏览器内手动 TeX 编辑器
+- 忠实原稿的译文排版：每个块沿用原稿坐标与实测字号、字重、对齐和行距；放不下时依次吃掉下方留白、只在块内缩字、续排到解析丢失的区域，最后回退为原稿内容
+- 图片、块级公式、图注与页眉页脚直接沿用原稿；表格保留矢量线条，只替换已翻译的单元格文字
+- 合成后逐块校验：原稿文字没被清干净的块回退为原稿内容；会丢失原文的页整页回退为原稿页
 - 可选的视觉模型逐页对抗校验（自动/手动复核，默认关闭）
 - 原文/译文 PDF 对照阅读：书签或后端解析的章节大纲、文本选择复制、触控板缩放、按需页面渲染，以及带阶段分解、预计耗时与失败诊断的进度条
 - Ctrl/Cmd+F 文档内全文搜索，支持逐个命中跳转

@@ -72,15 +72,6 @@ class FailureEntry:
 
 
 @dataclass
-class LatexRecoveryEntry:
-    status: str = "failed"
-    diagnosis: str | None = None
-    repairs: list[dict] = field(default_factory=list)
-    rounds: int = 0
-    last_error: str | None = None
-
-
-@dataclass
 class AnnotationEntry:
     id: str
     document_id: str
@@ -119,11 +110,8 @@ class DocumentRecord:
     vision_check_enabled: bool = False
     vision_check_mode: str = "auto"
     pending_reviews: list[ReviewProposal] = field(default_factory=list)
-    last_compile_warning: str | None = None
-    translated_tex_path: Path | None = None
     failure: FailureEntry | None = None
     retry_count: int = 0
-    latex_recovery: LatexRecoveryEntry | None = None
     last_read_page: int = 0
     last_read_ratio: float = 0.0
     metadata: dict = field(default_factory=dict)
@@ -165,7 +153,6 @@ def _serialize_items(items: list) -> str:
 
 def _document_from_row(row) -> DocumentRecord:
     failure_payload = json.loads(row["failure_json"] or "null")
-    recovery_payload = json.loads(row["latex_recovery_json"] or "null")
     return DocumentRecord(
         document_id=row["document_id"],
         source_type=row["source_type"],
@@ -192,15 +179,8 @@ def _document_from_row(row) -> DocumentRecord:
         vision_check_enabled=bool(row["vision_check_enabled"]),
         vision_check_mode=row["vision_check_mode"] or "auto",
         pending_reviews=[ReviewProposal(**item) for item in json.loads(row["pending_reviews_json"] or "[]")],
-        last_compile_warning=row["last_compile_warning"],
-        translated_tex_path=Path(row["translated_tex_path"]) if row["translated_tex_path"] else None,
         failure=FailureEntry(**failure_payload) if isinstance(failure_payload, dict) else None,
         retry_count=int(row["retry_count"] or 0),
-        latex_recovery=(
-            LatexRecoveryEntry(**recovery_payload)
-            if isinstance(recovery_payload, dict)
-            else None
-        ),
         last_read_page=int(row["last_read_page"] or 0),
         last_read_ratio=float(row["last_read_ratio"] or 0.0),
         metadata=json.loads(row["metadata_json"] or "{}") if row["metadata_json"] else {},
@@ -220,8 +200,8 @@ def save_document(record: DocumentRecord) -> DocumentRecord:
                 artifacts_json, references_json, logs_json, created_at, updated_at, last_opened_at,
                 size_bytes, progress, current_stage, current_stage_label, stage_started_at,
                 eta_seconds, stages_json, vision_check_enabled,
-                vision_check_mode, pending_reviews_json, last_compile_warning, translated_tex_path, deleted_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                vision_check_mode, pending_reviews_json, deleted_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(document_id) DO UPDATE SET
                 source_type = excluded.source_type,
                 source_path = excluded.source_path,
@@ -246,8 +226,6 @@ def save_document(record: DocumentRecord) -> DocumentRecord:
                 vision_check_enabled = excluded.vision_check_enabled,
                 vision_check_mode = excluded.vision_check_mode,
                 pending_reviews_json = excluded.pending_reviews_json,
-                last_compile_warning = excluded.last_compile_warning,
-                translated_tex_path = excluded.translated_tex_path,
                 deleted_at = excluded.deleted_at
             """,
             (
@@ -276,23 +254,18 @@ def save_document(record: DocumentRecord) -> DocumentRecord:
                 1 if record.vision_check_enabled else 0,
                 record.vision_check_mode,
                 _serialize_items(record.pending_reviews),
-                record.last_compile_warning,
-                str(record.translated_tex_path) if record.translated_tex_path else None,
                 _to_iso(record.deleted_at),
             ),
         )
         conn.execute(
             """
             UPDATE documents
-            SET failure_json = ?, retry_count = ?, latex_recovery_json = ?
+            SET failure_json = ?, retry_count = ?
             WHERE document_id = ?
             """,
             (
                 json.dumps(asdict(record.failure), ensure_ascii=False) if record.failure else None,
                 record.retry_count,
-                json.dumps(asdict(record.latex_recovery), ensure_ascii=False)
-                if record.latex_recovery
-                else None,
                 record.document_id,
             ),
         )
@@ -439,11 +412,7 @@ def queue_document_retry(document_id: str) -> tuple[DocumentRecord, str]:
             raise HTTPException(status_code=409, detail="Document is not in a retryable failed state")
         if record.failure and not record.failure.retryable:
             raise HTTPException(status_code=409, detail="This failure cannot be retried automatically")
-        failed_stage = (record.failure.stage if record.failure else record.current_stage) or "upload"
-        if failed_stage in {"latex_diagnose", "latex_repair", "latex_rebuild"}:
-            resume_from = "latex_build"
-        else:
-            resume_from = failed_stage
+        resume_from = (record.failure.stage if record.failure else record.current_stage) or "upload"
         with db_cursor() as conn:
             claimed = conn.execute(
                 """
@@ -475,7 +444,7 @@ def mark_document_failed(document_id: str, stage: str, message: str) -> None:
     failed documents keep their state.
     """
     record = DOCUMENTS.get(document_id)
-    if record is None or record.status not in {"queued", "processing", "recovering"}:
+    if record is None or record.status not in {"queued", "processing"}:
         return
     record.status = "failed"
     record.failure = FailureEntry(

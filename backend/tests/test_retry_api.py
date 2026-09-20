@@ -7,9 +7,7 @@ from app.models import store
 from app.services.stage_tracker import init_stages, with_stage
 
 
-def test_failed_document_can_queue_retry_once_and_status_exposes_recovery(
-    client, monkeypatch
-):
+def test_failed_document_can_queue_retry_once(client, monkeypatch):
     dispatched: list[tuple[str, str]] = []
 
     def fake_retry(document_id: str, resume_from: str) -> None:
@@ -27,9 +25,6 @@ def test_failed_document_can_queue_retry_once_and_status_exposes_recovery(
         status="failed",
         failure=store.FailureEntry(
             stage="translate", message="chunk 7 translation failed", chunk=7
-        ),
-        latex_recovery=store.LatexRecoveryEntry(
-            status="failed", diagnosis="invalid section title", rounds=2
         ),
     )
     init_stages(record)
@@ -49,7 +44,7 @@ def test_failed_document_can_queue_retry_once_and_status_exposes_recovery(
     status = client.get("/api/document/failed-doc").json()
     assert status["failure"]["chunk"] == 7
     assert status["failure"]["retry_count"] == 1
-    assert status["latex_recovery"]["diagnosis"] == "invalid section title"
+    assert "latex_recovery" not in status
     assert client.post("/api/document/failed-doc/retry").status_code == 409
 
 
@@ -74,7 +69,7 @@ def test_startup_converts_interrupted_work_into_retryable_failure(isolated_stora
     source = settings.upload_dir / "interrupted.pdf"
     source.write_bytes(b"pdf")
     record = store.DocumentRecord(
-        "interrupted-doc", "pdf", source, status="recovering", current_stage="latex_repair"
+        "interrupted-doc", "pdf", source, status="processing", current_stage="render"
     )
     store.save_document(record)
     store.DOCUMENTS.clear()
@@ -85,7 +80,7 @@ def test_startup_converts_interrupted_work_into_retryable_failure(isolated_stora
     assert recovered is not None
     assert recovered.status == "failed"
     assert recovered.failure is not None
-    assert recovered.failure.stage == "latex_repair"
+    assert recovered.failure.stage == "render"
     assert recovered.failure.retryable is True
 
 

@@ -44,14 +44,6 @@ class FailureItem(BaseModel):
     retry_count: int = 0
 
 
-class LatexRecoveryItem(BaseModel):
-    status: str
-    diagnosis: str | None = None
-    repairs: list[dict] = []
-    rounds: int = 0
-    last_error: str | None = None
-
-
 class RetryDocumentResponse(BaseModel):
     document_id: str
     status: str
@@ -76,9 +68,7 @@ class DocumentStatusResponse(BaseModel):
     eta_seconds: int | None = None
     stages: list[StageItem] = []
     pending_reviews: list[ReviewProposalItem] = []
-    last_compile_warning: str | None = None
     failure: FailureItem | None = None
-    latex_recovery: LatexRecoveryItem | None = None
     last_read_page: int = 0
     last_read_ratio: float = 0.0
 

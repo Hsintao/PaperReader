@@ -557,22 +557,6 @@ textarea { resize: vertical; }
 }
 .empty-actions { display: flex; gap: 10px; margin-top: 22px; }
 .empty-actions .btn { padding: 9px 18px; }
-.latex-recommendation {
-  max-width: 560px;
-  margin-top: 12px;
-  padding: 8px 11px;
-  color: var(--accent);
-  background: var(--accent-soft);
-  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
-  border-radius: var(--radius-sm);
-  font-size: 12px;
-}
-.sidebar-latex-recommendation {
-  margin: 0 12px 10px;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.4;
-}
 .config-callout { margin-top: 18px; display: inline-flex; align-items: center; gap: 7px; color: var(--warning); background: color-mix(in srgb, var(--warning) 9%, var(--bg-soft)); border: 1px solid color-mix(in srgb, var(--warning) 28%, var(--border)); padding: 8px 12px; }
 
 .app-notice {
@@ -1431,112 +1415,6 @@ textarea { resize: vertical; }
   color: var(--warning);
 }
 
-/* ============ Manual TeX editor (CodeMirror 6) ============ */
-.tex-editor-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 8px;
-  flex-wrap: wrap;
-}
-.tex-editor-toolbar .editor-stats {
-  margin-left: auto;
-  font-size: 11px;
-}
-.btn.small {
-  padding: 3px 10px;
-  font-size: 12px;
-}
-.tex-editor-host {
-  height: 60vh;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-}
-.tex-editor-host .cm-editor {
-  height: 100%;
-  background: var(--bg);
-  color: var(--text);
-  font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
-}
-.tex-editor-host .cm-editor.cm-focused {
-  outline: none;
-}
-.tex-editor-host .cm-scroller {
-  font-family: inherit;
-}
-.tex-editor-host .cm-gutters {
-  background: var(--bg-soft);
-  border-right: 1px solid var(--border);
-  color: var(--muted);
-}
-.tex-editor-host .cm-activeLine {
-  background: var(--accent-soft);
-}
-.tex-editor-host .cm-activeLineGutter {
-  background: var(--accent-soft);
-  color: var(--text);
-}
-.tex-editor-host .cm-selectionBackground,
-.tex-editor-host .cm-content ::selection {
-  background: var(--accent-soft);
-}
-.tex-editor-host .cm-cursor {
-  border-left-color: var(--accent);
-}
-.tex-editor-host .cm-panels {
-  background: var(--bg-elev);
-  color: var(--text);
-  border-bottom: 1px solid var(--border);
-}
-.tex-editor-host .cm-panels input,
-.tex-editor-host .cm-panels button {
-  background: var(--bg-soft);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 2px 6px;
-  font-size: 12px;
-}
-.tex-editor-host .cm-panels button:hover {
-  border-color: var(--accent);
-}
-.tex-editor-host .cm-searchMatch {
-  background: var(--accent-soft);
-  outline: 1px solid var(--accent);
-}
-.tex-editor-host .cm-searchMatch-selected {
-  background: var(--accent);
-}
-.tex-editor-notice {
-  margin-top: 6px;
-  font-size: 12px;
-  color: var(--text-soft);
-  word-break: break-all;
-}
-.tex-issue-list {
-  margin-top: 4px;
-  max-height: 180px;
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.tex-issue-item {
-  text-align: left;
-  background: transparent;
-  border: none;
-  color: inherit;
-  font-size: 12px;
-  font-family: 'SF Mono', Menlo, Consolas, monospace;
-  padding: 2px 4px;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-.tex-issue-item:hover {
-  background: rgba(192, 57, 43, 0.12);
-}
 .missing-char-row {
   display: flex;
   align-items: center;

@@ -29,8 +29,8 @@ import requests
 
 from app.core.config import settings
 
-# Keep the curl download fallback windowless in the packaged desktop app
-# (see the matching flag in latex_service for the full rationale).
+# Keep the curl download fallback windowless in the packaged desktop app so
+# the packaged desktop build never flashes a console window.
 _CREATION_FLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 
@@ -47,6 +47,8 @@ class MinerUResult:
     mode_label: str
     extracted_files: list[Path] = field(default_factory=list)
     content_blocks: list[dict] | None = None
+    layout_payload: dict | None = None
+    boxes_normalized: bool = True
     images_dir: Path | None = None
     two_column: bool = False
 
@@ -124,74 +126,6 @@ def extract_text_from_pdf_text_layer(pdf_path: str, max_pages: int = 3) -> str:
 # Local structured extraction (no MinerU / cloud dependency)
 # ---------------------------------------------------------------------------
 
-# Section-heading heuristics for text extracted from a PDF text layer.
-_HEADING_NUMBERED_PATTERN = re.compile(r"^\d+(?:\.\d+)*\s+[A-Z0-9]")
-_HEADING_KEYWORDS = {
-    "abstract", "introduction", "related work", "related works", "background",
-    "method", "methods", "methodology", "approach", "experiment", "experiments",
-    "experimental setup", "results", "evaluation", "discussion", "conclusion",
-    "conclusions", "future work", "references", "acknowledgments",
-    "acknowledgements", "appendix", "limitations", "overview",
-}
-
-
-def _is_heading_line(line: str) -> bool:
-    s = line.strip()
-    if not s or len(s) > 90:
-        return False
-    if _HEADING_NUMBERED_PATTERN.match(s):
-        return True
-    if s.lower() in _HEADING_KEYWORDS:
-        return True
-    if s.isupper() and len(s) > 3:
-        return True
-    return False
-
-
-def _title_block(text: str, level: int) -> dict:
-    return {
-        "type": "title",
-        "content": {"title_content": [{"type": "text", "content": text}], "level": level},
-    }
-
-
-def _paragraph_block(lines: list[str]) -> dict:
-    return {
-        "type": "paragraph",
-        "content": {"paragraph_content": [{"type": "text", "content": " ".join(lines)}]},
-    }
-
-
-def _page_text_blocks(text: str, first_page: bool) -> tuple[list[dict], str, str]:
-    """Split a page's text into IR-style title/paragraph block dicts.
-
-    Returns (blocks, remaining_text, title). On the first page the first short
-    non-heading line is treated as the paper title (level 1) and removed from
-    `remaining_text`; other headings become level-2 title blocks.
-    """
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    blocks: list[dict] = []
-    title = ""
-    if first_page and lines and len(lines[0]) <= 120 and not _is_heading_line(lines[0]):
-        title = lines[0]
-        blocks.append(_title_block(title, 1))
-        lines = lines[1:]
-
-    current: list[str] = []
-    for line in lines:
-        if _is_heading_line(line):
-            if current:
-                blocks.append(_paragraph_block(current))
-                current = []
-            blocks.append(_title_block(line, 2))
-        else:
-            current.append(line)
-    if current:
-        blocks.append(_paragraph_block(current))
-
-    return blocks, "\n".join(lines), title
-
-
 def _extract_page_images(page, page_index: int, images_dir: Path) -> list[dict]:
     """Save embedded raster images from a page and return IR image blocks."""
     images_dir.mkdir(parents=True, exist_ok=True)
@@ -251,11 +185,13 @@ def extract_structured_from_pdf_local(
 ) -> MinerUResult:
     """Extract a PDF's embedded text layer + raster images locally (no cloud).
 
-    Produces MinerU-compatible `content_blocks` (list of pages) and an
-    `images/` dir so the existing IR -> translation -> LaTeX pipeline runs
-    unchanged. Falls back to pypdfium2 for text if pypdf yields nothing, and
-    degrades to `content_blocks=None` when there is no extractable text at all.
+    Blocks are built from the page's own text layer with their exact geometry,
+    so the translated page can pin every translation back to the source
+    coordinates. Falls back to pypdfium2 for text if pypdf yields nothing, and
+    degrades to `content_blocks=None` when there is no extractable text.
     """
+    from app.services.layout_model import parse_local_pages
+
     if log_sink is not None:
         log_sink.append("Local PDF parse: reading text layer + images")
 
@@ -272,40 +208,28 @@ def extract_structured_from_pdf_local(
     except Exception as exc:
         raise RuntimeError(f"Could not open PDF for local parsing: {exc}") from exc
 
+    local_pages = parse_local_pages(pdf_path)
     content_blocks: list[list[dict]] = []
     markdown_parts: list[str] = []
     images_saved = False
 
     for page_index, page in enumerate(reader.pages):
-        try:
-            raw = page.extract_text() or ""
-        except Exception:
-            raw = ""
-        cleaned = _clean_pdf_layer_text(raw)
-
-        blocks, remaining, title = _page_text_blocks(cleaned, first_page=(page_index == 0))
+        page_layout = local_pages[page_index] if page_index < len(local_pages) else None
         image_blocks = _extract_page_images(page, page_index, images_dir)
         if image_blocks:
             images_saved = True
-
-        if title:
-            markdown_parts.append(f"# {title}")
-            if remaining.strip():
-                markdown_parts.append(remaining)
-        elif cleaned.strip():
-            markdown_parts.append(cleaned)
-
+        blocks = list(page_layout.blocks) if page_layout else []
+        if page_layout is not None and page_layout.markdown:
+            markdown_parts.append(page_layout.markdown)
         page_blocks = blocks + image_blocks
         if page_blocks:
             content_blocks.append(page_blocks)
 
     markdown = "\n\n".join(markdown_parts).strip()
 
-    # Graceful text-only fallback via pypdfium2 when pypdf found no text.
+    # Graceful text-only fallback via pypdfium2 when no geometry was recovered.
     if not markdown:
         markdown = _extract_with_pypdfium2(pdf_path)
-        if markdown:
-            content_blocks = []
 
     extracted_files: list[Path] = []
     if markdown:
@@ -318,6 +242,8 @@ def extract_structured_from_pdf_local(
         mode_label="local:text-layer",
         extracted_files=extracted_files,
         content_blocks=content_blocks if content_blocks else None,
+        layout_payload=None,
+        boxes_normalized=False,
         images_dir=images_dir if images_saved else None,
     )
 
@@ -647,7 +573,21 @@ def extract_structured_from_pdf(
         pdf_path, output_dir, log_sink=log_sink, progress_cb=progress_cb, config=config
     )
 
+    from app.services.layout_model import compact_middle
+
     content_blocks: list[dict] | None = None
+    layout_payload: dict | None = None
+    middle_candidates = list(output_dir.rglob("*_middle.json"))
+    if middle_candidates:
+        middle_candidates.sort(key=lambda p: len(p.parts))
+        try:
+            payload = json.loads(
+                middle_candidates[0].read_text(encoding="utf-8", errors="ignore")
+            )
+            layout_payload = compact_middle(payload)
+        except (ValueError, OSError):
+            layout_payload = None
+
     # MinerU names the structured files with a batch-uuid prefix, e.g.
     # `{uuid}_content_list_v2.json`, so match on the suffix.
     json_candidates = list(output_dir.rglob("*content_list_v2.json"))
@@ -677,6 +617,8 @@ def extract_structured_from_pdf(
         mode_label=mode_label,
         extracted_files=extracted,
         content_blocks=content_blocks,
+        layout_payload=layout_payload,
+        boxes_normalized=True,
         images_dir=images_dir,
         two_column=two_column,
     )

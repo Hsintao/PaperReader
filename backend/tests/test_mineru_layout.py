@@ -1,18 +1,27 @@
-import re
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas as pdf_canvas
 
+from app.services.layout_model import (
+    compact_middle,
+    measure_pages,
+    pages_from_middle,
+    parse_local_pages,
+)
 from app.services.mineru_layout import (
     DisplayMath,
     Image,
     InlineMath,
     ListBlock,
     Paragraph,
+    Table,
+    TableCell,
     TextRun,
     Title,
+    apply_translations,
     blocks_to_ir,
     collect_translatable_strings,
-    apply_translations,
+    translatable_mask,
 )
-from app.services.latex_service import create_translated_tex_from_ir, render_ir_to_tex
 
 
 SAMPLE_PAGES = [
@@ -77,100 +86,80 @@ def test_blocks_to_ir_extracts_titles_paragraphs_math_image():
     assert ir[5].caption == "A figure caption."
 
 
-def test_collect_and_apply_translations_roundtrip():
+def test_captions_and_headers_never_enter_the_translation_queue():
     ir = blocks_to_ir(SAMPLE_PAGES)
     segments = collect_translatable_strings(ir)
-    # Title (Math for CS), paragraph (Sitian), Title (Problem 1),
-    # 2 text runs in the inline-math paragraph, image caption = 6 strings.
-    assert len(segments) == 6
+    # Title, author paragraph, Problem 1, and the two prose runs around the
+    # inline formula. The figure caption stays in the source language.
+    assert segments == [
+        "Math for CS & AI: Homework 7",
+        "Sitian Ding ",
+        "Problem 1",
+        "Denote the first term as ",
+        ". We have ",
+    ]
 
-    translations = [f"译{i}" for i in range(len(segments))]
-    apply_translations(ir, translations)
+    assert all(translatable_mask(ir))
 
+    apply_translations(ir, [f"译{i}" for i in range(len(segments))])
     assert ir[0].text == "译0"
     assert ir[1].runs[0].text == "译1"
     assert ir[2].text == "译2"
     assert ir[3].runs[0].text == "译3"
     assert ir[3].runs[2].text == "译4"
-    assert ir[5].caption == "译5"
+    assert ir[5].caption == "A figure caption."
 
 
-def test_render_ir_to_tex_emits_sections_math_and_image():
-    ir = blocks_to_ir(SAMPLE_PAGES)
-    tex = render_ir_to_tex(ir)
-
-    # Document scaffolding
-    assert "\\documentclass" in tex
-    assert "\\usepackage[UTF8,fontset=none]{ctex}" in tex
-    assert "mathrsfs" in tex
-    assert "\\begin{document}" in tex and "\\end{document}" in tex
-
-    # First level-1 title becomes the \title{}/\maketitle, second becomes \section*
-    assert "\\title{" in tex
-    assert "\\section*{Problem 1}" in tex
-
-    # Display math wrapped in \[ \]
-    assert "\\[" in tex and "A(x) = \\sum_{n} a_n x^n" in tex and "\\]" in tex
-
-    # Inline math wrapped in $...$
-    assert "$B(x)$" in tex
-
-    # Image included via \includegraphics with normalized relative path
-    assert "\\includegraphics" in tex
-    assert "{fig1.jpg}" in tex
-    assert "\\caption*{A figure caption.}" in tex
-    # Bound both dimensions so tall source figures are scaled down instead of
-    # extending beyond (and being clipped by) the PDF page.
-    assert "height=0.68\\textheight" in tex
-    assert "keepaspectratio" in tex
-
-
-def test_chart_panel_is_preserved_and_grouped_with_adjacent_image():
+def test_table_cells_are_translated_and_captions_are_not():
     pages = [[
         {
             "type": "title",
-            "content": {
-                "title_content": [{"type": "text", "content": "Paper"}],
-                "level": 1,
-            },
+            "content": {"title_content": [{"type": "text", "content": "Paper"}], "level": 1},
         },
         {
-            "type": "image",
-            "bbox": [100, 500, 400, 700],
+            "type": "table",
+            "bbox": [100, 200, 500, 400],
             "content": {
-                "image_source": {"path": "images/figure-4a.jpg"},
-                "image_caption": [{"type": "text", "content": "(a) Left panel."}],
-            },
-        },
-        {
-            "type": "chart",
-            "bbox": [420, 505, 800, 700],
-            "content": {
-                "image_source": {"path": "images/figure-4b.jpg"},
-                "chart_caption": [
-                    {"type": "text", "content": "(b) Right panel."},
-                    {"type": "text", "content": "Figure 4: Complete statistics."},
-                ],
+                "image_source": {"path": "images/t1.jpg"},
+                "table_caption": [{"type": "text", "content": "Table 1. Results."}],
             },
         },
     ]]
+    ir = blocks_to_ir(pages, page_sizes=[(612.0, 792.0)])
+    table = ir[1]
+    assert isinstance(table, Table)
+    assert table.caption == "Table 1. Results."
+    table.cells = [
+        TableCell(text="Method", bbox=(110, 300, 200, 320)),
+        TableCell(text="Score", bbox=(220, 300, 300, 320)),
+    ]
 
-    ir = blocks_to_ir(pages)
-    assert len(ir) == 3
-    assert isinstance(ir[1], Image) and isinstance(ir[2], Image)
-    assert ir[2].rel_path == "images/figure-4b.jpg"
-    assert ir[1].page_index == ir[2].page_index == 0
-
-    tex = render_ir_to_tex(ir)
-    assert "{figure-4a.jpg}" in tex
-    assert "{figure-4b.jpg}" in tex
-    assert tex.count("\\begin{minipage}") == 2
-    assert "\\caption*{Figure 4: Complete statistics.}" in tex
-    # One multi-panel source figure must remain one LaTeX figure.
-    assert tex.count("\\begin{figure}[H]") == 1
+    segments = collect_translatable_strings(ir)
+    assert segments == ["Paper", "Method", "Score"]
+    apply_translations(ir, ["论文", "方法", "分数"])
+    assert [cell.translated for cell in table.cells] == ["方法", "分数"]
+    assert table.caption == "Table 1. Results."
 
 
-def test_reference_list_blocks_are_preserved_translated_and_rendered():
+def test_normalized_boxes_are_converted_to_page_points():
+    pages = [[
+        {
+            "type": "title",
+            "bbox": [0, 0, 500, 50],
+            "content": {"title_content": [{"type": "text", "content": "Title"}], "level": 1},
+        },
+        {
+            "type": "paragraph",
+            "bbox": [0, 100, 500, 250],
+            "content": {"paragraph_content": [{"type": "text", "content": "Text"}]},
+        },
+    ]]
+    ir = blocks_to_ir(pages, page_sizes=[(600.0, 800.0)])
+    # y is flipped: the paragraph sits in the upper half of the page.
+    assert ir[1].bbox == (0.0, 600.0, 300.0, 720.0)
+
+
+def test_reference_list_blocks_are_preserved_and_masked():
     pages = [[
         {
             "type": "title",
@@ -211,26 +200,14 @@ def test_reference_list_blocks_are_preserved_translated_and_rendered():
         "[2] Second reference with ",
         ".",
     ]
-    apply_translations(ir, ["论文", "[1] 完整文献一。", "[2] 含公式的文献", "。"])
+    assert translatable_mask(ir) == [True, False, False, False]
 
-    tex = render_ir_to_tex(ir)
-    assert "\\noindent [1] 完整文献一。\\par" in tex
-    assert "[2] 含公式的文献$x^2$。" in tex
-
-
-def test_escape_special_characters_in_text_only():
-    ir = [
-        Paragraph(runs=[TextRun(text="Math & code: 50% done #1")]),
-        DisplayMath(latex="a & b \\\\ c & d"),
-    ]
-    tex = render_ir_to_tex(ir)
-    # Text & is escaped, but math content is preserved verbatim.
-    assert "Math \\& code: 50\\% done \\#1" in tex
-    assert "a & b \\\\ c & d" in tex
+    apply_translations(ir, ["论文", "[1] First complete reference.", "[2] Second reference with ", "."])
+    assert ir[0].text == "论文"
+    assert ir[1].items[0][0].text == "[1] First complete reference."
 
 
 def test_escaped_currency_dollars_do_not_turn_prose_into_inline_math():
-    """Regression: MinerU escaped currency markers must not span prose as math."""
     pages = [[{
         "type": "list",
         "content": {
@@ -250,97 +227,195 @@ def test_escaped_currency_dollars_do_not_turn_prose_into_inline_math():
     assert [type(run) for run in ir[0].items[0]] == [TextRun, InlineMath, TextRun]
     assert ir[0].items[0][1].latex == "x^2"
 
-    tex = render_ir_to_tex(ir)
-    assert r"Prices are \$10.99 in Big \& Tall and \$3.99 to $x^2$." in tex
 
-
-def test_pdf_sample_currency_and_malformed_display_math_stay_prose():
-    pages = [[{
-        "type": "title",
-        "content": {"title_content": [{"type": "text", "content": "Samples"}], "level": 1},
-    }, {
-        "type": "paragraph",
-        "content": {
-            "paragraph_content": [{
-                "type": "text",
-                "content": (
-                    "brownies for $3 a slice and cheesecakes for$4 a slice. "
-                    r"Each is \$ \$3. $\[ 3 \times 43 = 129$ "
-                    r"Then \[\[4 \times 23 = 92 \]"
-                ),
-            }],
+def test_chart_panel_keeps_its_source_geometry():
+    pages = [[
+        {
+            "type": "title",
+            "content": {"title_content": [{"type": "text", "content": "Paper"}], "level": 1},
         },
-    }]]
-
-    ir = blocks_to_ir(pages)
-    paragraph = next(block for block in ir if isinstance(block, Paragraph))
-    assert [type(run) for run in paragraph.runs] == [TextRun]
-
-    tex = render_ir_to_tex(ir)
-    assert r"\$3 a slice" in tex
-    assert r"\textbackslash{}[" in tex
-
-
-def test_create_translated_tex_from_ir_returns_iterable_repairs(tmp_path):
-    # Regression: the function used to fall through without returning, so the
-    # pipeline's `for note in repairs:` raised "'NoneType' object is not iterable".
-    ir = blocks_to_ir(SAMPLE_PAGES)
-    repairs = create_translated_tex_from_ir(ir, tmp_path / "translated.tex", title="Paper")
-    assert isinstance(repairs, list)
-    tex_written = (tmp_path / "translated.tex").read_text(encoding="utf-8")
-    assert "\\begin{document}" in tex_written
-
-
-def test_typed_math_output_keeps_bare_currency_dollars_literal():
-    """Regression (v2.1.6 GiGPO run): content_list_v2 types math explicitly
-    but strips the backslash from escaped currency. With typed math present,
-    bare ``$`` in prose must stay literal instead of pairing into fake inline
-    math that swallows ``Big & Tall``."""
-    pages = [
-        [
-            {
-                "type": "title",
-                "content": {"title_content": [{"type": "text", "content": "Appendix"}], "level": 1},
+        {
+            "type": "image",
+            "bbox": [100, 500, 400, 700],
+            "content": {
+                "image_source": {"path": "images/figure-4a.jpg"},
+                "image_caption": [{"type": "text", "content": "(a) Left panel."}],
             },
-            {
-                "type": "list",
-                "content": {
-                    "list_type": "reference_list",
-                    "list_items": [
-                        {
-                            "item_type": "text",
-                            "item_content": [
-                                {
-                                    "type": "text",
-                                    "content": "'B09QQP3356': shirt 'Big & Tall', $10.99 to $3.99.",
-                                }
-                            ],
-                        }
-                    ],
-                },
+        },
+        {
+            "type": "chart",
+            "bbox": [420, 505, 800, 700],
+            "content": {
+                "image_source": {"path": "images/figure-4b.jpg"},
+                "chart_caption": [
+                    {"type": "text", "content": "(b) Right panel."},
+                    {"type": "text", "content": "Figure 4: Complete statistics."},
+                ],
             },
+        },
+    ]]
+
+    ir = blocks_to_ir(pages, page_sizes=[(1000.0, 1000.0)], normalized_boxes=False)
+    assert isinstance(ir[1], Image) and isinstance(ir[2], Image)
+    assert ir[2].rel_path == "images/figure-4b.jpg"
+    assert ir[1].page_index == ir[2].page_index == 0
+    assert ir[1].bbox == (100.0, 300.0, 400.0, 500.0)
+    assert ir[2].bbox == (420.0, 300.0, 800.0, 495.0)
+
+
+def _write_source(path, lines) -> None:
+    canvas = pdf_canvas.Canvas(str(path), pagesize=letter)
+    canvas.setFont("Helvetica", 11)
+    y = 700
+    for line in lines:
+        canvas.drawString(72, y, line)
+        y -= 24
+    canvas.showPage()
+    canvas.save()
+
+
+def test_text_layer_measurement_reports_size_and_weight(tmp_path):
+    source = tmp_path / "measured.pdf"
+    canvas = pdf_canvas.Canvas(str(source), pagesize=letter)
+    canvas.setFont("Helvetica-Bold", 16)
+    canvas.drawString(72, 700, "Bold Title")
+    canvas.setFont("Helvetica", 10)
+    canvas.drawString(72, 660, "Body text")
+    canvas.showPage()
+    canvas.save()
+
+    frame = measure_pages(source)[0]
+    assert frame.has_text_layer is False  # too few characters for a real page
+    title_chars = [char for char in frame.chars if char.size == 16.0]
+    body_chars = [char for char in frame.chars if char.size == 10.0]
+    assert title_chars and all(char.bold for char in title_chars)
+    assert body_chars and not any(char.bold for char in body_chars)
+
+
+def test_local_parser_recovers_blocks_headers_and_captions(tmp_path):
+    source = tmp_path / "local.pdf"
+    canvas = pdf_canvas.Canvas(str(source), pagesize=letter)
+    canvas.setFont("Helvetica", 8)
+    canvas.drawString(72, 760, "Preprint under review")
+    canvas.setFont("Helvetica-Bold", 16)
+    canvas.drawString(120, 700, "A Long Paper Title for Layout")
+    canvas.setFont("Helvetica", 10)
+    canvas.drawString(72, 660, "First paragraph sentence that continues here.")
+    canvas.drawString(72, 648, "Second line of the same paragraph.")
+    canvas.setFont("Helvetica-Bold", 12)
+    canvas.drawString(72, 600, "1 Introduction")
+    canvas.setFont("Helvetica", 10)
+    canvas.drawString(72, 570, "Body of the introduction.")
+    canvas.setFont("Helvetica", 8)
+    canvas.drawString(72, 460, "Figure 1. A caption that is reused verbatim.")
+    canvas.setFont("Helvetica", 8)
+    canvas.drawString(72, 40, "Page 7")
+    canvas.showPage()
+    canvas.save()
+
+    page = parse_local_pages(source)[0]
+    kinds = [block["type"] for block in page.blocks]
+    assert kinds[0] == "title"
+    assert "caption" in kinds
+    assert "Page 7" not in page.markdown
+    assert "Preprint under review" not in page.markdown
+
+    ir = blocks_to_ir([page.blocks], [(page.width, page.height)], normalized_boxes=False)
+    captions = [block for block in ir if getattr(block, "text", "") == "Figure 1. A caption that is reused verbatim."]
+    assert captions == []
+
+
+def test_middle_json_becomes_ir_with_geometry():
+    middle = {
+        "pdf_info": [
             {
-                "type": "paragraph",
-                "content": {
-                    "paragraph_content": [
-                        {"type": "text", "content": "The objective "},
-                        {"type": "equation_inline", "content": "J(\\theta)"},
-                        {"type": "text", "content": " is maximized."},
-                    ]
-                },
-            },
+                "page_size": [612.0, 792.0],
+                "para_blocks": [
+                    {
+                        "type": "title",
+                        "bbox": [72, 100, 540, 130],
+                        "lines": [
+                            {
+                                "bbox": [72, 100, 540, 130],
+                                "spans": [
+                                    {"bbox": [72, 100, 540, 130], "type": "text", "content": "Paper Title"}
+                                ],
+                            }
+                        ],
+                    },
+                    {
+                        "type": "text",
+                        "bbox": [72, 200, 300, 260],
+                        "lines": [
+                            {
+                                "bbox": [72, 200, 300, 230],
+                                "spans": [
+                                    {"bbox": [72, 200, 200, 230], "type": "text", "content": "Body text "},
+                                    {"bbox": [200, 200, 230, 230], "type": "inline_equation", "content": "x^2"},
+                                    {"bbox": [230, 200, 300, 230], "type": "text", "content": "continues."},
+                                ],
+                            }
+                        ],
+                    },
+                    {
+                        "type": "table",
+                        "bbox": [72, 400, 400, 500],
+                        "blocks": [
+                            {
+                                "type": "table_body",
+                                "bbox": [72, 400, 400, 500],
+                                "lines": [
+                                    {
+                                        "bbox": [80, 420, 380, 440],
+                                        "spans": [
+                                            {"bbox": [80, 420, 200, 440], "type": "text", "content": "Method"},
+                                            {"bbox": [250, 420, 380, 440], "type": "text", "content": "Score"},
+                                        ],
+                                    }
+                                ],
+                            },
+                            {
+                                "type": "table_caption",
+                                "bbox": [72, 500, 400, 520],
+                                "lines": [
+                                    {
+                                        "bbox": [72, 500, 400, 520],
+                                        "spans": [
+                                            {"bbox": [72, 500, 400, 520], "type": "text", "content": "Table 1. Results."}
+                                        ],
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                ],
+                "discarded_blocks": [
+                    {"type": "text", "bbox": [72, 30, 200, 50], "lines": []}
+                ],
+            }
         ]
-    ]
+    }
 
-    ir = blocks_to_ir(pages)
-    list_runs = next(block for block in ir if isinstance(block, ListBlock)).items[0]
-    assert [type(run) for run in list_runs] == [TextRun]
-    assert "$10.99 to $3.99" in list_runs[0].text
+    blocks, frames = pages_from_middle(middle)
+    kinds = [type(block).__name__ for block in blocks]
+    assert kinds == ["Title", "Paragraph", "Table"]
 
-    paragraph = next(block for block in ir if isinstance(block, Paragraph))
-    assert any(isinstance(run, InlineMath) and run.latex == "J(\\theta)" for run in paragraph.runs)
+    title, paragraph, table = blocks
+    assert title.bbox == (72.0, 662.0, 540.0, 692.0)
+    assert paragraph.page_index == 0
+    assert [type(run).__name__ for run in paragraph.runs] == ["TextRun", "InlineMath", "TextRun"]
+    assert paragraph.runs[1].bbox == (200.0, 562.0, 230.0, 592.0)
+    assert table.caption == "Table 1. Results."
+    assert [(cell.text) for cell in table.cells] == ["Method", "Score"]
+    assert table.cells[0].bbox == (80.0, 352.0, 200.0, 372.0)
 
-    tex = render_ir_to_tex(ir)
-    assert not re.search(r"(?<!\\)\$\d", tex)
-    assert "\\$10.99 to \\$3.99" in tex
-    assert "Big \\& Tall" in tex
+    frame = frames[0]
+    assert frame.width == 612.0 and frame.height == 792.0
+    # The discarded block (running head / page number) is accounted for but is
+    # not translated.
+    assert (72.0, 742.0, 200.0, 762.0) in frame.known_regions
+    assert len(frame.known_regions) == 5
+
+    compacted = compact_middle(middle)
+    assert compacted is not None
+    assert compacted["pdf_info"][0]["para_blocks"][2]["type"] == "table"

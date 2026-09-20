@@ -15,6 +15,7 @@ datas = [
     (str(project_root / "desktop" / "assets" / "PaperReader.ico"), "."),
 ]
 datas += collect_data_files("pypdfium2")
+datas += collect_data_files("reportlab")
 # Conda Pythons keep the OpenSSL DLLs that _ssl/_hashlib link against in
 # Library\bin; PyInstaller does not collect them on its own. Globbed so both
 # OpenSSL 1.1 (libssl-1_1-x64.dll) and 3 (libssl-3-x64.dll) layouts work.

@@ -3,7 +3,13 @@
 MinerU returns `content_list_v2.json` as a list of pages, each page being a
 list of typed blocks (title, paragraph, equation_interline, image, table…).
 This module parses that into a flat list of typed IR nodes that downstream
-translation and LaTeX rendering can consume independently.
+translation and layout rendering can consume independently.
+
+Every block also carries the source geometry it came from (`page_index` and
+`bbox`, in page points with the origin at the page's lower-left corner) plus
+span-level boxes, so the layout renderer can pin the translation to the
+original paragraph's coordinates and lift inline formulas out of the source
+page.
 """
 
 from __future__ import annotations
@@ -11,6 +17,35 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from typing import Iterable, Union
+
+Rect = tuple[float, float, float, float]
+
+# Span kinds shared with MinerU's middle.json.
+SPAN_TEXT = "text"
+SPAN_INLINE_MATH = "inline_equation"
+SPAN_DISPLAY_MATH = "interline_equation"
+SPAN_IMAGE = "image"
+SPAN_TABLE = "table"
+
+
+@dataclass
+class Span:
+    """Smallest source unit: a run of text or a formula, with its own box."""
+
+    kind: str = SPAN_TEXT
+    bbox: Rect | None = None
+    text: str = ""
+    latex: str = ""
+
+
+@dataclass
+class TableCell:
+    """One table cell's source text and the box its text occupies."""
+
+    text: str
+    bbox: Rect | None = None
+    spans: list[Span] = field(default_factory=list)
+    translated: str = ""
 
 
 @dataclass
@@ -21,6 +56,7 @@ class TextRun:
 @dataclass
 class InlineMath:
     latex: str
+    bbox: Rect | None = None
 
 
 Run = Union[TextRun, InlineMath]
@@ -30,16 +66,25 @@ Run = Union[TextRun, InlineMath]
 class Title:
     level: int
     text: str
+    page_index: int = -1
+    bbox: Rect | None = None
+    source_text: str = ""
 
 
 @dataclass
 class Author:
     text: str
+    page_index: int = -1
+    bbox: Rect | None = None
 
 
 @dataclass
 class Paragraph:
     runs: list[Run] = field(default_factory=list)
+    page_index: int = -1
+    bbox: Rect | None = None
+    spans: list[Span] = field(default_factory=list)
+    source_text: str = ""
 
 
 @dataclass
@@ -53,11 +98,18 @@ class ListBlock:
 
     list_type: str = ""
     items: list[list[Run]] = field(default_factory=list)
+    page_index: int = -1
+    bbox: Rect | None = None
+    item_boxes: list[Rect | None] = field(default_factory=list)
+    source_text: str = ""
 
 
 @dataclass
 class DisplayMath:
     latex: str
+    page_index: int = -1
+    bbox: Rect | None = None
+    number: str = ""
 
 
 @dataclass
@@ -66,10 +118,11 @@ class Image:
     caption: str = ""
     # MinerU sometimes splits one multi-panel figure into several adjacent
     # blocks (and may label one panel as ``chart`` instead of ``image``).
-    # Keep the source geometry so the LaTeX renderer can put those panels
-    # back on the same row instead of silently dropping or separating them.
+    # Keep the source geometry so the layout renderer can keep those panels
+    # together with the rest of the source artwork.
     page_index: int = -1
-    bbox: tuple[float, float, float, float] | None = None
+    bbox: Rect | None = None
+    caption_bbox: Rect | None = None
 
 
 @dataclass
@@ -77,6 +130,9 @@ class Table:
     rel_path: str = ""
     html: str = ""
     caption: str = ""
+    page_index: int = -1
+    bbox: Rect | None = None
+    cells: list[TableCell] = field(default_factory=list)
 
 
 Block = Union[Title, Author, Paragraph, ListBlock, DisplayMath, Image, Table]
@@ -300,20 +356,58 @@ def _header_key(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip().lower())
 
 
-def blocks_to_ir(content_blocks: Iterable) -> list[Block]:
+def _to_page_rect(
+    raw: object, page_size: tuple[float, float] | None, *, normalized: bool
+) -> Rect | None:
+    """Convert a MinerU box into page points with the origin at lower-left.
+
+    `content_list_v2.json` boxes are normalized to 0-1000 of the page; the
+    boxes in `middle.json` are already page points. Both measure y from the top
+    of the page, while PDF user space measures it from the bottom.
+    """
+    rect = _parse_bbox(raw)
+    if rect is None:
+        return None
+    x0, y0, x1, y1 = rect
+    width, height = page_size if page_size else (0.0, 0.0)
+    if not height:
+        return None
+    if normalized:
+        if not width:
+            return None
+        x0 = x0 / 1000.0 * width
+        x1 = x1 / 1000.0 * width
+        y0 = y0 / 1000.0 * height
+        y1 = y1 / 1000.0 * height
+    return (x0, height - y1, x1, height - y0)
+
+
+def blocks_to_ir(
+    content_blocks: Iterable,
+    page_sizes: list[tuple[float, float]] | None = None,
+    *,
+    normalized_boxes: bool = True,
+) -> list[Block]:
     """Convert MinerU `content_list_v2.json` into a flat list of IR blocks.
 
     Besides the typed blocks, this also:
       * drops short paragraph text that repeats verbatim across pages (running
         headers/footers that MinerU occasionally emits as paragraphs);
       * turns the author/affiliation paragraph right after the paper title into
-        an `Author` node so it is rendered as `\\author{}` and never translated.
+        an `Author` node so it is never translated;
+      * attaches page geometry (page index and box) when `page_sizes` is given,
+        which is what lets the layout renderer pin translations to the source.
     """
     positioned = _flatten_pages_with_positions(content_blocks)
     # Typed-math outputs (content_list_v2) already mark formulas explicitly and
     # strip the backslash from escaped currency, so bare "$" in prose must stay
     # literal there instead of being paired into inline math.
     split_bare_dollars = not _has_typed_math(content_blocks)
+
+    def page_size(page_index: int) -> tuple[float, float] | None:
+        if page_sizes and 0 <= page_index < len(page_sizes):
+            return page_sizes[page_index]
+        return None
 
     para_counts: dict[str, int] = {}
     for _, block in positioned:
@@ -331,6 +425,9 @@ def blocks_to_ir(content_blocks: Iterable) -> list[Block]:
     for page_index, block in positioned:
         kind = block.get("type")
         content = block.get("content") or {}
+        bbox = _to_page_rect(
+            block.get("bbox"), page_size(page_index), normalized=normalized_boxes
+        )
 
         if kind == "title":
             text = _title_text(content) if isinstance(content, dict) else ""
@@ -343,7 +440,15 @@ def blocks_to_ir(content_blocks: Iterable) -> list[Block]:
                 level_int = 1
             level_int = max(1, level_int)
             seen_title = True
-            ir.append(Title(level=level_int, text=text))
+            ir.append(
+                Title(
+                    level=level_int,
+                    text=text,
+                    page_index=page_index,
+                    bbox=bbox,
+                    source_text=text,
+                )
+            )
 
         elif kind == "paragraph":
             raw_text = _paragraph_plain_text(content)
@@ -359,11 +464,20 @@ def blocks_to_ir(content_blocks: Iterable) -> list[Block]:
                 and raw_text
                 and _looks_like_authors(raw_text)
             ):
-                ir.append(Author(text=raw_text))
+                ir.append(Author(text=raw_text, page_index=page_index, bbox=bbox))
                 author_handled = True
                 continue
             if runs:
-                ir.append(Paragraph(runs=runs))
+                ir.append(
+                    Paragraph(
+                        runs=runs,
+                        page_index=page_index,
+                        bbox=bbox,
+                        source_text="".join(
+                            run.text for run in runs if isinstance(run, TextRun)
+                        ),
+                    )
+                )
 
         elif kind == "list":
             if not isinstance(content, dict):
@@ -380,14 +494,31 @@ def blocks_to_ir(content_blocks: Iterable) -> list[Block]:
                 if runs:
                     parsed_items.append(runs)
             if parsed_items:
-                ir.append(ListBlock(list_type=list_type, items=parsed_items))
+                ir.append(
+                    ListBlock(
+                        list_type=list_type,
+                        items=parsed_items,
+                        page_index=page_index,
+                        bbox=bbox,
+                        source_text=" ".join(
+                            "".join(
+                                run.text
+                                for run in item
+                                if isinstance(run, TextRun)
+                            )
+                            for item in parsed_items
+                        ),
+                    )
+                )
 
         elif kind == "equation_interline":
             latex = ""
             if isinstance(content, dict):
                 latex = (content.get("math_content") or "").strip()
             if latex:
-                ir.append(DisplayMath(latex=latex))
+                ir.append(
+                    DisplayMath(latex=latex, page_index=page_index, bbox=bbox)
+                )
 
         elif kind in {"image", "chart"}:
             rel_path = ""
@@ -418,7 +549,7 @@ def blocks_to_ir(content_blocks: Iterable) -> list[Block]:
                         rel_path=rel_path,
                         caption=caption,
                         page_index=page_index,
-                        bbox=_parse_bbox(block.get("bbox")),
+                        bbox=bbox,
                     )
                 )
 
@@ -441,45 +572,69 @@ def blocks_to_ir(content_blocks: Iterable) -> list[Block]:
                 elif isinstance(cap_items, str):
                     caption = cap_items.strip()
             if rel_path or html:
-                ir.append(Table(rel_path=rel_path, html=html, caption=caption))
+                ir.append(
+                    Table(
+                        rel_path=rel_path,
+                        html=html,
+                        caption=caption,
+                        page_index=page_index,
+                        bbox=bbox,
+                    )
+                )
 
         # Other block kinds (page_footer, header, etc.) are intentionally skipped.
 
     return ir
 
 
-def collect_translatable_strings(ir: list[Block]) -> list[str]:
-    """Return all human-readable strings in `ir`, in document order.
+def _block_slots(block: Block):
+    """Yield `(source_text, target, attribute)` for one block's strings.
 
-    Used together with `apply_translations` to translate IR text in a single
-    batch without disturbing math/image content.
+    Blocks that belong to a continuation group are translated through their
+    group's first block, so they contribute no slots of their own.
     """
-    out: list[str] = []
-    for block in ir:
-        if isinstance(block, Title):
-            out.append(block.text)
-        elif isinstance(block, Paragraph):
-            for run in block.runs:
+    if getattr(block, "continuation_member", False) and not getattr(
+        block, "continuation_group", None
+    ):
+        return
+    if isinstance(block, Title):
+        yield block.text, block, "text"
+    elif isinstance(block, Paragraph):
+        for run in block.runs:
+            if isinstance(run, TextRun):
+                yield run.text, run, "text"
+    elif isinstance(block, ListBlock):
+        for item in block.items:
+            for run in item:
                 if isinstance(run, TextRun):
-                    out.append(run.text)
-        elif isinstance(block, ListBlock):
-            for item in block.items:
-                for run in item:
-                    if isinstance(run, TextRun):
-                        out.append(run.text)
-        elif isinstance(block, Image) and block.caption:
-            out.append(block.caption)
-        elif isinstance(block, Table) and block.caption:
-            out.append(block.caption)
-    return out
+                    yield run.text, run, "text"
+    elif isinstance(block, Table):
+        for cell in block.cells:
+            if cell.text.strip():
+                yield cell.text, cell, "translated"
+
+
+def _translation_slots(ir: list[Block]):
+    """Yield `(source_text, target, attribute)` for every translatable string.
+
+    Captions, table notes and running headers never enter the queue: their
+    original wording is reused verbatim from the source page. Table cell text
+    does enter it, because the layout renderer replaces cell text in place.
+    """
+    for block in ir:
+        yield from _block_slots(block)
+
+
+def collect_translatable_strings(ir: list[Block]) -> list[str]:
+    """Return all human-readable strings in `ir`, in document order."""
+    return [source for source, _, _ in _translation_slots(ir)]
 
 
 _REFERENCE_HEADING_PATTERN = re.compile(r"^\s*(?:references|bibliography)\s*$", re.IGNORECASE)
 
 
-def translatable_mask(ir: list[Block]) -> list[bool]:
-    """Boolean twin of `collect_translatable_strings`: False marks strings that
-    must stay in the source language.
+def translatable_blocks(ir: list[Block]) -> list[bool]:
+    """Per-block twin of `translatable_mask`: False marks source-language blocks.
 
     Bibliography entries stay English so they remain searchable; they also
     burn a large share of the translation budget. The masked region starts at
@@ -487,57 +642,290 @@ def translatable_mask(ir: list[Block]) -> list[bool]:
     emits even without the heading) and ends at the next title, so an appendix
     placed after the bibliography still translates.
     """
-    mask: list[bool] = []
+    allowed: list[bool] = []
     in_references = False
     for block in ir:
         if isinstance(block, Title):
-            in_references = _REFERENCE_HEADING_PATTERN.match(block.text.strip()) is not None
-            mask.append(not in_references)
-        elif isinstance(block, Paragraph):
-            for run in block.runs:
-                if isinstance(run, TextRun):
-                    mask.append(not in_references)
-        elif isinstance(block, ListBlock):
-            if block.list_type == "reference_list":
-                in_references = True
-            for item in block.items:
-                for run in item:
-                    if isinstance(run, TextRun):
-                        mask.append(not in_references)
-        elif isinstance(block, Image) and block.caption:
-            mask.append(not in_references)
-        elif isinstance(block, Table) and block.caption:
-            mask.append(not in_references)
+            in_references = (
+                _REFERENCE_HEADING_PATTERN.match(block.text.strip()) is not None
+            )
+        elif isinstance(block, ListBlock) and block.list_type == "reference_list":
+            in_references = True
+        allowed.append(not in_references)
+    return allowed
+
+
+def translatable_mask(ir: list[Block]) -> list[bool]:
+    """Boolean twin of `collect_translatable_strings`: False marks strings that
+    must stay in the source language."""
+    mask: list[bool] = []
+    for block, allowed in zip(ir, translatable_blocks(ir)):
+        mask.extend([allowed] * sum(1 for _ in _block_slots(block)))
     return mask
 
 
 def apply_translations(ir: list[Block], translations: list[str]) -> None:
     """Write `translations` back into `ir` in the same order produced by
     `collect_translatable_strings`. Lengths must match."""
-    if len(translations) != len(collect_translatable_strings(ir)):
+    expected = sum(1 for _ in _translation_slots(ir))
+    if len(translations) != expected:
         raise ValueError(
             f"Translation count mismatch: got {len(translations)}, expected "
-            f"{len(collect_translatable_strings(ir))}"
+            f"{expected}"
         )
     cursor = 0
-    for block in ir:
-        if isinstance(block, Title):
-            block.text = translations[cursor]
+    for _, target, attribute in _translation_slots(ir):
+        setattr(target, attribute, translations[cursor])
+        cursor += 1
+
+
+# ---------------------------------------------------------------------------
+# Paragraphs that the parser split across two regions
+# ---------------------------------------------------------------------------
+
+_SENTENCE_ENDINGS = (
+    ".", "\u3002", "!", "\uff01", "?", "\uff1f", ":", "\uff1a", ";", "\uff1b",
+    "\"", "\u201d", ")", "\uff09", "]", "\u3011",
+)
+_BREAK_CHARACTERS = "\u3002\uff01\uff1f\uff1b\uff0c\u3001,;.!? \n"
+
+
+@dataclass
+class ContinuationGroup:
+    """One paragraph that the parser reported as several adjacent blocks."""
+
+    blocks: list[Block]
+    source_text: str
+    lengths: list[int]
+
+
+def plain_paragraph_text(block: Block) -> str | None:
+    """The block's text when it is a plain paragraph, else None.
+
+    Only plain text paragraphs take part in continuation grouping: a paragraph
+    with an inline formula has to keep its own formula geometry.
+    """
+    if not isinstance(block, Paragraph) or not block.runs:
+        return None
+    if any(not isinstance(run, TextRun) for run in block.runs):
+        return None
+    text = "".join(run.text for run in block.runs)
+    return text if text.strip() else None
+
+
+def _continues_text(first: str, second: str) -> bool:
+    first = first.strip()
+    second = second.strip()
+    if len(first) < 20 or len(second) < 20:
+        return False
+    if first.endswith(_SENTENCE_ENDINGS):
+        return False
+    if first.endswith(("-", "\u2010")):
+        return True
+    return second[0].islower()
+
+
+def _adjacent_regions(first: Block, second: Block, frames) -> bool:
+    """Whether two blocks sit next to each other in reading order.
+
+    Two shapes count: the second block directly under the first in the same
+    column, and the second block starting the next column after the first ran
+    out of room low on the page.
+    """
+    first_box = getattr(first, "bbox", None)
+    second_box = getattr(second, "bbox", None)
+    if not first_box or not second_box:
+        return False
+    narrower = min(first_box[2] - first_box[0], second_box[2] - second_box[0])
+    if narrower <= 0:
+        return False
+    overlap = min(first_box[2], second_box[2]) - max(first_box[0], second_box[0])
+    same_column = overlap / narrower >= 0.6
+
+    first_page = getattr(first, "page_index", -1)
+    second_page = getattr(second, "page_index", -1)
+    if first_page == second_page:
+        if not (0 <= first_page < len(frames)):
+            return False
+        if same_column:
+            # Same column: the second block follows directly underneath.
+            height = first_box[3] - first_box[1]
+            return abs(first_box[1] - second_box[3]) <= max(6.0, 1.5 * height)
+        # Column jump: the first part ran out of room low on the page and the
+        # text continues at the top of the next (right-hand) column.
+        frame = frames[first_page]
+        return (
+            second_box[0] > first_box[0]
+            and second_box[3] > first_box[3]
+            and first_box[1] - frame.origin[1] <= 0.35 * frame.height
+        )
+
+    if second_page == first_page + 1:
+        if not (0 <= first_page < len(frames) and 0 <= second_page < len(frames)):
+            return False
+        first_frame = frames[first_page]
+        second_frame = frames[second_page]
+        near_bottom = first_box[1] - first_frame.origin[1] <= 0.18 * first_frame.height
+        near_top = (
+            second_frame.origin[1] + second_frame.height - second_box[3]
+            <= 0.18 * second_frame.height
+        )
+        if not (near_bottom and near_top):
+            return False
+        # Same column on the next page, or its next column.
+        return same_column or second_box[0] > first_box[0]
+    return False
+
+
+def plan_continuation_groups(ir: list[Block], frames) -> list[ContinuationGroup]:
+    """Find paragraphs the parser split over several adjacent regions."""
+    allowed = translatable_blocks(ir)
+    groups: list[ContinuationGroup] = []
+    index = 0
+    while index < len(ir):
+        chain = [index]
+        cursor = index
+        while cursor + 1 < len(ir):
+            if getattr(ir[cursor + 1], "continuation_member", False):
+                break
+            if not (allowed[cursor] and allowed[cursor + 1]):
+                break
+            first_text = plain_paragraph_text(ir[cursor])
+            second_text = plain_paragraph_text(ir[cursor + 1])
+            if first_text is None or second_text is None:
+                break
+            if not _continues_text(first_text, second_text):
+                break
+            if not _adjacent_regions(ir[cursor], ir[cursor + 1], frames):
+                break
+            chain.append(cursor + 1)
             cursor += 1
-        elif isinstance(block, Paragraph):
-            for run in block.runs:
-                if isinstance(run, TextRun):
-                    run.text = translations[cursor]
-                    cursor += 1
-        elif isinstance(block, ListBlock):
-            for item in block.items:
-                for run in item:
-                    if isinstance(run, TextRun):
-                        run.text = translations[cursor]
-                        cursor += 1
-        elif isinstance(block, Image) and block.caption:
-            block.caption = translations[cursor]
-            cursor += 1
-        elif isinstance(block, Table) and block.caption:
-            block.caption = translations[cursor]
-            cursor += 1
+        if len(chain) > 1:
+            blocks = [ir[position] for position in chain]
+            texts = [plain_paragraph_text(block) or "" for block in blocks]
+            groups.append(
+                ContinuationGroup(
+                    blocks=blocks,
+                    source_text=" ".join(text.strip() for text in texts),
+                    lengths=[max(1, len(text.strip())) for text in texts],
+                )
+            )
+        index = cursor + 1
+    return groups
+
+
+def merge_continuation_groups(groups: list[ContinuationGroup]) -> None:
+    """Translate each group as one paragraph, keeping the member blocks."""
+    for group in groups:
+        for block in group.blocks:
+            setattr(block, "continuation_member", True)
+            # Remember where this member's inline formulas sit so that writing
+            # the distributed translation back keeps them in place.
+            setattr(block, "continuation_runs", list(block.runs))
+        first = group.blocks[0]
+        first.runs = [TextRun(text=group.source_text)]
+        first.continuation_group = group
+
+
+def _runs_with_formulas(template: list, text: str) -> list:
+    """`text` with the template's formulas re-inserted where they sat in it."""
+    formulas = [run for run in template if not isinstance(run, TextRun)]
+    if not formulas:
+        return [TextRun(text=text)]
+    source_length = max(1, sum(len(run.text) for run in template if isinstance(run, TextRun)))
+    offsets: list[int] = []
+    cursor = 0
+    for run in template:
+        if isinstance(run, TextRun):
+            cursor += len(run.text)
+            continue
+        offsets.append(cursor)
+    runs: list = []
+    start = 0
+    for offset, formula in zip(offsets, formulas):
+        fraction = min(1.0, offset / source_length)
+        cut = max(start, min(len(text), int(round(fraction * len(text)))))
+        if cut > start:
+            runs.append(TextRun(text=text[start:cut]))
+        runs.append(formula)
+        start = cut
+    if start < len(text):
+        runs.append(TextRun(text=text[start:]))
+    return runs or [TextRun(text=text)]
+
+
+def _nearest_break(text: str, start: int, target: int) -> int:
+    """Move a split point to the closest punctuation or space."""
+    span = max(1, target - start)
+    window = max(4, int(0.18 * span))
+    best = None
+    for offset in range(0, window + 1):
+        for candidate in (target - offset, target + offset):
+            if candidate <= start or candidate >= len(text):
+                continue
+            if text[candidate - 1] in _BREAK_CHARACTERS:
+                distance = abs(candidate - target)
+                if best is None or distance < best[0]:
+                    best = (distance, candidate)
+    return best[1] if best else target
+
+
+def split_proportionally(text: str, lengths: list[int]) -> list[str]:
+    """Split a translation across regions in proportion to the source parts."""
+    if not lengths:
+        return []
+    if len(lengths) == 1:
+        return [text]
+    total = sum(lengths)
+    if total <= 0 or not text:
+        return [text] + [""] * (len(lengths) - 1)
+    parts: list[str] = []
+    cursor = 0
+    cumulative = 0
+    for index, length in enumerate(lengths):
+        cumulative += length
+        if index == len(lengths) - 1:
+            parts.append(text[cursor:])
+            break
+        target = int(round(len(text) * cumulative / total))
+        target = max(cursor, min(len(text), target))
+        cut = _nearest_break(text, cursor, target)
+        parts.append(text[cursor:cut])
+        cursor = cut
+    return parts
+
+
+def split_continuation_groups(groups: list[ContinuationGroup]) -> list[str]:
+    """Write each group's translation back into its several regions."""
+    notes: list[str] = []
+    for group in groups:
+        first = group.blocks[0]
+        translated = "".join(
+            run.text for run in first.runs if isinstance(run, TextRun)
+        )
+        parts = split_proportionally(translated, group.lengths)
+        if any(not part.strip() for part in parts):
+            # Nothing sensible to distribute: keep the whole translation in the
+            # first region and leave the others in the source language.
+            for member in group.blocks[1:]:
+                member.runs = [
+                    TextRun(text=getattr(member, "source_text", "") or "")
+                ]
+            notes.append(
+                "a paragraph spanning several regions could not be split; "
+                "its first region keeps the translation"
+            )
+        else:
+            for block, part in zip(group.blocks, parts):
+                template = getattr(block, "continuation_runs", None) or []
+                block.runs = _runs_with_formulas(template, part.strip())
+            notes.append(
+                f"paragraph spanning {len(group.blocks)} regions translated once "
+                "and distributed back across them"
+            )
+        for block in group.blocks:
+            block.continuation_member = False
+            for name in ("continuation_group", "continuation_runs"):
+                if hasattr(block, name):
+                    delattr(block, name)
+    return notes

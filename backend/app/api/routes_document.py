@@ -11,7 +11,6 @@ from app.models.schemas import (
     DocumentStatusResponse,
     DocumentSummary,
     FailureItem,
-    LatexRecoveryItem,
     LocateCounterpartRequest,
     LocateCounterpartResponse,
     RenameDocumentRequest,
@@ -148,13 +147,7 @@ def get_document(
             )
             for p in record.pending_reviews
         ],
-        last_compile_warning=record.last_compile_warning,
         failure=FailureItem(**record.failure.__dict__) if record.failure else None,
-        latex_recovery=(
-            LatexRecoveryItem(**record.latex_recovery.__dict__)
-            if record.latex_recovery
-            else None
-        ),
         last_read_page=record.last_read_page,
         last_read_ratio=record.last_read_ratio,
     )

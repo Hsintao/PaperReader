@@ -21,7 +21,6 @@ from app.services.mineru_layout import (
     InlineMath,
     ListBlock,
     Paragraph,
-    Table,
     TextRun,
     Title,
     blocks_to_ir,
@@ -148,91 +147,6 @@ def _content_list_path(record: DocumentRecord) -> Path | None:
     return candidates[-1] if candidates else None
 
 
-def _latex_caption_arguments(tex: str) -> list[str]:
-    """Extract balanced ``\\caption{}``/``\\caption*{}`` arguments."""
-    results: list[str] = []
-    pattern = re.compile(r"\\caption\*?\s*\{")
-    for match in pattern.finditer(tex or ""):
-        depth = 1
-        cursor = match.end()
-        start = cursor
-        while cursor < len(tex) and depth:
-            char = tex[cursor]
-            if char == "\\":
-                cursor += 2
-                continue
-            if char == "{":
-                depth += 1
-            elif char == "}":
-                depth -= 1
-            cursor += 1
-        if depth == 0:
-            value = _plain_target(tex[start : cursor - 1])
-            if value:
-                results.append(value)
-    return results
-
-
-def _caption_label(text: str) -> tuple[str, int] | None:
-    match = re.search(r"(?i)\b(?:figure|fig\.?)[\s~]*(\d+)", text or "")
-    if match:
-        return "figure", int(match.group(1))
-    match = re.search(r"(?i)\btable[\s~]*(\d+)", text or "")
-    if match:
-        return "table", int(match.group(1))
-    match = re.search(r"图\s*(\d+)", text or "")
-    if match:
-        return "figure", int(match.group(1))
-    match = re.search(r"表\s*(\d+)", text or "")
-    if match:
-        return "table", int(match.group(1))
-    return None
-
-
-def _caption_alignment_entries(record: DocumentRecord, ir: list) -> list[dict]:
-    tex_path = record.translated_tex_path or (
-        settings.output_dir / record.document_id / "translated.tex"
-    )
-    if not tex_path.is_file():
-        return []
-    try:
-        translated_captions = _latex_caption_arguments(tex_path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    translated_by_label = {
-        label: caption
-        for caption in translated_captions
-        if (label := _caption_label(caption)) is not None
-    }
-    total = max(1, len(ir) - 1)
-    entries: list[dict] = []
-    for block_index, block in enumerate(ir):
-        if not isinstance(block, (Image, Table)):
-            continue
-        source_caption = (getattr(block, "caption", "") or "").strip()
-        label = _caption_label(source_caption)
-        translated_caption = translated_by_label.get(label) if label else None
-        if source_caption and translated_caption:
-            # If a grouped MinerU caption includes a sub-caption before the
-            # main Figure/Table label, use only the labelled suffix for this
-            # entry.  The full caption remains available as a lower-priority
-            # match through its neighbouring structured block.
-            label_match = re.search(
-                r"(?i)(?:figure|fig\.?|table)[\s~]*\d+.*$", source_caption
-            )
-            labelled_source = label_match.group(0) if label_match else source_caption
-            entries.append(
-                {
-                    "index": len(entries),
-                    "position": block_index / total,
-                    "original": labelled_source,
-                    "translated": translated_caption,
-                    "kind": "caption_label",
-                }
-            )
-    return entries
-
-
 def _rebuild_legacy_alignment(record: DocumentRecord) -> list[dict]:
     content_path = _content_list_path(record)
     if not content_path or not record.translated_text.strip():
@@ -247,7 +161,7 @@ def _rebuild_legacy_alignment(record: DocumentRecord) -> list[dict]:
     if not source_blocks or len(source_blocks) != len(translated_blocks):
         return []
     total = max(1, len(source_blocks) - 1)
-    entries = [
+    return [
         {
             "index": index,
             "position": index / total,
@@ -258,8 +172,6 @@ def _rebuild_legacy_alignment(record: DocumentRecord) -> list[dict]:
         for index, (source, translated) in enumerate(zip(source_blocks, translated_blocks))
         if source.strip() and translated.strip()
     ]
-    entries.extend(_caption_alignment_entries(record, ir))
-    return entries
 
 
 def load_alignment_entries(record: DocumentRecord) -> tuple[list[dict], str]:

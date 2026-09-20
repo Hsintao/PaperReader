@@ -26,7 +26,7 @@ PDF_STAGES: list[tuple[str, str, float]] = [
     ("clean", "清洗与对齐", 3.0),
     ("vision_check", "视觉模型校验", 10.0),
     ("translate", "翻译", 35.0),
-    ("latex_build", "LaTeX 编译", 6.0),
+    ("render", "版式合成", 6.0),
 ]
 
 
@@ -174,7 +174,7 @@ def ensure_stage(record: DocumentRecord, key: str, label: str, weight: float = 1
 
 def prepare_stages_for_retry(record: DocumentRecord, resume_from: str) -> None:
     """Keep completed prerequisites and reset the failed stage and successors."""
-    normalized = "latex_build" if resume_from.startswith("latex_") else resume_from
+    normalized = resume_from
     keys = [stage.key for stage in record.stages]
     try:
         start = keys.index(normalized)

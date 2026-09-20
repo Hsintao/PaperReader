@@ -1,6 +1,6 @@
 # PaperReader 开发者文档：Windows / macOS 本地构建与 Release 发布
 
-## v2.1.12 阅读器回归
+## v2.2.0 阅读器回归
 
 ```powershell
 conda activate d2l
@@ -13,7 +13,7 @@ npm.cmd --prefix frontend run build
 
 选区回归路径：原文与译文分别在连续滚动、单页模式下拖选文字，普通右键或 macOS Control-click 打开菜单后选区应保持可见；检查“问 AI”、对照定位与批注保存使用原选中文本，备注输入框可正常输入；关闭菜单后可重新拖选。`Page` 的 `onRenderTextLayerSuccess` 回调应保持稳定，菜单状态或备注变化不能重建文字层。
 
-浏览器回归路径：在已显示文字的页首次执行对照高亮；跳转到未渲染的远端页；点击批注查看备注；打开图表浮层，分别点击 Figure、Table 及同页多个 Table；切换论文并确认列表更新。文字高亮在 `onRenderTextLayerSuccess` 后绘制。图表结构接口返回原文 `figures` 与译文 `translated_figures`，预览位于 `outputs/<document_id>/figure-previews/`，编译 PDF 更新后刷新。LaTeX 缩略图按标题旁的矢量插图、嵌入图片与表格横线裁剪，不再依赖 hyperref 浮动体锚点。
+浏览器回归路径：在已显示文字的页首次执行对照高亮；跳转到未渲染的远端页；点击批注查看备注；打开图表浮层，分别点击 Figure、Table 及同页多个 Table；切换论文并确认列表更新。文字高亮在 `onRenderTextLayerSuccess` 后绘制。图表结构接口返回原文 `figures` 与译文 `translated_figures`，预览位于 `outputs/<document_id>/figure-previews/`，译文 PDF 更新后刷新。缩略图按标题旁的矢量插图、嵌入图片与表格横线裁剪。
 
 设置密钥回归需分别验证大模型更新、MinerU 更新、留空保持和明确删除。新配置默认 MinerU；其 Key 缺失只阻止采用 MinerU 的 PDF 上传。
 
@@ -44,7 +44,7 @@ PaperReader 当前桌面端不是 Electron/Tauri，而是以下组合：
 - Node.js **20**
 - npm
 - Xcode Command Line Tools
-- 可选：MacTeX / TeX Live（只有生成译文 PDF 时需要）
+- 可选：中文字体（macOS 自带 Songti SC，Linux 需要 fonts-noto-cjk；只有生成译文 PDF 时需要）
 
 > `desktop/build_macos.sh` 与 `desktop/setup_macos.py` 共用同一个 `python`：脚本从该解释器推导 bundle 内的版本目录（`Resources/lib/python<major>.<minor>`），并把 conda 的运行时库补拷进 `Contents/Frameworks`。因此构建前务必确认 `python -V` 就是你要用来打包的那个环境，并且必须是 arm64；x86_64 Python 仍然不要用于正式包。
 >
@@ -74,17 +74,10 @@ v20.x.x
 xcode-select --install
 ```
 
-如果需要 LaTeX PDF 生成能力，可检查：
+译文 PDF 由 PDF 级排版直接生成，不需要 TeX；它需要一个中文衬线字体：
 
 ```bash
-which latexmk
-ls -l /Library/TeX/texbin/latexmk
-```
-
-PaperReader 桌面启动器会自动检测：
-
-```text
-/Library/TeX/texbin/latexmk
+ls -l /System/Library/Fonts/Supplemental/Songti.ttc
 ```
 
 ### Windows（Git Bash）构建环境
@@ -95,7 +88,7 @@ PaperReader 桌面启动器会自动检测：
 - Node.js **20**
 - npm
 - Microsoft WebView2 Runtime（大多数 Windows 10/11 已内置）
-- 可选：TeX Live（只有生成译文 PDF 时需要）
+- 可选：中文字体（Windows 自带 SimSun；只有生成译文 PDF 时需要）
 
 > `desktop/build_portable.ps1` 使用 PyInstaller 按 Python 3.11 / x64 构建，与 CI 的 Windows job 一致。Windows 本地构建的完整步骤见下文「在 Windows 上本地构建可移植版（Git Bash）」一节。
 
@@ -868,13 +861,14 @@ taskkill //PID <PID> //F
 
 ## 可以打开 APP，但不能生成译文 PDF
 
-检查 `latexmk`：
+译文排版需要一个带常用汉字的衬线字体：
 
 ```bash
-/Library/TeX/texbin/latexmk -v
+ls -l /System/Library/Fonts/Supplemental/Songti.ttc
 ```
 
-没有安装时需要安装 MacTeX / TeX Live。
+没有装中文字体时，日志里会出现 "No Chinese font with the required coverage was found"，
+安装 Songti SC（macOS）/ SimSun（Windows）/ fonts-noto-cjk（Linux）后重试即可。
 
 ## 用户下载 DMG 后提示无法验证开发者
 
@@ -1006,13 +1000,13 @@ git push origin v2.1.2
 PaperReader/
 ├── backend/
 │   └── app/
-│       ├── api/            # routes_*.py：settings / upload / document / annotations / discovery / review / recompile / data
+│       ├── api/            # routes_*.py：settings / upload / document / annotations / discovery / review / data
 │       ├── core/           # config.py、database.py、local_config.py
 │       ├── models/         # schemas.py、store.py
 │       ├── services/       # document_pipeline、translate_service、alignment_service、llm_client、
-│       │                   # mineru_service、mineru_layout、latex_service、latex_sanitizer、latex_recovery、
-│       │                   # vision_check_service、document_structure、app_settings、paper_metadata、
-│       │                   # stage_tracker
+│       │                   # mineru_service、mineru_layout、pdf_ops、layout_model、layout_fit、layout_render、
+│       │                   # cjk_fonts、vision_check_service、document_structure、app_settings、
+│       │                   # paper_metadata、stage_tracker
 │       ├── workers/        # tasks.py（Celery）
 │       └── main.py
 ├── desktop/                # 桌面端启动器与打包脚本（见第 1–18 节）
@@ -1081,7 +1075,7 @@ cp .env.example .env
 - `TRANSLATE_SEGMENT_MAX_CHARS`（默认 `2000`）— 单个散文本段落的硬上限。超长 MinerU 段落会被拆分再重组，避免模型输出上限截断后半段。
 - `VISION_MODEL`（默认 `GLM-4.5V`）— Phase D 视觉校验使用的多模态模型，必须与 `OPENAI_BASE_URL` 同一 OpenAI 兼容端点且支持视觉（如 `GLM-4.5V`、`GLM-4.6V`、`Qwen3-VL-30B-A3B-Instruct`、`Qwen3-VL-235B-A22B-Instruct`）。
 - `VISION_CHECK_ENABLED`（默认 `false`）、`VISION_CHECK_MODE`（`auto` | `manual`）、`VISION_CHECK_MAX_PAGES`（默认 `8`）— Phase D 的部署默认值。默认关闭校验，可在「设置 → 阅读偏好」中开启自动/手动校验。
-- `LATEXMK_PATH` — 当 `latexmk` 不在 `PATH` 上时，指向其绝对路径。
+- `LAYOUT_DEBUG` — 设为 true 时额外产出 `outputs/<document_id>/layout-debug.pdf`，在原页上标出块类别与实际沿用的图注区域。
 
 ### MinerU PDF 解析
 
@@ -1170,10 +1164,7 @@ docker compose up --build
 - **视觉校验（Phase D）**
   - `GET /api/document/{document_id}/review`
   - `POST /api/document/{document_id}/review` — 接受 / 拒绝视觉模型提出的修订
-- **译文 TeX 重新编译**
-  - `GET /api/document/{document_id}/tex` — 读取当前 `translated.tex`
-  - `POST /api/document/{document_id}/tex` — 保存修改后重新编译（源文件先经 `latex_sanitizer` 清洗，并启用 strict→`-f` 降级编译）
-  - `POST /api/document/{document_id}/tex/reveal` — 在系统文件管理器中显示产物
+- **译文 PDF** — 由 `render` 阶段直接合成：每个译文块钉回原稿坐标，图片/公式/图注/表格线条沿用原稿；同时产出 `layout-plan.json`（逐块坐标、字号与状态）与可选的 `layout-debug.pdf`
 - **产物访问**
   - `GET|HEAD /data/{file_path}` — 产物与上传源文件下载；仅 `uploads/` 与 `outputs/` 下的文件可访问，
     数据库与 `settings.json` 不对外暴露
@@ -1186,7 +1177,7 @@ docker compose up --build
 - `references`（提取的参考文献条目，用于预览）
 - `progress`、`current_stage`、`current_stage_label`、`eta_seconds`、`stages`（Phase A）
 - `pending_reviews` — `manual` 模式下等待人工决策的视觉模型修订提案（Phase D）
-- `last_compile_warning` — strict 编译失败但宽松 `-f` 编译仍产出 PDF 时设置；UI 会提示用户打开手动 TeX 编辑器清理
+- `failure.stage` — 失败阶段，取值为 `upload` / `parse` / `clean` / `vision_check` / `translate` / `render`；重试从该阶段继续，`render` 重试复用解析与翻译检查点，不重新翻译
 - 以及既有的 `status`、`original_pdf_url`、`translated_pdf_url`、`logs`
 
 ## 19.8 平台说明
@@ -1196,7 +1187,7 @@ docker compose up --build
 - PDF 解析经 MinerU 云端完成，无需本地 Torch/MPS 配置。
 - PDF 内的 HTTP(S) 链接在系统浏览器打开；PaperReader 窗口保留当前论文与阅读位置。
 - WKWebView 阅读器支持 PDF 文本选择/复制、生成的大纲与更快的触控板捏合缩放。
-- LaTeX 编译失败时，安装 TeX Live + `latexmk` 及中文字体。
+- 译文排版失败时，先确认宿主机已装中文字体，再查看 `layout-plan.json` 中每块的状态与原因。
 
 ### Linux (CUDA)
 
@@ -1206,12 +1197,12 @@ docker compose up --build
 ### Windows
 
 - 使用 `scripts/setup_windows.ps1`。
-- 安装 TeX Live + `latexmk`，并确保可执行文件在 `PATH` 中。
+- 安装中文字体（macOS：Songti SC；Windows：SimSun；Linux：fonts-noto-cjk）。
 
 ## 19.9 当前实现边界
 
 - 上传处理仍在请求链路中同步执行（尚未引入后台任务交接）；文档内的翻译 chunk 通过线程池并发。
 - 文档与批注持久化在 SQLite，设置存放在 `settings.json`；应用面向单个本地操作者，不是加固的互联网级多租户服务。
 - 参考文献提取是启发式的（基于章节/行模式），不是完整的引文解析器。
-- 前端支持设置弹窗、面板开关、拖拽产物预览、视觉校验人工复核以及浏览器内 `translated.tex` 编辑器。
-- LaTeX 编译先跑 strict 一遍，再跑宽松的 `-f` 一遍，使流水线极少以硬失败告终；警告通过 `last_compile_warning` 上报，手动编辑器支持就地修补源码并重新编译。
+- 前端支持设置弹窗、面板开关、拖拽产物预览与视觉校验人工复核。
+- 译文排版先逐块拟合，再做全页字号/行距收口；合成后逐页校验原稿文字的移除与保留，失败的块回退为原稿内容，失败的页整页回退为原稿页。

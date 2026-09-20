@@ -454,7 +454,6 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
             etaSeconds={activeDoc.eta_seconds}
             stages={stages}
             failure={activeDoc.failure}
-            latexRecovery={activeDoc.latex_recovery}
             retrying={retrying}
             onRetry={handleRetry}
           />

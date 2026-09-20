@@ -1,5 +1,18 @@
 # Upgrading PaperReader
 
+## Upgrading from v2.1.12 to v2.2.0
+
+Keep the existing `DATA_DIR`, database, and provider settings. No manual database migration is required; the LaTeX-only columns (`translated_tex_path`, `last_compile_warning`, `latex_recovery_json`) simply stop being read and written.
+
+What changes:
+
+1. The translated PDF is now laid out on the source page: same page size, same page count, translations pinned to their source coordinates, and figures/formulas/captions/table rules reused from the original. Page-by-page comparison in the reader therefore lines up exactly.
+2. TeX Live is no longer required. `translated.tex`, the in-app TeX editor, the `GET/POST /api/document/{id}/tex` and `/tex/reveal` endpoints, and the automatic LaTeX recovery loop were removed, together with the `LATEXMK_PATH` setting and the `latex_recovery` / `last_compile_warning` fields in the document API.
+3. A Chinese font is now required on the host: macOS ships Songti SC, Windows ships SimSun, Linux needs `fonts-noto-cjk`. Install one before processing PDFs, otherwise translation fails with an explicit error.
+4. Documents processed by earlier versions keep their old translated PDF until they are retried. Retry from the failed or final stage (or re-upload) to produce the new page-faithful layout; the translation checkpoint is reused, so no segments are translated twice.
+5. Captions and table notes are no longer translated: they stay in English as part of the reused source artwork. Table cell text is translated instead, in place.
+6. `LAYOUT_DEBUG=true` writes `layout-debug.pdf` next to the translated PDF, marking the block categories the renderer detected on each source page.
+
 ## Upgrading from v2.1.12 to the accounts-free release
 
 This release removes the account system, LaTeX-project upload, and AI chat. There is no migration path: the catalog is rebuilt from empty and credentials must be entered again.

@@ -1,4 +1,4 @@
-import type { FailureItem, LatexRecoveryItem, StageItem } from '../lib/api'
+import type { FailureItem, StageItem } from '../lib/api'
 
 type Props = {
   status: string
@@ -7,7 +7,6 @@ type Props = {
   etaSeconds?: number | null
   stages: StageItem[]
   failure?: FailureItem | null
-  latexRecovery?: LatexRecoveryItem | null
   retrying?: boolean
   onRetry?: () => void
 }
@@ -27,7 +26,6 @@ export function ProgressBar({
   etaSeconds,
   stages,
   failure,
-  latexRecovery,
   retrying = false,
   onRetry
 }: Props) {
@@ -57,29 +55,6 @@ export function ProgressBar({
               )}
             </div>
             {failure?.message && <p className="failure-message small">{failure.message}</p>}
-            {latexRecovery?.diagnosis && (
-              <div className="recovery-detail small">
-                <strong>模型诊断：</strong>{latexRecovery.diagnosis}
-              </div>
-            )}
-            {!!latexRecovery?.repairs.length && (
-              <details className="recovery-detail small">
-                <summary>查看自动修复记录（{latexRecovery.repairs.length}）</summary>
-                {latexRecovery.repairs.map((repair, index) => (
-                  <div className="repair-entry" key={`${repair.start_line}-${index}`}>
-                    <div>第 {repair.start_line}{repair.end_line !== repair.start_line ? `–${repair.end_line}` : ''} 行：{repair.reason || '最小修复'}</div>
-                    {(repair.original != null || repair.replacement != null) && (
-                      <div className="repair-diff">
-                        <span>修改前</span>
-                        <pre>{repair.original ?? ''}</pre>
-                        <span>修改后</span>
-                        <pre>{repair.replacement ?? ''}</pre>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </details>
-            )}
           </div>
         </div>
       )
@@ -108,20 +83,12 @@ export function ProgressBar({
         <span className="small">
           {status === 'awaiting_review'
             ? '等待人工审核…'
-            : status === 'recovering'
-              ? currentStageLabel || '正在恢复 LaTeX…'
             : currentStageLabel
               ? `当前：${currentStageLabel}`
               : '处理中'}
         </span>
         <span className="muted small">{pct}% · 预计剩余 {formatEta(etaSeconds)}</span>
       </div>
-      {latexRecovery?.diagnosis && (
-        <div className="recovery-detail small">
-          <strong>模型诊断：</strong>{latexRecovery.diagnosis}
-          {!!latexRecovery.repairs.length && ` · 已应用 ${latexRecovery.repairs.length} 处最小修复`}
-        </div>
-      )}
     </div>
   )
 }

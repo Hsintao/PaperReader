@@ -17,7 +17,6 @@ _LEGACY_TABLES = ("sessions", "user_settings", "users", "projects")
 _DOCUMENT_ADDED_COLUMNS = {
     "failure_json": "TEXT",
     "retry_count": "INTEGER NOT NULL DEFAULT 0",
-    "latex_recovery_json": "TEXT",
     "last_read_page": "INTEGER NOT NULL DEFAULT 0",
     "last_read_ratio": "REAL NOT NULL DEFAULT 0",
     "metadata_json": "TEXT NOT NULL DEFAULT '{}'",
@@ -99,15 +98,11 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
                 stage_started_at REAL,
                 eta_seconds INTEGER,
                 stages_json TEXT NOT NULL DEFAULT '[]',
-                main_tex TEXT,
                 vision_check_enabled INTEGER NOT NULL DEFAULT 0,
                 vision_check_mode TEXT NOT NULL DEFAULT 'auto',
                 pending_reviews_json TEXT NOT NULL DEFAULT '[]',
-                last_compile_warning TEXT,
-                translated_tex_path TEXT,
                 failure_json TEXT,
                 retry_count INTEGER NOT NULL DEFAULT 0,
-                latex_recovery_json TEXT,
                 deleted_at TEXT
             )
             """
@@ -141,16 +136,12 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
                     stage_started_at REAL,
                     eta_seconds INTEGER,
                     stages_json TEXT NOT NULL DEFAULT '[]',
-                    main_tex TEXT,
-                    vision_check_enabled INTEGER NOT NULL DEFAULT 0,
+                        vision_check_enabled INTEGER NOT NULL DEFAULT 0,
                     vision_check_mode TEXT NOT NULL DEFAULT 'auto',
                     pending_reviews_json TEXT NOT NULL DEFAULT '[]',
-                    last_compile_warning TEXT,
-                    translated_tex_path TEXT,
                     failure_json TEXT,
                     retry_count INTEGER NOT NULL DEFAULT 0,
-                    latex_recovery_json TEXT,
-                    deleted_at TEXT
+                        deleted_at TEXT
                 )
                 """,
             )
@@ -207,7 +198,7 @@ def init_database() -> None:
         rows = conn.execute(
             """
             SELECT document_id, current_stage, retry_count, stages_json
-            FROM documents WHERE status IN ('queued', 'processing', 'recovering')
+            FROM documents WHERE status IN ('queued', 'processing')
             """
         ).fetchall()
         for row in rows:

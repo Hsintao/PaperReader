@@ -10,7 +10,6 @@ from app.api.routes_annotations import router as annotations_router
 from app.api.routes_data import router as data_router
 from app.api.routes_discovery import router as discovery_router
 from app.api.routes_document import router as document_router
-from app.api.routes_recompile import router as recompile_router
 from app.api.routes_review import router as review_router
 from app.api.routes_settings import router as settings_router
 from app.api.routes_upload import router as upload_router
@@ -24,7 +23,7 @@ from app.core.database import init_database
 mimetypes.add_type("text/javascript", ".mjs")
 
 
-app = FastAPI(title="PaperReader", version="2.1.12")
+app = FastAPI(title="PaperReader", version="2.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,7 +41,6 @@ app.include_router(document_router, prefix="/api", tags=["document"])
 app.include_router(annotations_router, prefix="/api", tags=["annotations"])
 app.include_router(discovery_router, prefix="/api", tags=["discovery"])
 app.include_router(review_router, prefix="/api", tags=["review"])
-app.include_router(recompile_router, prefix="/api", tags=["recompile"])
 
 app.include_router(data_router, tags=["data"])
 

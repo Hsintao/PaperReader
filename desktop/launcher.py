@@ -98,10 +98,6 @@ def _prepare_environment() -> Path:
     os.environ.setdefault("PAPERREADER_DESKTOP", "1")
     os.environ.setdefault("CORS_ORIGINS", f"http://{HOST}:{PORT}")
     os.environ.setdefault("PYTHONUTF8", "1")
-    if sys.platform == "darwin" and "LATEXMK_PATH" not in os.environ:
-        mac_latexmk = Path("/Library/TeX/texbin/latexmk")
-        if mac_latexmk.is_file():
-            os.environ["LATEXMK_PATH"] = str(mac_latexmk)
     return app_root
 
 
