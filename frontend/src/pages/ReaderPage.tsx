@@ -22,6 +22,7 @@ import {
   locateCounterpart,
   makeDataUrl,
   renameDocument,
+  reprocessDocument,
   retryDocument,
   translatedPdfName,
   updateReadingProgress,
@@ -192,6 +193,24 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
       setRetrying(false)
     }
   }, [activeId, retrying])
+
+  const handleReprocess = useCallback(async (documentId: string) => {
+    try {
+      const queued = await reprocessDocument(documentId)
+      setSummaries((items) => items.map((item) => (
+        item.document_id === documentId ? { ...item, status: 'queued' } : item
+      )))
+      setDocCache((cache) => ({
+        ...cache,
+        [documentId]: cache[documentId]
+          ? { ...cache[documentId], status: queued.status, current_stage_label: `等待重新处理（从 ${queued.resume_from} 开始）` }
+          : cache[documentId]
+      }))
+      if (documentId === activeId) setPollRevision((value) => value + 1)
+    } catch (error: any) {
+      setNotice(`重新处理失败：${error?.message ?? String(error)}`)
+    }
+  }, [activeId])
 
   useEffect(() => {
     setOverrideLeft(null)
@@ -388,6 +407,18 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
     setOverrideRight({ url: makeDataUrl(artifact.url), name: artifact.name })
   }, [])
 
+  // Reprocessing from the sidebar targets records that are not necessarily the
+  // active one, so keep the list itself fresh while anything is queued.
+  const hasQueuedDocuments = summaries.some(
+    (item) => item.status === 'queued' || item.status === 'processing'
+  )
+
+  useEffect(() => {
+    if (!hasQueuedDocuments) return
+    const timer = window.setInterval(() => { void refreshSummaries() }, 3000)
+    return () => window.clearInterval(timer)
+  }, [hasQueuedDocuments, refreshSummaries])
+
   const artifacts = activeDoc?.artifacts ?? []
   const logs = activeDoc?.logs ?? []
   const stages = activeDoc?.stages ?? []
@@ -420,6 +451,7 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
           onToggleFavorite={handleToggleFavorite}
           onDelete={handleDelete}
           onRename={(id, name) => void handleRename(id, name)}
+          onReprocess={(id) => void handleReprocess(id)}
           onCollapse={() => setShowSidebar(false)}
           onOpenInPane={handleOpenInPane}
           onOpenSettings={() => setSettingsOpen(true)}

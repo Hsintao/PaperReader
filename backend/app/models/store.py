@@ -436,6 +436,43 @@ def queue_document_retry(document_id: str) -> tuple[DocumentRecord, str]:
         return record, resume_from
 
 
+def queue_document_reprocess(
+    document_id: str, resume_from: str
+) -> tuple[DocumentRecord, str]:
+    """Claim one document for reprocessing, whatever its current status.
+
+    ``resume_from`` is decided by the caller from the caches that survived the
+    previous run, so a reprocess reuses completed parse/translation work instead
+    of paying for it again.
+    """
+    with _RETRY_LOCK:
+        record = require_document(document_id)
+        if record.status in {"queued", "processing"}:
+            raise HTTPException(status_code=409, detail="Document is already being processed")
+        if not record.source_path.is_file():
+            raise HTTPException(status_code=409, detail="The source PDF is no longer available")
+        with db_cursor() as conn:
+            claimed = conn.execute(
+                """
+                UPDATE documents
+                SET status = 'queued', retry_count = retry_count + 1, failure_json = NULL
+                WHERE document_id = ? AND status NOT IN ('queued', 'processing')
+                """,
+                (document_id,),
+            )
+            if claimed.rowcount != 1:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Document reprocess was already claimed",
+                )
+        record.retry_count += 1
+        record.status = "queued"
+        record.failure = None
+        record.logs.append(f"Reprocess {record.retry_count} queued from stage: {resume_from}")
+        save_document(record)
+        return record, resume_from
+
+
 def mark_document_failed(document_id: str, stage: str, message: str) -> None:
     """Fail a queued/processing document that never reached the pipeline's own
     error handling (e.g. the background task died while loading settings).

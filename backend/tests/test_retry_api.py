@@ -48,6 +48,74 @@ def test_failed_document_can_queue_retry_once(client, monkeypatch):
     assert client.post("/api/document/failed-doc/retry").status_code == 409
 
 
+def test_reprocess_reuses_the_parse_checkpoint_for_a_completed_document(client, monkeypatch):
+    dispatched: list[tuple[str, str]] = []
+
+    def fake_run(document_id: str, resume_from: str) -> None:
+        dispatched.append((document_id, resume_from))
+
+    from app.api import routes_document
+
+    monkeypatch.setattr(routes_document, "_run_retry_pipeline", fake_run)
+    source = settings.upload_dir / "reprocess.pdf"
+    source.write_bytes(b"pdf")
+    record = store.DocumentRecord("reprocess-doc", "pdf", source, status="done")
+    init_stages(record)
+    store.save_document(record)
+    output_dir = settings.output_dir / "reprocess-doc"
+    output_dir.mkdir()
+    (output_dir / "extraction-checkpoint.json").write_text("{}", encoding="utf-8")
+
+    response = client.post("/api/document/reprocess-doc/reprocess")
+    assert response.status_code == 202, response.text
+    assert response.json() == {
+        "document_id": "reprocess-doc",
+        "status": "queued",
+        "resume_from": "clean",
+    }
+    assert dispatched == [("reprocess-doc", "clean")]
+
+    status = client.get("/api/document/reprocess-doc").json()
+    assert status["status"] == "queued"
+    assert status["failure"] is None
+    assert any("Reprocess 1 queued from stage: clean" in line for line in status["logs"])
+
+
+def test_reprocess_without_a_checkpoint_restarts_from_parse(client, monkeypatch):
+    dispatched: list[tuple[str, str]] = []
+
+    from app.api import routes_document
+
+    monkeypatch.setattr(
+        routes_document,
+        "_run_retry_pipeline",
+        lambda document_id, resume_from: dispatched.append((document_id, resume_from)),
+    )
+    source = settings.upload_dir / "cold.pdf"
+    source.write_bytes(b"pdf")
+    store.save_document(store.DocumentRecord("cold-doc", "pdf", source, status="failed"))
+
+    response = client.post("/api/document/cold-doc/reprocess")
+    assert response.status_code == 202, response.text
+    assert response.json()["resume_from"] == "parse"
+    assert dispatched == [("cold-doc", "parse")]
+
+
+def test_reprocess_rejects_documents_that_are_already_running(client):
+    source = settings.upload_dir / "running.pdf"
+    source.write_bytes(b"pdf")
+    store.save_document(store.DocumentRecord("running-doc", "pdf", source, status="processing"))
+    assert client.post("/api/document/running-doc/reprocess").status_code == 409
+
+
+def test_reprocess_rejects_a_document_whose_source_is_gone(client):
+    source = settings.upload_dir / "vanished.pdf"
+    source.write_bytes(b"pdf")
+    store.save_document(store.DocumentRecord("vanished-doc", "pdf", source, status="done"))
+    source.unlink()
+    assert client.post("/api/document/vanished-doc/reprocess").status_code == 409
+
+
 def test_retry_rejects_non_failed_and_non_retryable_documents(client):
     source = settings.upload_dir / "queued.pdf"
     source.write_bytes(b"pdf")

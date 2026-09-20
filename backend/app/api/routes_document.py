@@ -23,6 +23,7 @@ from app.models.store import (
     list_documents as store_list_documents,
     mark_document_failed,
     normalized_source_filename,
+    queue_document_reprocess,
     queue_document_retry,
     require_document,
     save_document,
@@ -32,7 +33,7 @@ from app.models.store import (
 )
 from app.services.alignment_service import load_alignment_entries, locate_in_alignment, proportional_highlight
 from app.services.app_settings import load_settings
-from app.services.document_pipeline import process_document
+from app.services.document_pipeline import cached_resume_stage, process_document
 
 
 router = APIRouter()
@@ -163,6 +164,27 @@ def retry_document(
     background_tasks: BackgroundTasks,
 ) -> RetryDocumentResponse:
     record, resume_from = queue_document_retry(document_id)
+    background_tasks.add_task(_run_retry_pipeline, record.document_id, resume_from)
+    return RetryDocumentResponse(
+        document_id=record.document_id,
+        status="queued",
+        resume_from=resume_from,
+    )
+
+
+@router.post(
+    "/document/{document_id}/reprocess",
+    response_model=RetryDocumentResponse,
+    status_code=202,
+)
+def reprocess_document(
+    document_id: str,
+    background_tasks: BackgroundTasks,
+) -> RetryDocumentResponse:
+    """Re-run a document from its cached stages, whatever its current status."""
+    record = require_document(document_id)
+    resume_from = cached_resume_stage(record)
+    record, resume_from = queue_document_reprocess(document_id, resume_from)
     background_tasks.add_task(_run_retry_pipeline, record.document_id, resume_from)
     return RetryDocumentResponse(
         document_id=record.document_id,

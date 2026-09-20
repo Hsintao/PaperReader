@@ -417,6 +417,8 @@ textarea { resize: vertical; }
   border-radius: 4px;
 }
 .star-btn:hover { color: var(--text); background: var(--bg); }
+.star-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.star-btn:disabled:hover { color: var(--muted); background: none; }
 .star-btn.on { color: #f5a623; }
 .chev { color: var(--muted); }
 

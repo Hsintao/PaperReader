@@ -296,6 +296,14 @@ export async function retryDocument(documentId: string): Promise<{
   return apiFetch(`/api/document/${documentId}/retry`, { method: 'POST' })
 }
 
+export async function reprocessDocument(documentId: string): Promise<{
+  document_id: string
+  status: 'queued'
+  resume_from: string
+}> {
+  return apiFetch(`/api/document/${documentId}/reprocess`, { method: 'POST' })
+}
+
 export async function listDocuments(): Promise<DocumentSummary[]> {
   return apiFetch('/api/documents')
 }

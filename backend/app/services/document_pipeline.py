@@ -710,6 +710,19 @@ def _translate_and_render(
         _publish_translated_pdf(record, rendered, output_dir)
 
 
+def cached_resume_stage(record: DocumentRecord) -> str:
+    """Earliest stage a reprocess can start from while reusing cached work.
+
+    A completed parse checkpoint makes the extraction (the slowest stage) free,
+    so reprocessing starts at ``clean``. The translation checkpoint is applied
+    inside the translate stage regardless, so cached segments are reused either
+    way. An unusable checkpoint simply falls back to a full parse in
+    :func:`process_document`.
+    """
+    checkpoint = settings.output_dir / record.document_id / "extraction-checkpoint.json"
+    return "clean" if checkpoint.is_file() else "parse"
+
+
 def create_document_record(source_path: Path, source_type: str = "pdf") -> DocumentRecord:
     document_id = str(uuid.uuid4())
     source_filename = source_path.name.split("_", 1)[-1] if "_" in source_path.name else source_path.name

@@ -37,6 +37,7 @@ type Props = {
   onToggleFavorite: (documentId: string) => void
   onDelete: (documentId: string) => void
   onRename: (documentId: string, name: string) => void
+  onReprocess: (documentId: string) => void
   onCollapse: () => void
   onOpenInPane?: (artifact: ArtifactItem) => void
   onEditTex?: () => void
@@ -80,6 +81,7 @@ export function Sidebar({
   onToggleFavorite,
   onDelete,
   onRename,
+  onReprocess,
   onCollapse,
   onOpenInPane,
   onEditTex,
@@ -276,6 +278,7 @@ export function Sidebar({
           visible.map((doc) => {
             const active = doc.document_id === activeDocumentId
             const fav = favorites.includes(doc.document_id)
+            const busy = doc.status === 'queued' || doc.status === 'processing'
             const displayName = doc.title || doc.source_filename || doc.document_id
             return (
               <div
@@ -308,6 +311,17 @@ export function Sidebar({
                   }}
                 >
                   <Star size={14} fill={fav ? 'currentColor' : 'none'} />
+                </button>
+                <button
+                  className="star-btn"
+                  title={busy ? '处理中，无法重新处理' : '重新处理（优先复用解析与翻译缓存）'}
+                  disabled={busy}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onReprocess(doc.document_id)
+                  }}
+                >
+                  <RefreshCw size={14} />
                 </button>
                 <button
                   className="star-btn"

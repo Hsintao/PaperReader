@@ -140,6 +140,47 @@ def test_clean_retry_reuses_extraction_checkpoint(isolated_storage, monkeypatch)
     assert second.translated_pdf_url is not None
 
 
+def test_reprocess_after_completion_reuses_the_extraction_checkpoint(
+    isolated_storage, monkeypatch
+):
+    source = settings.upload_dir / "reprocess.pdf"
+    _write_source(source, ["First paragraph of the paper.", "Second paragraph here."])
+    record = document_pipeline.create_document_record(source, "pdf")
+    parse_calls: list[int] = []
+
+    def extract_once(*args, **kwargs):
+        parse_calls.append(1)
+        return _structured_result(source)
+
+    monkeypatch.setattr(
+        document_pipeline, "extract_structured_from_pdf_local", extract_once
+    )
+    monkeypatch.setattr(
+        document_pipeline, "extract_text_from_pdf_text_layer", lambda *a, **k: ""
+    )
+    monkeypatch.setattr(document_pipeline, "translate_ir", _translate_ok)
+
+    first = document_pipeline.process_document(record)
+    assert first.status == "done", first.logs
+    assert parse_calls == [1]
+
+    resume_from = document_pipeline.cached_resume_stage(first)
+    assert resume_from == "clean"
+
+    monkeypatch.setattr(
+        document_pipeline,
+        "extract_structured_from_pdf_local",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("reprocess must reuse the completed parse checkpoint")
+        ),
+    )
+
+    second = document_pipeline.process_document(first, resume_from=resume_from)
+    assert second.status == "done", second.logs
+    assert parse_calls == [1]
+    assert second.translated_pdf_url is not None
+
+
 def test_render_retry_reuses_extraction_checkpoint(isolated_storage, monkeypatch):
     source = settings.upload_dir / "render-resume.pdf"
     _write_source(source, ["Only paragraph in this document."])
