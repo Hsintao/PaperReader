@@ -295,6 +295,30 @@ http://localhost:5173
 
 这种模式适合快速修改 UI；准备正式 `.app` 前仍应做一次原生桌面运行或打包测试。
 
+## 6.1 一键启动（单进程，FastAPI 托管前端）
+
+不改前端、只想在浏览器里用完整功能时，用单进程模式：FastAPI 直接托管 `frontend/dist`，只开一个端口，不需要 Node 常驻。
+
+```bash
+make web
+```
+
+等价命令：
+
+```bash
+bash scripts/start_web.sh
+```
+
+脚本会依次处理：
+
+- 缺少 `.env` 时从 `.env.example` 复制一份，并提示填写 `OPENAI_API_KEY` / `MINERU_API_KEY`；
+- 选择解释器：当前环境能 `import uvicorn, fastapi` 就直接用，否则依次尝试 `conda activate pt`、`d2l`；
+- 端口按 `8000` → `8004` 取第一个空闲端口；若该端口上已有 PaperReader 在跑，直接打开它而不重复启动；也可用 `PAPERREADER_PORT=8010 bash scripts/start_web.sh` 指定端口；
+- `frontend/dist` 缺失或比 `frontend/src` 旧时，自动执行 `npm --prefix frontend run build`；
+- 启动服务并等 `/health` 返回 PaperReader 后打开浏览器，`Ctrl+C` 停止。
+
+终端里打印的 `http://127.0.0.1:<port>` 就是访问地址。
+
 ---
 
 # 7. 在 macOS 本地构建 `.app` 和 `.dmg`

@@ -1,4 +1,7 @@
-.PHONY: backend frontend worker
+.PHONY: web backend frontend worker
+
+web:
+	bash scripts/start_web.sh
 
 backend:
 	cd backend && uvicorn app.main:app --reload
