@@ -11,13 +11,12 @@ from reportlab.pdfgen import canvas as pdf_canvas
 from app.core.config import settings
 from app.services import document_pipeline
 from app.services.annotation_render import (
-    _caption_rect,
     block_category,
     render_annotated_pdf,
 )
 from app.services.app_settings import AppSettings
 from app.services.cjk_fonts import find_cjk_font
-from app.services.layout_model import document_lines, measure_pages
+from app.services.layout_model import caption_rect, document_lines, measure_pages
 from app.services.mineru_layout import (
     Author,
     DisplayMath,
@@ -185,8 +184,8 @@ def test_repeated_caption_text_binds_to_its_own_figure(tmp_path):
     blocks = _captioned_blocks()
     lines = [line for _page, line in document_lines([frames[0]])]
 
-    first = _caption_rect(blocks[0], frames[0], lines)
-    second = _caption_rect(blocks[1], frames[0], lines)
+    first = caption_rect(blocks[0], frames[0], lines)
+    second = caption_rect(blocks[1], frames[0], lines)
 
     assert first is not None and second is not None
     # Both captions read almost the same, so each must land by its own figure.

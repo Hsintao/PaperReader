@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -41,6 +42,7 @@ from app.services.mineru_layout import (
     Title,
     _parse_bbox,
     _to_page_rect,
+    classify_roles,
 )
 
 Rect = tuple[float, float, float, float]
@@ -456,6 +458,7 @@ def pages_from_middle(payload) -> tuple[list[Block], list[PageFrame]]:
 
         frames.append(frame)
 
+    classify_roles(blocks)
     return blocks, frames
 
 
@@ -1094,6 +1097,87 @@ def document_lines(frames: Sequence[PageFrame]) -> list[tuple[int, list]]:
                 if _join_chars(line):
                     ordered.append((frame.index, line))
     return ordered
+
+
+# The VLM parser reports a figure's caption as text without a box of its own,
+# so the caption's position is recovered from the page's text layer.
+_CAPTION_MIN_CHARS = 5
+_CAPTION_MIN_RATIO = 0.8
+_CAPTION_MAX_LINES = 3
+
+
+def _vertical_gap(anchor: Rect, box: Rect) -> float:
+    if box[1] >= anchor[3]:
+        return box[1] - anchor[3]
+    if box[3] <= anchor[1]:
+        return anchor[1] - box[3]
+    return 0.0
+
+
+def locate_caption(caption: str, lines: list[list], anchor: Rect | None) -> Rect | None:
+    """Find where a caption's text is drawn, using the page's own text layer.
+
+    The declared caption is aligned against every line window; windows that
+    match well are then narrowed to the one sitting by `anchor`, because two
+    figures on a page can repeat the same panel labels verbatim.
+    """
+    needle, _positions = _normalized_positions(caption)
+    if len(needle) < _CAPTION_MIN_CHARS:
+        return None
+    candidates: list[tuple[float, Rect]] = []
+    for start in range(len(lines)):
+        for count in range(1, _CAPTION_MAX_LINES + 1):
+            window = lines[start : start + count]
+            if len(window) < count:
+                break
+            text = "".join(
+                _normalized_positions(_join_chars(line))[0] for line in window
+            )
+            if len(text) < _CAPTION_MIN_CHARS:
+                continue
+            ratio = SequenceMatcher(None, needle, text, autojunk=False).ratio()
+            if ratio >= _CAPTION_MIN_RATIO:
+                candidates.append(
+                    (ratio, _union_rects([_line_box(line) for line in window]))
+                )
+    if not candidates:
+        return None
+    if anchor is None:
+        return max(candidates, key=lambda item: item[0])[1]
+    beside = [
+        candidate
+        for candidate in candidates
+        if candidate[1][2] > anchor[0] and candidate[1][0] < anchor[2]
+    ]
+    if beside:
+        return min(beside, key=lambda item: _vertical_gap(anchor, item[1]))[1]
+    return max(candidates, key=lambda item: item[0])[1]
+
+
+def _union_rects(rects: list[Rect]) -> Rect:
+    return (
+        min(rect[0] for rect in rects),
+        min(rect[1] for rect in rects),
+        max(rect[2] for rect in rects),
+        max(rect[3] for rect in rects),
+    )
+
+
+def caption_rect(block, frame: PageFrame, lines: list[list]) -> Rect | None:
+    """Recover a figure or table caption's box.
+
+    `middle.json` parses carry the caption's geometry directly; the structured
+    content list reports it as text only, so it is looked up on the page.
+    """
+    caption = (getattr(block, "caption", "") or "").strip()
+    if not caption:
+        return None
+    declared = getattr(block, "caption_bbox", None)
+    if declared is not None:
+        return declared
+    if not frame.has_text_layer or not lines:
+        return None
+    return locate_caption(caption, lines, getattr(block, "bbox", None))
 
 
 def _split_line_runs(

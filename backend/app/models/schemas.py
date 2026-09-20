@@ -50,6 +50,15 @@ class RetryDocumentResponse(BaseModel):
     resume_from: str
 
 
+class LayoutIssueItem(BaseModel):
+    """One structured layout fallback the reader can point at."""
+
+    kind: str
+    page: int
+    block_kind: str
+    message: str
+
+
 class DocumentStatusResponse(BaseModel):
     document_id: str
     status: str
@@ -63,6 +72,7 @@ class DocumentStatusResponse(BaseModel):
     artifacts: list[ArtifactItem] = []
     references: list[ReferenceItem] = []
     logs: list[str] = []
+    layout_issues: list[LayoutIssueItem] = []
     progress: int = 0
     current_stage: str | None = None
     current_stage_label: str | None = None

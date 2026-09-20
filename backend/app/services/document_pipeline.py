@@ -443,6 +443,7 @@ def _build_ir_and_frames(
             mineru_result.content_blocks,
             sizes,
             normalized_boxes=mineru_result.boxes_normalized,
+            frames=frames,
         )
         attach_known_regions(
             frames,

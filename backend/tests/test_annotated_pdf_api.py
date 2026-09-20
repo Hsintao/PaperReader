@@ -135,3 +135,35 @@ def test_annotation_from_an_older_revision_is_rebuilt_not_served(
     status = client.get(f"/api/document/{document_id}").json()
     assert status["annotated_pdf_url"] == response.json()["annotated_pdf_url"]
     assert len(pypdf.PdfReader(str(stale)).pages) == 1
+
+
+def test_document_status_exposes_structured_layout_issues(client, isolated_storage):
+    document_id = "doc-layout-issues"
+    source = settings.upload_dir / f"{document_id}.pdf"
+    _source(source)
+    record = _record(document_id, source)
+
+    # Documents produced before V2 report an empty list rather than failing.
+    assert client.get(f"/api/document/{document_id}").json()["layout_issues"] == []
+
+    record.metadata["layout_issues"] = [
+        {
+            "kind": "page_original",
+            "page": 4,
+            "block_kind": "page",
+            "message": "translation does not fit at the minimum font size",
+        },
+        {
+            "kind": "cell_original",
+            "page": 2,
+            "block_kind": "table_cell",
+            "message": "cell translation does not fit",
+        },
+    ]
+    save_document(record)
+
+    issues = client.get(f"/api/document/{document_id}").json()["layout_issues"]
+    assert [issue["kind"] for issue in issues] == ["page_original", "cell_original"]
+    assert issues[0]["page"] == 4
+    assert issues[0]["block_kind"] == "page"
+    assert issues[1]["message"] == "cell translation does not fit"

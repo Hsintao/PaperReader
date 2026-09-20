@@ -99,7 +99,8 @@ def test_captions_and_headers_never_enter_the_translation_queue():
         ". We have ",
     ]
 
-    assert all(translatable_mask(ir))
+    # Author names stay in the source language; everything else translates.
+    assert translatable_mask(ir) == [True, False, True, True, True]
 
     apply_translations(ir, [f"译{i}" for i in range(len(segments))])
     assert ir[0].text == "译0"

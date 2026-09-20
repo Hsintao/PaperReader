@@ -16,9 +16,28 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Iterable, Union
+from typing import Iterable, Literal, Union
 
 Rect = tuple[float, float, float, float]
+
+# Semantic role of a text block. The layout template picks font family, size
+# and leading from the role; translation decides from it what enters the queue.
+TextRole = Literal[
+    "body",
+    "abstract",
+    "keywords",
+    "author",
+    "affiliation",
+    "footnote",
+    "code",
+    "algorithm",
+    "acknowledgement",
+    "appendix",
+    "reference_heading",
+    "reference_entry",
+    "running",
+    "unknown",
+]
 
 # Span kinds shared with MinerU's middle.json.
 SPAN_TEXT = "text"
@@ -69,6 +88,7 @@ class Title:
     page_index: int = -1
     bbox: Rect | None = None
     source_text: str = ""
+    role: str = "body"
 
 
 @dataclass
@@ -76,6 +96,7 @@ class Author:
     text: str
     page_index: int = -1
     bbox: Rect | None = None
+    role: str = "author"
 
 
 @dataclass
@@ -85,6 +106,7 @@ class Paragraph:
     bbox: Rect | None = None
     spans: list[Span] = field(default_factory=list)
     source_text: str = ""
+    role: str = "body"
 
 
 @dataclass
@@ -102,6 +124,7 @@ class ListBlock:
     bbox: Rect | None = None
     item_boxes: list[Rect | None] = field(default_factory=list)
     source_text: str = ""
+    role: str = "body"
 
 
 @dataclass
@@ -123,6 +146,7 @@ class Image:
     page_index: int = -1
     bbox: Rect | None = None
     caption_bbox: Rect | None = None
+    translated_caption: str = ""
 
 
 @dataclass
@@ -134,6 +158,7 @@ class Table:
     bbox: Rect | None = None
     caption_bbox: Rect | None = None
     cells: list[TableCell] = field(default_factory=list)
+    translated_caption: str = ""
 
 
 Block = Union[Title, Author, Paragraph, ListBlock, DisplayMath, Image, Table]
@@ -349,8 +374,18 @@ def _paragraph_plain_text(content: dict) -> str:
 
 
 def _looks_like_authors(text: str) -> bool:
-    low = text.lower()
-    return any(hint in low for hint in _AUTHOR_HINTS)
+    """Whether a front-matter paragraph is the paper's byline.
+
+    An affiliation or contact block matches the same vocabulary, so it is
+    excluded here: it stays a translatable paragraph instead of being folded
+    into the untranslated author node.
+    """
+    stripped = text.strip()
+    if _AFFILIATION_PATTERN.search(stripped):
+        return False
+    if any(char in stripped for char in ".!?\u3002\uff01\uff1f"):
+        return False
+    return any(hint in stripped.lower() for hint in _AUTHOR_HINTS)
 
 
 def _header_key(text: str) -> str:
@@ -388,6 +423,7 @@ def blocks_to_ir(
     page_sizes: list[tuple[float, float]] | None = None,
     *,
     normalized_boxes: bool = True,
+    frames: list | None = None,
 ) -> list[Block]:
     """Convert MinerU `content_list_v2.json` into a flat list of IR blocks.
 
@@ -397,7 +433,9 @@ def blocks_to_ir(
       * turns the author/affiliation paragraph right after the paper title into
         an `Author` node so it is never translated;
       * attaches page geometry (page index and box) when `page_sizes` is given,
-        which is what lets the layout renderer pin translations to the source.
+        which is what lets the layout renderer pin translations to the source;
+      * recovers a figure/table caption's box from the text layer when `frames`
+        is given and the parser reported the caption as text only.
     """
     positioned = _flatten_pages_with_positions(content_blocks)
     # Typed-math outputs (content_list_v2) already mark formulas explicitly and
@@ -544,6 +582,7 @@ def blocks_to_ir(
                     ).strip()
                 elif isinstance(cap_items, str):
                     caption = cap_items.strip()
+                caption = _join_caption(caption, content.get("image_footnote"))
             if rel_path:
                 ir.append(
                     Image(
@@ -572,6 +611,7 @@ def blocks_to_ir(
                     ).strip()
                 elif isinstance(cap_items, str):
                     caption = cap_items.strip()
+                caption = _join_caption(caption, content.get("table_footnote"))
             if rel_path or html:
                 ir.append(
                     Table(
@@ -585,7 +625,193 @@ def blocks_to_ir(
 
         # Other block kinds (page_footer, header, etc.) are intentionally skipped.
 
+    if frames:
+        attach_caption_boxes(ir, frames)
+    classify_roles(ir)
     return ir
+
+
+def _join_caption(caption: str, footnotes: object) -> str:
+    """Append a figure/table's own footnote text to its caption."""
+    if isinstance(footnotes, str):
+        note = footnotes.strip()
+    elif isinstance(footnotes, list):
+        note = " ".join(
+            item.get("content", "")
+            for item in footnotes
+            if isinstance(item, dict) and item.get("type") == "text"
+        ).strip()
+    else:
+        note = ""
+    if not note:
+        return caption
+    return f"{caption} {note}".strip() if caption else note
+
+
+def attach_caption_boxes(ir: list[Block], frames: list) -> int:
+    """Recover caption geometry for blocks whose parser output has none.
+
+    The structured content list reports a caption as text only, so its box is
+    looked up on the page's own text layer. A caption that cannot be located
+    keeps no box and is later left in the source language in place.
+    """
+    from app.services.layout_model import caption_rect
+
+    lines_by_page: dict[int, list] = {}
+    for frame in frames:
+        if frame.has_text_layer:
+            from app.services.layout_model import _cluster_lines
+
+            lines_by_page[frame.index] = _cluster_lines(frame.chars)
+    recovered = 0
+    for block in ir:
+        if not isinstance(block, (Image, Table)) or block.caption_bbox is not None:
+            continue
+        page_index = getattr(block, "page_index", -1)
+        if not (0 <= page_index < len(frames)):
+            continue
+        lines = lines_by_page.get(page_index)
+        if not lines:
+            continue
+        rect = caption_rect(block, frames[page_index], lines)
+        if rect is None:
+            continue
+        block.caption_bbox = rect
+        recovered += 1
+    return recovered
+
+
+# ---------------------------------------------------------------------------
+# Semantic roles
+# ---------------------------------------------------------------------------
+
+_ABSTRACT_HEADING_PATTERN = re.compile(r"^\s*(?:abstract|summary)\s*$", re.IGNORECASE)
+_KEYWORDS_HEADING_PATTERN = re.compile(
+    r"^\s*(?:index\s+terms|keywords?|key\s+words|ccs\s+concepts)\b", re.IGNORECASE
+)
+_ACKNOWLEDGEMENT_HEADING_PATTERN = re.compile(
+    r"^\s*(?:acknowledge?ments?|acknowledgements?)\s*$", re.IGNORECASE
+)
+_APPENDIX_HEADING_PATTERN = re.compile(
+    r"^\s*(?:appendix|appendices)\b", re.IGNORECASE
+)
+_AFFILIATION_PATTERN = re.compile(
+    r"\b(?:university|universit[ée]|institute|institution|school\s+of|department|"
+    r"faculty|college|academy|laborator(?:y|ies)|center\s+for|centre\s+for|"
+    r"corresponding\s+author|@[A-Za-z0-9.-]+\.[A-Za-z]{2,})\b",
+    re.IGNORECASE,
+)
+_REFERENCE_ENTRY_PATTERN = re.compile(r"^\s*\[\d{1,4}\]")
+
+# Parser-provided block types that already name the role.
+_PARSER_ROLES = {
+    "footnote": "footnote",
+    "page_footnote": "footnote",
+    "code": "code",
+    "algorithm": "algorithm",
+    "header": "running",
+    "page_header": "running",
+    "footer": "running",
+    "page_footer": "running",
+}
+
+# Section state that survives across blocks until the next structural heading.
+_SECTION_ROLES = {
+    "abstract": "abstract",
+    "keywords": "keywords",
+    "appendix": "appendix",
+}
+
+# Roles whose wording stays in the source language: author names, bibliography
+# entries and running heads are printed as they appear in the source.
+UNTRANSLATABLE_ROLES = {"author", "reference_entry", "running"}
+
+
+def _heading_role(text: str) -> str:
+    stripped = text.strip()
+    if _REFERENCE_HEADING_PATTERN.match(stripped):
+        return "reference_heading"
+    if _ABSTRACT_HEADING_PATTERN.match(stripped):
+        return "abstract"
+    if _KEYWORDS_HEADING_PATTERN.match(stripped):
+        return "keywords"
+    if _ACKNOWLEDGEMENT_HEADING_PATTERN.match(stripped):
+        return "acknowledgement"
+    if _APPENDIX_HEADING_PATTERN.match(stripped):
+        return "appendix"
+    return ""
+
+
+def _looks_like_author_name(text: str) -> bool:
+    """A short front-matter line that reads as a byline, not a sentence.
+
+    Author names arrive as their own block before any section heading. The
+    check stays conservative: a byline is short, holds no sentence-ending
+    punctuation, and names no affiliation, which is what tells it apart from
+    the address block that follows it.
+    """
+    stripped = text.strip()
+    if not stripped or len(stripped) > 160:
+        return False
+    if _AFFILIATION_PATTERN.search(stripped):
+        return False
+    return not any(char in stripped for char in ".!?\u3002\uff01\uff1f")
+
+
+def classify_roles(ir: list[Block]) -> None:
+    """Tag every block with the semantic role the layout template consumes.
+
+    Only explicit headings and parser-provided block types decide a role;
+    anything uncertain stays ``body`` (or ``unknown`` for a paragraph the
+    parser gave no text for), so a wrong guess can never move text into a
+    different translation or typography rule than plain prose.
+    """
+    section = ""
+    in_references = False
+    front_matter = False
+    for block in ir:
+        parser_role = _PARSER_ROLES.get(getattr(block, "block_type", ""), "")
+        if isinstance(block, Title):
+            heading = _heading_role(block.text)
+            in_references = heading == "reference_heading"
+            section = _SECTION_ROLES.get(heading, "")
+            front_matter = not heading
+            block.role = heading or "body"
+            continue
+        if isinstance(block, Author):
+            block.role = "author"
+            continue
+        if parser_role:
+            block.role = parser_role
+            continue
+        if in_references:
+            if isinstance(block, ListBlock) and block.list_type == "reference_list":
+                block.role = "reference_entry"
+                continue
+            if isinstance(block, Paragraph) and _REFERENCE_ENTRY_PATTERN.match(
+                block.source_text
+            ):
+                block.role = "reference_entry"
+                continue
+        if isinstance(block, ListBlock):
+            block.role = section or (
+                "reference_entry" if block.list_type == "reference_list" else "body"
+            )
+            continue
+        if isinstance(block, Paragraph):
+            if section:
+                block.role = section
+                continue
+            text = block.source_text or ""
+            if _AFFILIATION_PATTERN.search(text):
+                block.role = "affiliation"
+                continue
+            if front_matter and _looks_like_author_name(text):
+                block.role = "author"
+                continue
+            block.role = "body" if text.strip() else "unknown"
+            continue
+        block.role = "body"
 
 
 def _block_slots(block: Block):
@@ -638,21 +864,29 @@ def translatable_blocks(ir: list[Block]) -> list[bool]:
     """Per-block twin of `translatable_mask`: False marks source-language blocks.
 
     Bibliography entries stay English so they remain searchable; they also
-    burn a large share of the translation budget. The masked region starts at
-    a References/Bibliography heading (or a typed reference list, which MinerU
-    emits even without the heading) and ends at the next title, so an appendix
-    placed after the bibliography still translates.
+    burn a large share of the translation budget. The masked region starts
+    after a References/Bibliography heading — the heading itself translates,
+    because the section title is Chinese in the translated PDF — or at a typed
+    reference list, which MinerU emits even without the heading, and ends at
+    the next title, so an appendix placed after the bibliography still
+    translates.
     """
     allowed: list[bool] = []
     in_references = False
     for block in ir:
+        role = getattr(block, "role", "")
         if isinstance(block, Title):
             in_references = (
                 _REFERENCE_HEADING_PATTERN.match(block.text.strip()) is not None
             )
         elif isinstance(block, ListBlock) and block.list_type == "reference_list":
             in_references = True
-        allowed.append(not in_references)
+        # The heading itself is translated: the translated PDF prints
+        # "参考文献", not "References". Only the entries below it stay English.
+        allowed.append(
+            role == "reference_heading"
+            or (not in_references and role not in UNTRANSLATABLE_ROLES)
+        )
     return allowed
 
 

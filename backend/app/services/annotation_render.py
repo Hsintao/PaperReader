@@ -13,7 +13,6 @@ and artwork, so the annotated file still supports search and selection.
 from __future__ import annotations
 
 import io
-from difflib import SequenceMatcher
 from pathlib import Path
 
 import pypdf
@@ -23,9 +22,7 @@ from app.services import pdf_ops
 from app.services.cjk_fonts import require_cjk_font
 from app.services.layout_model import (
     PageFrame,
-    _join_chars,
-    _line_box,
-    _normalized_positions,
+    caption_rect,
     document_lines,
 )
 from app.services.mineru_layout import (
@@ -42,17 +39,40 @@ Rect = tuple[float, float, float, float]
 
 # Bumped whenever the drawn categories change, so a document annotated by an
 # older revision is rebuilt instead of served with an outdated overlay.
-ANNOTATION_REVISION = 4
+ANNOTATION_REVISION = 5
 
 # Category label and RGB colour, shared by every box of that category.
 CATEGORY_STYLES: dict[str, tuple[str, tuple[float, float, float]]] = {
     "title": ("标题", (0.85, 0.20, 0.20)),
     "author": ("作者", (0.60, 0.25, 0.65)),
+    "affiliation": ("单位", (0.72, 0.35, 0.75)),
+    "abstract": ("摘要", (0.10, 0.35, 0.75)),
+    "keywords": ("关键词", (0.05, 0.50, 0.72)),
     "paragraph": ("正文", (0.13, 0.42, 0.85)),
     "list": ("列表", (0.05, 0.55, 0.60)),
+    "footnote": ("脚注", (0.35, 0.45, 0.55)),
+    "code": ("代码", (0.25, 0.25, 0.30)),
+    "algorithm": ("算法", (0.40, 0.20, 0.45)),
+    "reference_heading": ("参考文献标题", (0.55, 0.15, 0.15)),
+    "reference_entry": ("参考文献条目", (0.70, 0.30, 0.30)),
     "formula": ("公式", (0.90, 0.55, 0.05)),
     "figure": ("图片", (0.20, 0.60, 0.30)),
     "table": ("表格", (0.45, 0.30, 0.80)),
+    "unknown": ("未分类", (0.45, 0.45, 0.45)),
+}
+
+# Roles that get their own box colour; everything else is drawn as 正文.
+_ROLE_CATEGORIES = {
+    "author": "author",
+    "affiliation": "affiliation",
+    "abstract": "abstract",
+    "keywords": "keywords",
+    "footnote": "footnote",
+    "code": "code",
+    "algorithm": "algorithm",
+    "reference_heading": "reference_heading",
+    "reference_entry": "reference_entry",
+    "unknown": "unknown",
 }
 
 # Captions share one colour; the label says which artwork they belong to.
@@ -63,28 +83,22 @@ _LABEL_SIZE = 6.5
 _LABEL_PAD = 2.0
 _STROKE_WIDTH = 1.0
 
-# The VLM parser reports a figure's caption as text without a box of its own,
-# so the caption's position is recovered from the page's text layer.
-_CAPTION_MIN_CHARS = 5
-_CAPTION_MIN_RATIO = 0.8
-_CAPTION_MAX_LINES = 3
-
 
 def block_category(block: Block) -> str:
     """Map an IR block to its annotation category."""
     if isinstance(block, Title):
-        return "title"
+        return _ROLE_CATEGORIES.get(getattr(block, "role", ""), "title")
     if isinstance(block, Author):
         return "author"
     if isinstance(block, ListBlock):
-        return "list"
+        return _ROLE_CATEGORIES.get(getattr(block, "role", ""), "list")
     if isinstance(block, DisplayMath):
         return "formula"
     if isinstance(block, Image):
         return "figure"
     if isinstance(block, Table):
         return "table"
-    return "paragraph"
+    return _ROLE_CATEGORIES.get(getattr(block, "role", ""), "paragraph")
 
 
 def _draw_region(
@@ -135,71 +149,6 @@ def _rect_inside(outer: Rect, inner: Rect, slack: float = 1.0) -> bool:
     )
 
 
-def _vertical_gap(anchor: Rect, box: Rect) -> float:
-    if box[1] >= anchor[3]:
-        return box[1] - anchor[3]
-    if box[3] <= anchor[1]:
-        return anchor[1] - box[3]
-    return 0.0
-
-
-def _locate_caption(caption: str, lines: list[list], anchor: Rect | None) -> Rect | None:
-    """Find where a caption's text is drawn, using the page's own text layer.
-
-    The declared caption is aligned against every line window; windows that
-    match well are then narrowed to the one sitting by `anchor`, because two
-    figures on a page can repeat the same panel labels verbatim.
-    """
-    needle, _positions = _normalized_positions(caption)
-    if len(needle) < _CAPTION_MIN_CHARS:
-        return None
-    candidates: list[tuple[float, Rect]] = []
-    for start in range(len(lines)):
-        for count in range(1, _CAPTION_MAX_LINES + 1):
-            window = lines[start : start + count]
-            if len(window) < count:
-                break
-            text = "".join(
-                _normalized_positions(_join_chars(line))[0] for line in window
-            )
-            if len(text) < _CAPTION_MIN_CHARS:
-                continue
-            ratio = SequenceMatcher(None, needle, text, autojunk=False).ratio()
-            if ratio >= _CAPTION_MIN_RATIO:
-                candidates.append(
-                    (ratio, _union_rects([_line_box(line) for line in window]))
-                )
-    if not candidates:
-        return None
-    if anchor is None:
-        return max(candidates, key=lambda item: item[0])[1]
-    beside = [
-        candidate
-        for candidate in candidates
-        if candidate[1][2] > anchor[0] and candidate[1][0] < anchor[2]
-    ]
-    if beside:
-        return min(beside, key=lambda item: _vertical_gap(anchor, item[1]))[1]
-    return max(candidates, key=lambda item: item[0])[1]
-
-
-def _caption_rect(block: Block, frame: PageFrame, lines: list[list]) -> Rect | None:
-    """Recover a figure or table caption's box.
-
-    `middle.json` parses carry the caption's geometry directly; the structured
-    content list reports it as text only, so it is looked up on the page.
-    """
-    caption = (getattr(block, "caption", "") or "").strip()
-    if not caption:
-        return None
-    declared = getattr(block, "caption_bbox", None)
-    if declared is not None:
-        return declared
-    if not frame.has_text_layer or not lines:
-        return None
-    return _locate_caption(caption, lines, getattr(block, "bbox", None))
-
-
 def render_annotated_pdf(
     *,
     source_pdf: Path,
@@ -236,7 +185,9 @@ def render_annotated_pdf(
         canvas = pdf_canvas.Canvas(buffer, pagesize=(width, height))
         canvas.setFont(fonts.regular, _LABEL_SIZE)
         for block in page_blocks:
-            label, color = CATEGORY_STYLES[block_category(block)]
+            label, color = CATEGORY_STYLES.get(
+                block_category(block), CATEGORY_STYLES["unknown"]
+            )
             _draw_region(canvas, fonts.regular, block.bbox, label, color, height)
             drawn += 1
         if frame is not None:
@@ -250,7 +201,7 @@ def render_annotated_pdf(
                     continue
                 if page_lines is None:
                     page_lines = [line for _page, line in document_lines([frame])]
-                rect = _caption_rect(block, frame, page_lines)
+                rect = caption_rect(block, frame, page_lines)
                 if rect is None:
                     continue
                 if block.bbox and _rect_inside(block.bbox, rect):

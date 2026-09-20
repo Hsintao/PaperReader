@@ -11,6 +11,7 @@ from app.models.schemas import (
     DocumentStatusResponse,
     DocumentSummary,
     FailureItem,
+    LayoutIssueItem,
     LocateCounterpartRequest,
     LocateCounterpartResponse,
     RenameDocumentRequest,
@@ -71,8 +72,23 @@ def _annotated_pdf_url(record) -> str | None:
     )
 
 
-def _alignment_blocks(text: str) -> list[str]:
-    return [
+def _layout_issues(record) -> list[LayoutIssueItem]:
+    """Validate the stored layout issues, tolerating older documents."""
+    stored = record.metadata.get("layout_issues")
+    if not isinstance(stored, list):
+        return []
+    issues: list[LayoutIssueItem] = []
+    for item in stored:
+        if not isinstance(item, dict):
+            continue
+        try:
+            issues.append(LayoutIssueItem(**item))
+        except TypeError:
+            continue
+    return issues
+
+
+def _alignment_blocks(text: str) -> list[str]:    return [
         " ".join(part.split())
         for part in re.split(r"\n\s*\n+", text or "")
         if len(part.strip()) >= 12 and not part.lstrip().startswith("![](")
@@ -143,6 +159,7 @@ def get_document(
         ],
         references=[ReferenceItem(index=item.index, text=item.text) for item in record.references],
         logs=record.logs,
+        layout_issues=_layout_issues(record),
         progress=record.progress,
         current_stage=record.current_stage,
         current_stage_label=record.current_stage_label,
