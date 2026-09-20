@@ -269,7 +269,12 @@ def _draw_blocks(
     for plan in page_plan.translated_plans:
         width = max(1.0, plan.target[2] - plan.target[0])
         paragraph = measurer.paragraph(
-            plan.fragments, plan.size, plan.leading, bold=plan.bold, align=plan.align
+            plan.fragments,
+            plan.size,
+            plan.leading,
+            bold=plan.bold,
+            align=plan.align,
+            serif=plan.serif,
         )
         _, height = paragraph.wrapOn(canvas, width, 100000)
         y = plan.target[3] - height

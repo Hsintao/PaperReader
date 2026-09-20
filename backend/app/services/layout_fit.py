@@ -1,13 +1,13 @@
 """Per-block typography and fit search for the translated page.
 
-A translated block keeps the source block's box, but its typography does not
-come from the source page: font sizes start from fixed defaults (body text,
-title levels, table cells) and weight is not measured at all. Every page ends
-up with one unified body size, which may drift slightly up or down as the
-page's actual layout demands, bounded so it never becomes too small or too
-large. When the translation does not fit, the block gives ground in the order
-the layout design prescribes: use the whitespace below the block, shrink this
-block's font within the bounds, and continue into a region the parser dropped.
+A translated block keeps the source block's box, but its typography comes from
+the fixed Chinese template rather than from the source page: body copy is Song
+at 10.5pt in one column and 9pt in two, headings are Hei, and captions, table
+cells and footnotes have their own sizes and leading. Only alignment and
+paragraph indentation are still read from the source. When a translation does
+not fit, the page gives ground in the order the layout design prescribes: use
+the whitespace below the block, move later text down, shrink the whole page's
+body size down to 6pt, and only then fall back to the original page.
 """
 
 from __future__ import annotations
@@ -22,7 +22,12 @@ from reportlab.pdfgen import canvas as pdf_canvas
 from reportlab.platypus import Paragraph
 
 from app.services.cjk_fonts import CjkFontSet
-from app.services.layout_model import PageFrame, SourceChar
+from app.services.layout_model import (
+    PageColumns,
+    PageFrame,
+    SourceChar,
+    detect_page_columns,
+)
 from app.services.mineru_layout import (
     Block,
     InlineMath,
@@ -35,20 +40,69 @@ from app.services.mineru_layout import (
 
 Rect = tuple[float, float, float, float]
 
-DEFAULT_BODY_SIZE = 10.5      # body text never measured from the source page
+DEFAULT_BODY_SIZE = 10.5      # single-column body baseline
+DOUBLE_COLUMN_BODY_SIZE = 9.0
+MIN_BODY_SIZE = 6.0           # design floor: the page falls back below this
 TITLE_SIZES = {1: 16.0, 2: 13.0}
 SMALL_TITLE_SIZE = 11.5       # title level 3 and deeper
 MIN_SIZE_RATIO = 0.85         # a block never shrinks below 85% of its default
 SIZE_CEIL_RATIO = 1.1         # the unified page size grows at most this much
-ABS_MIN_SIZE = 7.0            # hard bounds: never too small, never too large
+ABS_MIN_SIZE = 6.0            # hard bounds: never too small, never too large
 ABS_MAX_SIZE = 22.0
 TITLE_KEEP_RATIO = 1.25       # headings bigger than this keep their own level
-MIN_LEADING_RATIO = 1.3
+MIN_LEADING_RATIO = 1.25      # design floor for line spacing
 MAX_LEADING_RATIO = 1.8
 CELL_MIN_RATIO = 0.75         # table cell text shrinks at most to this ratio
 REMOVAL_SLACK = 2.0           # text origins sit a hair outside their glyph box
 FIT_EPSILON = 0.6             # points of slack when testing whether text fits
 FIT_ITERATIONS = 12
+
+
+@dataclass(frozen=True)
+class TypographyProfile:
+    """One row of the fixed Chinese template."""
+
+    size: float
+    leading_ratio: float
+    serif: bool = True
+    bold: bool = False
+
+
+# Named rows of the template (docs/translation-layout.md section 3).
+TypographyProfile.TITLE_1 = TypographyProfile(16.0, 1.2, serif=False, bold=True)
+TypographyProfile.TITLE_2 = TypographyProfile(13.0, 1.25, serif=False, bold=True)
+TypographyProfile.TITLE_3 = TypographyProfile(11.5, 1.3, serif=False, bold=False)
+TypographyProfile.BODY_SINGLE = TypographyProfile(DEFAULT_BODY_SIZE, 1.5)
+TypographyProfile.BODY_DOUBLE = TypographyProfile(DOUBLE_COLUMN_BODY_SIZE, 1.5)
+TypographyProfile.AFFILIATION = TypographyProfile(8.5, 1.35)
+TypographyProfile.CAPTION = TypographyProfile(8.0, 1.3)
+TypographyProfile.TABLE_CELL = TypographyProfile(8.0, 1.25)
+TypographyProfile.FOOTNOTE = TypographyProfile(7.5, 1.3)
+
+
+def title_profile(level: int) -> TypographyProfile:
+    if level <= 1:
+        return TypographyProfile.TITLE_1
+    if level == 2:
+        return TypographyProfile.TITLE_2
+    return TypographyProfile.TITLE_3
+
+
+def body_profile(columns: PageColumns) -> TypographyProfile:
+    if columns.kind in {"double", "mixed"}:
+        return TypographyProfile.BODY_DOUBLE
+    return TypographyProfile.BODY_SINGLE
+
+
+def role_profile(role: str, columns: PageColumns) -> TypographyProfile:
+    """The template row for a block's semantic role."""
+    if role == "affiliation":
+        return TypographyProfile.AFFILIATION
+    if role == "footnote":
+        return TypographyProfile.FOOTNOTE
+    if role == "keywords":
+        return TypographyProfile.AFFILIATION
+    return body_profile(columns)
 
 
 @dataclass
@@ -78,6 +132,7 @@ class BlockPlan:
     reason: str = ""
     continuation: Rect | None = None
     source_text: str = ""
+    serif: bool = True
     block: Block | None = None
 
 
@@ -94,6 +149,7 @@ class CellPlan:
     align: str = "left"
     status: str = "translated"
     reason: str = ""
+    serif: bool = True
     cell: object | None = None
 
 
@@ -109,6 +165,7 @@ class PagePlan:
     leading: float = 0.0
     body_size: float = 0.0
     had_text_layer: bool = True
+    columns: PageColumns | None = None
 
     @property
     def mask_rects(self) -> list[Rect]:
@@ -239,45 +296,40 @@ def chars_in_rect(frame: PageFrame, rect: Rect) -> list[SourceChar]:
     return out
 
 
-def block_style(
-    frame: PageFrame, rect: Rect, *, is_title: bool, level: int = 1
-) -> tuple[float, bool, float, str]:
-    """Default (font size, bold, leading ratio, alignment) for a block.
-
-    Size and weight come from the layout defaults, not the source page; only
-    line spacing and alignment are still measured from the source layout.
-    """
+def style_profile(
+    role: str, columns: PageColumns, *, is_title: bool, level: int = 1
+) -> TypographyProfile:
+    """The fixed template row for a block, before any page-level shrinking."""
     if is_title:
-        size = TITLE_SIZES.get(level, SMALL_TITLE_SIZE)
-    else:
-        size = DEFAULT_BODY_SIZE
-    size = min(max(size, ABS_MIN_SIZE), ABS_MAX_SIZE)
+        return title_profile(level)
+    return role_profile(role, columns)
+
+
+def block_style(
+    frame: PageFrame,
+    rect: Rect,
+    *,
+    is_title: bool = False,
+    level: int = 1,
+    role: str = "body",
+    columns: PageColumns | None = None,
+) -> tuple[float, bool, float, str, bool]:
+    """(font size, bold, leading ratio, alignment, serif) for a block.
+
+    Size, weight and leading come from the fixed template; only alignment is
+    still measured from the source layout.
+    """
+    profile = style_profile(
+        role, columns or PageColumns(), is_title=is_title, level=level
+    )
+    size = min(max(profile.size, ABS_MIN_SIZE), ABS_MAX_SIZE)
     return (
         size,
-        is_title,
-        _measure_leading(frame, rect, size),
+        profile.bold,
+        profile.leading_ratio,
         _measure_alignment(frame, rect, is_title, level),
+        profile.serif,
     )
-
-
-def _measure_leading(frame: PageFrame, rect: Rect, size: float) -> float:
-    chars = chars_in_rect(frame, rect)
-    baselines: list[float] = []
-    for char in sorted(chars, key=lambda item: -item.rect[1]):
-        if not char.char.strip():
-            continue
-        if not baselines or abs(baselines[-1] - char.rect[1]) > 0.5 * max(size, 1.0):
-            baselines.append(char.rect[1])
-    if len(baselines) >= 2 and size > 0:
-        distances = sorted(
-            baselines[index] - baselines[index + 1]
-            for index in range(len(baselines) - 1)
-        )
-        distances = [value for value in distances if value > 0]
-        if distances:
-            ratio = distances[len(distances) // 2] / size
-            return min(max(ratio, MIN_LEADING_RATIO), MAX_LEADING_RATIO)
-    return 1.5
 
 
 def _measure_alignment(
@@ -308,11 +360,11 @@ class TextMeasurer:
         return bool(key) and key in self.image_paths
 
     def style(
-        self, size: float, leading: float, *, bold: bool, align: str
+        self, size: float, leading: float, *, bold: bool, align: str, serif: bool = True
     ) -> ParagraphStyle:
         return ParagraphStyle(
             name="block",
-            fontName=self.fonts.name(bold),
+            fontName=self.fonts.serif(bold) if serif else self.fonts.sans(bold),
             fontSize=size,
             leading=leading,
             wordWrap="CJK",
@@ -349,10 +401,11 @@ class TextMeasurer:
         *,
         bold: bool,
         align: str,
+        serif: bool = True,
     ) -> Paragraph:
         return Paragraph(
             self.markup(fragments, size) or " ",
-            self.style(size, leading, bold=bold, align=align),
+            self.style(size, leading, bold=bold, align=align, serif=serif),
         )
 
     def measure(
@@ -364,10 +417,13 @@ class TextMeasurer:
         bold: bool,
         align: str,
         width: float,
+        serif: bool = True,
     ) -> float:
         if not fragments:
             return 0.0
-        paragraph = self.paragraph(fragments, size, leading, bold=bold, align=align)
+        paragraph = self.paragraph(
+            fragments, size, leading, bold=bold, align=align, serif=serif
+        )
         try:
             _, height = paragraph.wrapOn(self._canvas, max(1.0, width), 100000)
         except Exception:
@@ -501,6 +557,7 @@ def fit_size(
             bold=plan.bold,
             align=plan.align,
             width=width,
+            serif=plan.serif,
         )
         return measured <= height + FIT_EPSILON
 
@@ -526,11 +583,17 @@ def plan_block(
     measurer: TextMeasurer,
     occupied: list[Rect],
     lost: list[Rect],
+    columns: PageColumns | None = None,
 ) -> BlockPlan:
     source_rect = block.bbox or frame.rect
     is_title = isinstance(block, Title)
-    size, bold, leading_ratio, align = block_style(
-        frame, source_rect, is_title=is_title, level=getattr(block, "level", 1)
+    size, bold, leading_ratio, align, serif = block_style(
+        frame,
+        source_rect,
+        is_title=is_title,
+        level=getattr(block, "level", 1),
+        role=getattr(block, "role", "body"),
+        columns=columns,
     )
     plan = BlockPlan(
         kind="title" if is_title else "paragraph",
@@ -545,6 +608,7 @@ def plan_block(
         bold=bold,
         align=align,
         source_text=source_text_of(block),
+        serif=serif,
         block=block,
     )
     if not any(
@@ -634,8 +698,11 @@ def plan_table_cells(
     for cell in table.cells:
         if not cell.bbox or not cell.text.strip() or not cell.translated.strip():
             continue
-        size, bold, leading_ratio, align = block_style(
-            frame, cell.bbox, is_title=False
+        size = min(max(TypographyProfile.TABLE_CELL.size, ABS_MIN_SIZE), ABS_MAX_SIZE)
+        bold = False
+        leading_ratio = TypographyProfile.TABLE_CELL.leading_ratio
+        _unused, _unused_bold, _unused_ratio, align, _serif = block_style(
+            frame, cell.bbox, is_title=False, role="body"
         )
         if _normalize(cell.text) == _normalize(cell.translated):
             continue
@@ -652,6 +719,7 @@ def plan_table_cells(
                     bold=bold,
                     align=align,
                     width=width,
+                    serif=True,
                 )
                 <= height + FIT_EPSILON
             )
@@ -677,6 +745,7 @@ def plan_table_cells(
             baseline_size=size,
             bold=bold,
             align=align,
+            serif=True,
             cell=cell,
         )
         if fitted <= 0.0:
@@ -703,6 +772,7 @@ def _max_fitting_leading(
                 bold=block.bold,
                 align=block.align,
                 width=width,
+                serif=block.serif,
             )
             <= height + FIT_EPSILON
         )
@@ -733,6 +803,7 @@ def _fits_at(measurer: TextMeasurer, block: BlockPlan, size: float) -> bool:
             bold=block.bold,
             align=block.align,
             width=width,
+            serif=block.serif,
         )
         <= height + FIT_EPSILON
     )
@@ -788,6 +859,7 @@ def unify_page(plan: PagePlan, measurer: TextMeasurer) -> None:
             bold=block.bold,
             align=block.align,
             width=width_cap[index],
+            serif=block.serif,
         )
         if measured > height + FIT_EPSILON:
             block.status = "original"
@@ -817,6 +889,9 @@ def plan_page(
     occupied.extend(block.bbox for block in blocks if block.bbox)
     occupied.extend(lost_regions)
 
+    columns = detect_page_columns(frame, blocks)
+    plan.columns = columns
+
     translatable = [
         block
         for block in blocks
@@ -834,6 +909,7 @@ def plan_page(
                 measurer=measurer,
                 occupied=occupied,
                 lost=lost_regions,
+                columns=columns,
             )
         )
     for block in blocks:

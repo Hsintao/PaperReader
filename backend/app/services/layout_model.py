@@ -34,6 +34,7 @@ from app.services.mineru_layout import (
     DisplayMath,
     Image,
     InlineMath,
+    ListBlock,
     Paragraph,
     Span,
     Table,
@@ -81,6 +82,100 @@ class PageFrame:
     def rect(self) -> Rect:
         x, y = self.origin
         return (x, y, x + self.width, y + self.height)
+
+
+@dataclass
+class PageColumns:
+    """How many text columns a page uses, and where each one runs."""
+
+    kind: str = "single"
+    columns: list[Rect] = field(default_factory=list)
+
+
+# Column detection works on body blocks only: a full-width title or abstract
+# spans both columns without being a column of its own.
+_COLUMN_OVERLAP_RATIO = 0.6
+_COLUMN_MIN_WIDTH_RATIO = 0.2
+_COLUMN_MIN_BLOCKS = 1
+_COLUMN_BAND_TOLERANCE = 0.15
+
+
+def detect_page_columns(frame: PageFrame, blocks: Sequence[Block]) -> PageColumns:
+    """Classify a page as single-, double- or mixed-column.
+
+    Body block horizontal ranges are clustered into bands. Two stable,
+    non-overlapping bands that each hold substantial text make a double-column
+    page; a single band is single-column. Pages with both a full-width band and
+    two narrower bands are mixed, and the narrower bands are the columns.
+    """
+    frame_rect = frame.rect
+    ranges: list[tuple[float, float]] = []
+    for block in blocks:
+        if not isinstance(block, (Paragraph, ListBlock)):
+            continue
+        box = getattr(block, "bbox", None)
+        if not box:
+            continue
+        width = box[2] - box[0]
+        if width <= 0:
+            continue
+        ranges.append((box[0], box[2]))
+    if not ranges:
+        return PageColumns(kind="single", columns=[frame_rect])
+
+    bands: list[list[tuple[float, float]]] = []
+    for start, end in sorted(ranges):
+        placed = False
+        for band in bands:
+            band_start = min(item[0] for item in band)
+            band_end = max(item[1] for item in band)
+            narrower = min(band_end - band_start, end - start)
+            overlap = min(band_end, end) - max(band_start, start)
+            if narrower > 0 and overlap / narrower >= _COLUMN_OVERLAP_RATIO:
+                band.append((start, end))
+                placed = True
+                break
+        if not placed:
+            bands.append([(start, end)])
+
+    frame_width = max(1.0, frame.width)
+    min_width = _COLUMN_MIN_WIDTH_RATIO * frame_width
+    substantial = [
+        band
+        for band in bands
+        if len(band) >= _COLUMN_MIN_BLOCKS
+        and max(item[1] for item in band) - min(item[0] for item in band) >= min_width
+    ]
+    substantial.sort(key=lambda band: min(item[0] for item in band))
+
+    if len(substantial) < 2:
+        return PageColumns(kind="single", columns=[frame_rect])
+
+    # Keep only bands that are narrow enough to be one column of a two-column
+    # layout; a full-width band means the page also has single-column text.
+    full_width = [
+        band
+        for band in substantial
+        if max(item[1] for item in band) - min(item[0] for item in band)
+        >= 0.75 * frame_width
+    ]
+    column_bands = [band for band in substantial if band not in full_width]
+    if len(column_bands) < 2:
+        return PageColumns(kind="single", columns=[frame_rect])
+
+    bands_rects: list[Rect] = []
+    for band in column_bands:
+        x0 = min(item[0] for item in band)
+        x1 = max(item[1] for item in band)
+        bands_rects.append((x0, frame_rect[1], x1, frame_rect[3]))
+    bands_rects.sort(key=lambda rect: rect[0])
+
+    left, right = bands_rects[0], bands_rects[-1]
+    if right[0] < left[2] - 1.0:
+        return PageColumns(kind="single", columns=[frame_rect])
+
+    kind = "mixed" if full_width else "double"
+    return PageColumns(kind=kind, columns=[left, right])
 
 
 def _font_is_bold(textpage, index: int, buffer=None) -> bool:
