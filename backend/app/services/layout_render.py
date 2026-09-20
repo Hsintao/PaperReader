@@ -39,6 +39,8 @@ from app.services.layout_fit import (
     current_text_of,
     formula_key,
     fragments_of,
+    recover_inline_formula_box,
+    source_line_box,
     source_text_of,
 )
 from app.services.layout_model import PageFrame, SourceChar, lost_regions, measure_pages
@@ -161,8 +163,27 @@ def prepare_formula_crops(
         page_index = getattr(block, "page_index", -1)
         if not (0 <= page_index < len(frames)):
             continue
+        frame = frames[page_index]
         for key, bbox in _formula_boxes(block):
             crops.crop(key, page_index, bbox)
+        # A formula the parser reported without a box is located from the text
+        # around it, so the fit search can measure it instead of dropping it.
+        runs = _block_runs(block)
+        for run_index, run in enumerate(runs):
+            if not isinstance(run, InlineMath) or run.bbox:
+                continue
+            bbox = recover_inline_formula_box(frame, block, run_index)
+            mode = "recovered_bbox"
+            if bbox is None:
+                bbox = source_line_box(frame, block, None)
+                mode = "line_crop"
+            if bbox is None:
+                continue
+            # Record the recovered box on the run itself: the plan then names
+            # the same crop instead of resolving the formula a second time.
+            run.bbox = bbox
+            run.fallback = mode
+            crops.crop(formula_key(page_index, bbox), page_index, bbox)
     return crops
 
 
@@ -182,6 +203,17 @@ def _formula_boxes(block: Block) -> list[tuple[str, Rect]]:
         if isinstance(run, InlineMath) and run.bbox:
             boxes.append((formula_key(page_index, run.bbox), run.bbox))
     return boxes
+
+
+def _block_runs(block: Block) -> list:
+    """Every inline/text run of a block, in document order."""
+    runs: list = []
+    if isinstance(block, IRParagraph):
+        runs = list(block.runs)
+    elif isinstance(block, ListBlock):
+        for item in block.items:
+            runs.extend(item)
+    return runs
 
 
 def _text_present(chars: list[SourceChar], char: str, rect: Rect) -> bool:
@@ -401,7 +433,7 @@ def render_document(
     debug_pdf: Path | None = None,
 ) -> RenderReport:
     fonts = fonts or require_cjk_font()
-    measurer = TextMeasurer(fonts, crops.paths, crops.aspects)
+    measurer = TextMeasurer(fonts, crops.paths, crops.aspects, crops.crop)
     report = RenderReport()
     reader = pypdf.PdfReader(str(source_pdf))
     writer = pypdf.PdfWriter()

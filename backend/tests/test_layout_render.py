@@ -209,28 +209,36 @@ def test_block_shrinks_in_place_when_space_is_bounded(tmp_path):
     assert plan.target[1] <= 680.5
 
 
-def test_missing_inline_formula_geometry_drops_only_the_formula(tmp_path):
+def test_missing_inline_formula_geometry_keeps_the_formula(tmp_path):
+    from app.services.mineru_layout import InlineMath
+
     source = tmp_path / "formula.pdf"
     _source(source, ["Inline math paragraph."], footer="1")
     frames = layout_model.measure_pages(source)
     block = Paragraph(
-        runs=[TextRun(text="Inline math "), __import__("app.services.mineru_layout", fromlist=["InlineMath"]).InlineMath(latex="x^2")],
+        runs=[TextRun(text="Inline math "), InlineMath(latex="x^2")],
         page_index=0,
         bbox=(72.0, 690.0, 400.0, 704.0),
         source_text="Inline math x^2",
     )
     crops = layout_render.prepare_formula_crops(source, frames, [block], tmp_path / "c")
     try:
-        measurer = layout_fit.TextMeasurer(require_cjk_font(), crops.paths, crops.aspects)
+        measurer = layout_fit.TextMeasurer(
+            require_cjk_font(), crops.paths, crops.aspects, crops.crop
+        )
         plans = layout_fit.plan_document(frames, [block], measurer=measurer)
     finally:
         crops.close()
 
     plan = plans[0].blocks[0]
-    # The formula has no geometry to lift it out of the page, so it is left out
-    # and the surrounding prose is rebuilt from the translation.
-    assert plan.status == "translated"
-    assert all(fragment.kind != "formula" for fragment in plan.fragments)
+    # A formula the parser reported without a box is located on the page, so it
+    # stays in the translated paragraph instead of being dropped.
+    formula = next(
+        fragment for fragment in plan.fragments if fragment.kind == "formula"
+    )
+    assert formula.image_key
+    assert measurer.has_image(formula.image_key)
+    assert formula.fallback in {"recovered_bbox", "line_crop"}
     assert any(fragment.kind == "text" for fragment in plan.fragments)
 
 

@@ -113,6 +113,20 @@ class Fragment:
     text: str = ""
     image_key: str = ""
     aspect: float = 1.0
+    # Where the formula was cropped from, kept so a missing geometry can be
+    # recovered and so the diagnostics can name the fallback that was used.
+    source_bbox: Rect | None = None
+    source_line_bbox: Rect | None = None
+    baseline_ratio: float = 0.0
+    fallback: str = ""
+
+
+# How an inline formula's geometry was obtained (docs/translation-layout.md
+# section 10). `exact_crop` uses the parser's box, `recovered_bbox` and
+# `line_crop` bound it from the page, and `original_block` keeps the whole
+# block in the source language.
+FormulaFallback = str
+FORMULA_FALLBACKS = ("exact_crop", "recovered_bbox", "line_crop", "original_block")
 
 
 @dataclass
@@ -133,6 +147,7 @@ class BlockPlan:
     continuation: Rect | None = None
     source_text: str = ""
     serif: bool = True
+    formula_fallback: str = ""
     block: Block | None = None
 
 
@@ -350,14 +365,30 @@ def _measure_alignment(
 class TextMeasurer:
     """Builds and measures the same paragraph markup the renderer draws."""
 
-    def __init__(self, fonts: CjkFontSet, image_paths=None, image_aspects=None):
+    def __init__(
+        self,
+        fonts: CjkFontSet,
+        image_paths=None,
+        image_aspects=None,
+        crop_formula_fn=None,
+    ):
         self.fonts = fonts
-        self.image_paths = image_paths or {}
-        self.image_aspects = image_aspects or {}
+        self.image_paths = image_paths if image_paths is not None else {}
+        self.image_aspects = image_aspects if image_aspects is not None else {}
+        self.crop_formula_fn = crop_formula_fn
         self._canvas = pdf_canvas.Canvas(io.BytesIO(), pagesize=(1, 1))
 
     def has_image(self, key: str) -> bool:
         return bool(key) and key in self.image_paths
+
+    def crop_formula(self, key: str, page_index: int, bbox: Rect) -> str:
+        """Crop a formula the parser gave no geometry for, on demand."""
+        if self.crop_formula_fn is None:
+            return ""
+        path = self.crop_formula_fn(key, page_index, bbox)
+        if path:
+            self.image_paths[key] = path
+        return path
 
     def style(
         self, size: float, leading: float, *, bold: bool, align: str, serif: bool = True
@@ -437,6 +468,19 @@ def formula_key(page_index: int, bbox: Rect | None) -> str:
     return f"{page_index}:{bbox[0]:.1f}:{bbox[1]:.1f}:{bbox[2]:.1f}:{bbox[3]:.1f}"
 
 
+def _formula_fragment(page_index: int, run: InlineMath) -> Fragment:
+    if not run.bbox:
+        fallback = ""
+    else:
+        fallback = getattr(run, "fallback", "") or "exact_crop"
+    return Fragment(
+        kind="formula",
+        image_key=formula_key(page_index, run.bbox),
+        source_bbox=run.bbox,
+        fallback=fallback,
+    )
+
+
 def fragments_of(block: Block) -> list[Fragment]:
     page_index = getattr(block, "page_index", -1)
     fragments: list[Fragment] = []
@@ -448,9 +492,7 @@ def fragments_of(block: Block) -> list[Fragment]:
             if isinstance(run, TextRun):
                 fragments.append(Fragment(kind="text", text=run.text))
             elif isinstance(run, InlineMath):
-                fragments.append(
-                    Fragment(kind="formula", image_key=formula_key(page_index, run.bbox))
-                )
+                fragments.append(_formula_fragment(page_index, run))
         return fragments
     if isinstance(block, ListBlock):
         ordered = "ordered" in block.list_type or "number" in block.list_type
@@ -463,11 +505,7 @@ def fragments_of(block: Block) -> list[Fragment]:
                 if isinstance(run, TextRun):
                     fragments.append(Fragment(kind="text", text=run.text))
                 elif isinstance(run, InlineMath):
-                    fragments.append(
-                        Fragment(
-                            kind="formula", image_key=formula_key(page_index, run.bbox)
-                        )
-                    )
+                    fragments.append(_formula_fragment(page_index, run))
     return fragments
 
 
@@ -491,6 +529,189 @@ def current_text_of(block: Block) -> str:
             for item in block.items
         )
     return ""
+
+
+def _same_line(left: Rect, right: Rect) -> bool:
+    """Whether two boxes sit on the same text line."""
+    height = max(
+        1.0, min(left[3] - left[1], right[3] - right[1])
+    )
+    return abs(((left[1] + left[3]) / 2) - ((right[1] + right[3]) / 2)) <= 0.6 * height
+
+
+def _contains_foreign_text(frame: PageFrame, rect: Rect, slack: int = 0) -> bool:
+    """Whether a candidate box swallows text other than the formula itself."""
+    inside = [char for char in chars_in_rect(frame, rect) if char.char.strip()]
+    return len(inside) > slack
+
+
+def recover_inline_formula_box(
+    frame: PageFrame, block: Block, run_index: int
+) -> Rect | None:
+    """Bound a geometry-less inline formula from the text around it.
+
+    The parser sometimes reports inline math without a box. The formula sits
+    between two text spans on one line, so the gap between the preceding
+    character and the following one bounds it. A recovered box is accepted only
+    when it lies inside the paragraph, sits on a single line and holds no other
+    text.
+    """
+    runs = list(getattr(block, "runs", []) or [])
+    if not (0 <= run_index < len(runs)) or not isinstance(runs[run_index], InlineMath):
+        return None
+    paragraph = getattr(block, "bbox", None)
+    if not paragraph:
+        return None
+
+    previous = next(
+        (
+            run
+            for run in reversed(runs[:run_index])
+            if isinstance(run, TextRun) and run.text.strip()
+        ),
+        None,
+    )
+    following = next(
+        (
+            run
+            for run in runs[run_index + 1 :]
+            if isinstance(run, TextRun) and run.text.strip()
+        ),
+        None,
+    )
+    if previous is None or following is None:
+        return None
+
+    before_chars = _chars_for_run(frame, previous, paragraph)
+    after_chars = _chars_for_run(frame, following, paragraph)
+    if not before_chars or not after_chars:
+        return None
+    if not _same_line(before_chars[-1].rect, after_chars[0].rect):
+        return None
+    left = max(char.rect[2] for char in before_chars)
+    right = min(char.rect[0] for char in after_chars)
+    if right - left <= 0.5:
+        return None
+    top = max(char.rect[3] for char in before_chars + after_chars)
+    bottom = min(char.rect[1] for char in before_chars + after_chars)
+    if top - bottom <= 0.5:
+        return None
+    candidate = (left, bottom, right, top)
+    if not _rect_within(paragraph, candidate, slack=1.0):
+        return None
+    # The gap must hold the formula and nothing else: the formula's own glyphs
+    # are not in the page's text layer, so any character sitting in the gap
+    # belongs to other prose and the box is not this formula's.
+    known = {char.rect for char in before_chars + after_chars}
+    inside = [
+        char
+        for char in chars_in_rect(frame, candidate)
+        if char.char.strip() and char.rect not in known
+    ]
+    if inside:
+        return None
+    return candidate
+
+
+def _in_reading_order(chars: list[SourceChar]) -> list[SourceChar]:
+    """Characters ordered top-to-bottom, left-to-right.
+
+    Glyph boxes start at different heights (a lowercase `o` and a capital `B`
+    do not share a top edge), so lines are clustered by vertical centre first;
+    sorting on the raw box top would interleave the words of one line.
+    """
+    if not chars:
+        return []
+    ordered = sorted(chars, key=lambda char: -((char.rect[1] + char.rect[3]) / 2))
+    lines: list[list[SourceChar]] = []
+    for char in ordered:
+        centre = (char.rect[1] + char.rect[3]) / 2
+        height = max(1.0, char.rect[3] - char.rect[1])
+        if lines:
+            last_centre = sum(
+                (item.rect[1] + item.rect[3]) / 2 for item in lines[-1]
+            ) / len(lines[-1])
+            if abs(centre - last_centre) <= 0.6 * height:
+                lines[-1].append(char)
+                continue
+        lines.append([char])
+    result: list[SourceChar] = []
+    for line in lines:
+        result.extend(sorted(line, key=lambda char: char.rect[0]))
+    return result
+
+
+def _chars_for_run(
+    frame: PageFrame, run: TextRun, paragraph: Rect
+) -> list[SourceChar]:
+    """The source characters the run's own words were drawn with.
+
+    The run text locates its own characters inside the paragraph: the words are
+    found in the page's own text layer in reading order, so the box that comes
+    back belongs to this run and not to a lookalike elsewhere on the page.
+    """
+    if not any(char.strip() for char in run.text):
+        return []
+    candidates = [char for char in chars_in_rect(frame, paragraph) if char.char.strip()]
+    candidates = _in_reading_order(candidates)
+    needle = _normalize(run.text)
+    if not needle:
+        return []
+    # Normalization drops spaces and punctuation, so each source character is
+    # mapped to the slice of the normalized string it contributed.
+    pieces: list[str] = []
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+    for char in candidates:
+        piece = _normalize(char.char)
+        spans.append((cursor, cursor + len(piece)))
+        pieces.append(piece)
+        cursor += len(piece)
+    haystack = "".join(pieces)
+    start = haystack.find(needle)
+    if start < 0:
+        return []
+    end = start + len(needle)
+    return [
+        char
+        for char, (begin, finish) in zip(candidates, spans)
+        if finish > begin and finish > start and begin < end
+    ]
+
+
+def _rect_within(outer: Rect, inner: Rect, slack: float = 1.0) -> bool:
+    return (
+        inner[0] >= outer[0] - slack
+        and inner[1] >= outer[1] - slack
+        and inner[2] <= outer[2] + slack
+        and inner[3] <= outer[3] + slack
+    )
+
+
+def source_line_box(frame: PageFrame, block: Block, bbox: Rect | None) -> Rect | None:
+    """The smallest source line that contains a formula's known position."""
+    paragraph = getattr(block, "bbox", None)
+    if not paragraph:
+        return None
+    chars = [char for char in chars_in_rect(frame, paragraph) if char.char.strip()]
+    if not chars:
+        return None
+    if bbox is not None:
+        anchor = bbox
+    else:
+        anchor = None
+    if anchor is not None:
+        on_line = [char for char in chars if _same_line(char.rect, anchor)]
+    else:
+        on_line = chars
+    if not on_line:
+        return None
+    return (
+        min(char.rect[0] for char in on_line),
+        min(char.rect[1] for char in on_line),
+        max(char.rect[2] for char in on_line),
+        max(char.rect[3] for char in on_line),
+    )
 
 
 def expand_target(
@@ -576,6 +797,105 @@ def fit_size(
     return best
 
 
+def _recovered_block_rect(frame: PageFrame, block: Block) -> Rect | None:
+    """A block box rebuilt from the text the parser reported without geometry."""
+    runs = list(getattr(block, "runs", []) or [])
+    boxes: list[Rect] = []
+    for index, run in enumerate(runs):
+        if isinstance(run, InlineMath) and run.bbox:
+            boxes.append(run.bbox)
+            continue
+        if isinstance(run, InlineMath):
+            recovered = recover_inline_formula_box(frame, block, index)
+            if recovered:
+                boxes.append(recovered)
+            continue
+        if isinstance(run, TextRun) and run.text.strip():
+            chars = _chars_for_run(frame, run, frame.rect)
+            if chars:
+                boxes.append(
+                    (
+                        min(char.rect[0] for char in chars),
+                        min(char.rect[1] for char in chars),
+                        max(char.rect[2] for char in chars),
+                        max(char.rect[3] for char in chars),
+                    )
+                )
+    if not boxes:
+        return None
+    return (
+        min(box[0] for box in boxes),
+        min(box[1] for box in boxes),
+        max(box[2] for box in boxes),
+        max(box[3] for box in boxes),
+    )
+
+
+def resolve_formula_fragments(
+    frame: PageFrame,
+    block: Block,
+    plan: BlockPlan,
+    measurer: TextMeasurer,
+    indices: list[int],
+) -> str | None:
+    """Give every geometry-less inline formula a croppable box.
+
+    Tried in order: the box recovered from the surrounding text spans, then the
+    source line that holds the formula. Returns the fallback name that worked,
+    or None when the formula cannot be located at all.
+    """
+    runs = list(getattr(block, "runs", []) or [])
+    resolved = "recovered_bbox"
+    for index in indices:
+        fragment = plan.fragments[index]
+        run_index = _run_index_for_fragment(plan.fragments, index)
+        run = runs[run_index] if 0 <= run_index < len(runs) else None
+        bbox = recover_inline_formula_box(frame, block, run_index)
+        mode = "recovered_bbox"
+        if bbox is None:
+            bbox = source_line_box(
+                frame, block, fragment.source_bbox or getattr(run, "bbox", None)
+            )
+            mode = "line_crop"
+        if bbox is None:
+            return None
+        key = formula_key(frame.index, bbox)
+        if not key:
+            return None
+        path = measurer.crop_formula(key, frame.index, bbox)
+        if not path:
+            return None
+        fragment.image_key = key
+        fragment.source_bbox = bbox
+        fragment.fallback = mode
+        fragment.baseline_ratio = _baseline_ratio(frame, bbox)
+        if mode == "line_crop":
+            resolved = "line_crop"
+    return resolved
+
+
+def _run_index_for_fragment(fragments: list[Fragment], fragment_index: int) -> int:
+    """Which InlineMath run a fragment index corresponds to."""
+    seen = 0
+    for index, fragment in enumerate(fragments):
+        if fragment.kind != "formula":
+            continue
+        if index == fragment_index:
+            return seen
+        seen += 1
+    return -1
+
+
+def _baseline_ratio(frame: PageFrame, bbox: Rect) -> float:
+    """Where the formula's baseline sits inside its own box (0 at the bottom)."""
+    chars = [char for char in chars_in_rect(frame, bbox) if char.char.strip()]
+    if not chars:
+        return 0.25
+    height = max(0.5, bbox[3] - bbox[1])
+    baseline = min(char.rect[1] for char in chars)
+    return max(0.0, min(1.0, (baseline - bbox[1]) / height))
+
+
 def plan_block(
     frame: PageFrame,
     block: Block,
@@ -585,7 +905,20 @@ def plan_block(
     lost: list[Rect],
     columns: PageColumns | None = None,
 ) -> BlockPlan:
-    source_rect = block.bbox or frame.rect
+    source_rect = block.bbox or _recovered_block_rect(frame, block)
+    if source_rect is None:
+        # No geometry at all, so the block cannot be replaced safely.
+        return BlockPlan(
+            kind="paragraph",
+            page_index=frame.index,
+            source_rect=frame.rect,
+            target=frame.rect,
+            fragments=fragments_of(block),
+            status="original",
+            reason="block has no source geometry",
+            formula_fallback="original_block",
+            block=block,
+        )
     is_title = isinstance(block, Title)
     size, bold, leading_ratio, align, serif = block_style(
         frame,
@@ -611,6 +944,14 @@ def plan_block(
         serif=serif,
         block=block,
     )
+    plan.formula_fallback = next(
+        (
+            fragment.fallback
+            for fragment in plan.fragments
+            if fragment.kind == "formula" and fragment.fallback
+        ),
+        "",
+    )
     if not any(
         fragment.kind == "text" and fragment.text.strip() for fragment in plan.fragments
     ):
@@ -623,30 +964,23 @@ def plan_block(
         plan.status = "original"
         plan.reason = "block box covers text the block does not own"
         return plan
-    if any(
-        fragment.kind == "formula" and not measurer.has_image(fragment.image_key)
-        for fragment in plan.fragments
-    ):
-        # The parser omits the geometry of some inline formulas, so they cannot
-        # be lifted out of the page. Rebuilding the paragraph without them keeps
-        # the surrounding prose readable instead of leaving it in English.
-        plan.fragments = [
-            fragment
-            for fragment in plan.fragments
-            if not (
-                fragment.kind == "formula"
-                and not measurer.has_image(fragment.image_key)
-            )
-        ]
-        if not any(
-            fragment.kind == "text" and fragment.text.strip()
-            for fragment in plan.fragments
-        ):
-            # The block is only geometry-less formulas: masking it would erase
-            # them from the page, so keep the source content in place.
+    unresolved = [
+        index
+        for index, fragment in enumerate(plan.fragments)
+        if fragment.kind == "formula" and not measurer.has_image(fragment.image_key)
+    ]
+    if unresolved:
+        fallback = resolve_formula_fragments(
+            frame, block, plan, measurer, unresolved
+        )
+        if fallback is None:
+            # A formula that cannot be located at all must not be erased by
+            # masking its paragraph, so the whole block keeps its source.
             plan.status = "original"
-            plan.reason = "no translated text for this block"
+            plan.reason = "inline formula could not be located"
+            plan.formula_fallback = "original_block"
             return plan
+        plan.formula_fallback = fallback
 
     target = expand_target(frame, source_rect, occupied)
     plan.target = target
@@ -892,10 +1226,12 @@ def plan_page(
     columns = detect_page_columns(frame, blocks)
     plan.columns = columns
 
+    # A block with no geometry still gets a plan so the page can report why its
+    # content stayed in the source language.
     translatable = [
         block
         for block in blocks
-        if block.bbox and isinstance(block, (Title, IRParagraph, ListBlock))
+        if isinstance(block, (Title, IRParagraph, ListBlock))
     ]
     for block in translatable:
         if _normalize(source_text_of(block)) == _normalize(current_text_of(block)):

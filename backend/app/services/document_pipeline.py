@@ -672,7 +672,9 @@ def _render_translated_pdf(
         record.source_path, frames, ir_blocks, output_dir / "formula-crops"
     )
     try:
-        measurer = TextMeasurer(require_cjk_font(), crops.paths, crops.aspects)
+        measurer = TextMeasurer(
+            require_cjk_font(), crops.paths, crops.aspects, crops.crop
+        )
         plans = plan_document(frames, ir_blocks, measurer=measurer)
         refit = refit_with_concise_translations(
             plans,
