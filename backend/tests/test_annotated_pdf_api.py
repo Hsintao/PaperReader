@@ -1,0 +1,137 @@
+"""On-demand annotated-source PDF for documents parsed before the feature."""
+
+from pathlib import Path
+
+import pypdf
+import pytest
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas as pdf_canvas
+
+from app.core.config import settings
+from app.models.store import ArtifactEntry, DocumentRecord, save_document
+from app.services.cjk_fonts import find_cjk_font
+from app.services.document_pipeline import _save_extraction_checkpoint
+from app.services.mineru_service import MinerUResult
+
+pytestmark = pytest.mark.skipif(
+    find_cjk_font() is None, reason="requires an installed CJK font"
+)
+
+
+def _source(path: Path) -> None:
+    canvas = pdf_canvas.Canvas(str(path), pagesize=letter)
+    canvas.setFont("Helvetica-Bold", 16)
+    canvas.drawString(72, 700, "Annotation Route Paper")
+    canvas.showPage()
+    canvas.save()
+
+
+def _content_blocks() -> list:
+    return [
+        [
+            {
+                "type": "title",
+                "bbox": [72, 92, 400, 122],
+                "content": {
+                    "title_content": [
+                        {"type": "text", "content": "Annotation Route Paper"}
+                    ],
+                    "level": 1,
+                },
+            }
+        ]
+    ]
+
+
+def _record(document_id: str, source: Path) -> DocumentRecord:
+    return save_document(
+        DocumentRecord(
+            document_id=document_id,
+            source_type="pdf",
+            source_path=source,
+            source_filename=f"{document_id}.pdf",
+            status="done",
+        )
+    )
+
+
+def _write_checkpoint(document_id: str, source) -> Path:
+    output_dir = settings.output_dir / document_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _save_extraction_checkpoint(
+        output_dir / "extraction-checkpoint.json",
+        source,
+        MinerUResult(
+            markdown="# Annotation Route Paper",
+            mode_label="test",
+            content_blocks=_content_blocks(),
+            boxes_normalized=False,
+        ),
+    )
+    return output_dir
+
+
+def test_annotated_pdf_endpoint_builds_from_the_extraction_checkpoint(
+    client, isolated_storage
+):
+    document_id = "doc-annot-pdf"
+    source = settings.upload_dir / f"{document_id}.pdf"
+    _source(source)
+    _record(document_id, source)
+    output_dir = _write_checkpoint(document_id, source)
+
+    assert client.get(f"/api/document/{document_id}").json()["annotated_pdf_url"] is None
+
+    response = client.post(f"/api/document/{document_id}/annotated-pdf")
+    assert response.status_code == 200, response.text
+    url = response.json()["annotated_pdf_url"]
+    assert url.endswith("_原文标注.pdf")
+
+    status = client.get(f"/api/document/{document_id}").json()
+    assert status["annotated_pdf_url"] == url
+    assert any(item["kind"] == "annotated_pdf" for item in status["artifacts"])
+
+    annotated = output_dir / f"{document_id}_原文标注.pdf"
+    assert annotated.is_file()
+    assert len(pypdf.PdfReader(str(annotated)).pages) == 1
+
+
+def test_annotated_pdf_endpoint_reports_missing_parse_cache(client, isolated_storage):
+    document_id = "doc-annot-missing"
+    source = settings.upload_dir / f"{document_id}.pdf"
+    _source(source)
+    _record(document_id, source)
+
+    response = client.post(f"/api/document/{document_id}/annotated-pdf")
+    assert response.status_code == 409
+
+
+def test_annotation_from_an_older_revision_is_rebuilt_not_served(
+    client, isolated_storage
+):
+    document_id = "doc-annot-stale"
+    source = settings.upload_dir / f"{document_id}.pdf"
+    _source(source)
+    record = _record(document_id, source)
+    output_dir = _write_checkpoint(document_id, source)
+    stale = output_dir / f"{document_id}_原文标注.pdf"
+    stale.write_bytes(b"%PDF-1.4\n% annotated by an earlier revision\n")
+    record.artifacts.append(
+        ArtifactEntry(
+            name=stale.name,
+            kind="annotated_pdf",
+            path=str(stale),
+            url=f"/data/outputs/{document_id}/{stale.name}",
+        )
+    )
+    save_document(record)
+
+    # An artifact from an older annotation style is not offered to the reader.
+    assert client.get(f"/api/document/{document_id}").json()["annotated_pdf_url"] is None
+
+    response = client.post(f"/api/document/{document_id}/annotated-pdf")
+    assert response.status_code == 200, response.text
+
+    status = client.get(f"/api/document/{document_id}").json()
+    assert status["annotated_pdf_url"] == response.json()["annotated_pdf_url"]
+    assert len(pypdf.PdfReader(str(stale)).pages) == 1

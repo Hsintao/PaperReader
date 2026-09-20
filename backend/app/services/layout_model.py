@@ -404,6 +404,7 @@ def pages_from_middle(payload) -> tuple[list[Block], list[PageFrame]]:
                     caption=caption,
                     page_index=page_index,
                     bbox=box,
+                    caption_bbox=caption_box,
                     cells=_table_cells_from_middle(block, height),
                 )
                 if caption_box:
@@ -425,6 +426,7 @@ def pages_from_middle(payload) -> tuple[list[Block], list[PageFrame]]:
                         caption=caption,
                         page_index=page_index,
                         bbox=box,
+                        caption_bbox=caption_box,
                     )
                 )
 

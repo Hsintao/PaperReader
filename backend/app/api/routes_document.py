@@ -21,6 +21,7 @@ from app.models.schemas import (
 )
 from app.models.store import (
     list_documents as store_list_documents,
+    annotated_pdf_filename,
     mark_document_failed,
     normalized_source_filename,
     queue_document_reprocess,
@@ -32,8 +33,13 @@ from app.models.store import (
     translated_pdf_filename,
 )
 from app.services.alignment_service import load_alignment_entries, locate_in_alignment, proportional_highlight
+from app.services.annotation_render import ANNOTATION_REVISION
 from app.services.app_settings import load_settings
-from app.services.document_pipeline import cached_resume_stage, process_document
+from app.services.document_pipeline import (
+    build_annotated_pdf,
+    cached_resume_stage,
+    process_document,
+)
 
 
 router = APIRouter()
@@ -49,6 +55,20 @@ def _run_retry_pipeline(document_id: str, resume_from: str) -> None:
         )
     except Exception as exc:  # noqa: BLE001 - never strand the document as queued
         mark_document_failed(document_id, resume_from or "upload", f"Retry pipeline failed to start: {exc}")
+
+
+def _annotated_pdf_url(record) -> str | None:
+    """Expose the annotated PDF only when the current annotation style made it."""
+    return next(
+        (
+            item.url
+            for item in record.artifacts
+            if item.kind == "annotated_pdf"
+            and item.url
+            and item.revision == ANNOTATION_REVISION
+        ),
+        None,
+    )
 
 
 def _alignment_blocks(text: str) -> list[str]:
@@ -116,6 +136,7 @@ def get_document(
         source_filename=record.source_filename,
         original_pdf_url=record.original_pdf_url,
         translated_pdf_url=record.translated_pdf_url,
+        annotated_pdf_url=_annotated_pdf_url(record),
         artifacts=[
             ArtifactItem(name=item.name, kind=item.kind, path=item.path, url=item.url)
             for item in record.artifacts
@@ -228,8 +249,45 @@ def rename_document(
             artifact.name = new_pdf_name
             artifact.path = str(target)
             artifact.url = url
+    _rename_artifact(
+        record, "annotated_pdf", annotated_pdf_filename(record.source_filename), out_dir
+    )
     save_document(record)
     return get_document(document_id)
+
+
+def _rename_artifact(record, kind: str, new_name: str, out_dir: Path) -> None:
+    """Rename one artifact kind on disk and repoint its stored URL."""
+    artifacts = [item for item in record.artifacts if item.kind == kind]
+    current: Path | None = None
+    for artifact in artifacts:
+        candidate = Path(artifact.path)
+        if candidate.is_file():
+            current = candidate
+            break
+    if current is None:
+        return
+    target = out_dir / new_name
+    if current.resolve() != target.resolve():
+        current.replace(target)
+    url = f"/data/outputs/{record.document_id}/{quote(new_name)}"
+    for artifact in artifacts:
+        artifact.name = new_name
+        artifact.path = str(target)
+        artifact.url = url
+
+
+@router.post("/document/{document_id}/annotated-pdf")
+def create_annotated_pdf(document_id: str) -> dict:
+    """Build the annotated source PDF for a document that predates the feature."""
+    record = require_document(document_id)
+    url = build_annotated_pdf(record)
+    if not url:
+        raise HTTPException(
+            status_code=409,
+            detail="无法生成原文标注：缺少解析缓存，请先重新处理该文档。",
+        )
+    return {"annotated_pdf_url": url}
 
 
 @router.post(

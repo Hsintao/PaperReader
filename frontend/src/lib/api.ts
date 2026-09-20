@@ -49,6 +49,7 @@ export type DocumentStatus = {
   last_opened_at?: string | null
   original_pdf_url?: string | null
   translated_pdf_url?: string | null
+  annotated_pdf_url?: string | null
   artifacts: ArtifactItem[]
   references: ReferenceItem[]
   logs: string[]
@@ -125,6 +126,7 @@ export type UserSettings = {
   theme: 'light' | 'dark'
   vision_enabled: boolean
   vision_mode: 'auto' | 'manual'
+  show_annotated_pdf: boolean
   translation_domain: TranslationDomain
   favorites: string[]
 }
@@ -304,6 +306,11 @@ export async function reprocessDocument(documentId: string): Promise<{
   return apiFetch(`/api/document/${documentId}/reprocess`, { method: 'POST' })
 }
 
+export async function ensureAnnotatedPdf(documentId: string): Promise<string> {
+  const payload = await apiFetch(`/api/document/${documentId}/annotated-pdf`, { method: 'POST' })
+  return payload.annotated_pdf_url
+}
+
 export async function listDocuments(): Promise<DocumentSummary[]> {
   return apiFetch('/api/documents')
 }
@@ -398,6 +405,12 @@ export function translatedPdfName(sourceFilename: string): string {
   const leaf = (sourceFilename || 'document.pdf').split(/[\\/]/).pop() || 'document.pdf'
   const stem = leaf.replace(/\.[^.]+$/, '') || 'document'
   return `${stem}_Chinese_ver.pdf`
+}
+
+export function annotatedPdfName(sourceFilename: string): string {
+  const leaf = (sourceFilename || 'document.pdf').split(/[\\/]/).pop() || 'document.pdf'
+  const stem = leaf.replace(/\.[^.]+$/, '') || 'document'
+  return `${stem}_原文标注.pdf`
 }
 
 export async function postReviewDecision(

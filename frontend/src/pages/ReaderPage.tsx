@@ -11,10 +11,12 @@ import { SettingsModal } from '../components/SettingsModal'
 import { Sidebar } from '../components/Sidebar'
 import type { ArtifactItem, DocumentStatus, DocumentSummary } from '../lib/api'
 import {
+  annotatedPdfName,
   createAnnotation,
   deleteAnnotation,
   deleteDocument,
   downloadNotes,
+  ensureAnnotatedPdf,
   getDocumentStatus,
   getDocumentStructure,
   listAnnotations,
@@ -68,6 +70,7 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
   const translatedPaneRef = useRef<PdfPaneHandle | null>(null)
   const emptyUploadRef = useRef<HTMLInputElement | null>(null)
   const syncLockRef = useRef<{ side: PaneSide; until: number }>({ side: 'original', until: 0 })
+  const annotatedRequestRef = useRef<string | null>(null)
 
   useEffect(() => {
     setTheme(settings.theme)
@@ -171,6 +174,26 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
   const activeDoc: DocumentStatus | undefined = activeId ? docCache[activeId] : undefined
   const originalPdfUrl = activeDoc?.original_pdf_url ? makeDataUrl(activeDoc.original_pdf_url) : undefined
   const translatedPdfUrl = activeDoc?.translated_pdf_url ? makeDataUrl(activeDoc.translated_pdf_url) : undefined
+  const annotatedPdfUrl = activeDoc?.annotated_pdf_url ? makeDataUrl(activeDoc.annotated_pdf_url) : undefined
+  const showAnnotated = settings.show_annotated_pdf && Boolean(annotatedPdfUrl)
+  const leftPdfUrl = showAnnotated ? annotatedPdfUrl : originalPdfUrl
+
+  // Documents parsed before annotation existed have no artifact yet; build it
+  // once from their cached parse when the preference is on.
+  useEffect(() => {
+    if (!settings.show_annotated_pdf) return
+    if (!activeId || activeDoc?.status !== 'done' || activeDoc.annotated_pdf_url) return
+    if (annotatedRequestRef.current === activeId) return
+    annotatedRequestRef.current = activeId
+    void ensureAnnotatedPdf(activeId)
+      .then((url) => {
+        setDocCache((cache) => {
+          const current = cache[activeId]
+          return current ? { ...cache, [activeId]: { ...current, annotated_pdf_url: url } } : cache
+        })
+      })
+      .catch((error) => console.error(error))
+  }, [settings.show_annotated_pdf, activeId, activeDoc?.status, activeDoc?.annotated_pdf_url])
 
   const handleRetry = useCallback(async () => {
     if (!activeId || retrying) return
@@ -429,7 +452,13 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
     return `原始 · ${activeDoc.source_filename || activeDoc.document_id}`
   }, [activeDoc])
 
+  const annotatedTitle = useMemo(() => {
+    if (!activeDoc) return '原文标注'
+    return `原文标注 · ${activeDoc.source_filename || activeDoc.document_id}`
+  }, [activeDoc])
+
   const translatedName = translatedPdfName(activeDoc?.source_filename || 'document.pdf')
+  const annotatedName = annotatedPdfName(activeDoc?.source_filename || 'document.pdf')
 
   return (
     <div className="app-shell">
@@ -505,13 +534,13 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
             <Panel defaultSize={50} minSize={20}>
               <PdfPane
                 ref={originalPaneRef}
-                title={sourceTitle}
-                pdfUrl={originalPdfUrl}
+                title={showAnnotated ? annotatedTitle : sourceTitle}
+                pdfUrl={leftPdfUrl}
                 overrideUrl={overrideLeft?.url}
                 overrideTitle={overrideLeft ? `产物 · ${overrideLeft.name}` : undefined}
                 onAcceptDrop={({ url, name }) => setOverrideLeft({ url, name })}
                 onClearOverride={() => setOverrideLeft(null)}
-                downloadName={activeDoc?.source_filename}
+                downloadName={showAnnotated ? annotatedName : activeDoc?.source_filename}
                 counterpartLabel="右侧译文"
                 onLocateCounterpart={(payload) => void handleLocateCounterpart('original', payload)}
                 annotations={annotations}

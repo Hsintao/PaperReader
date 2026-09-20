@@ -49,6 +49,7 @@ class AppSettings:
     theme: str = "light"
     vision_enabled: bool = False
     vision_mode: str = "auto"
+    show_annotated_pdf: bool = False
     translation_domain: str = "general"
     favorites: list[str] = field(default_factory=list)
 
@@ -143,6 +144,7 @@ def update_settings(
     theme: str | None = None,
     vision_enabled: bool | None = None,
     vision_mode: str | None = None,
+    show_annotated_pdf: bool | None = None,
     translation_domain: str | None = None,
     favorites: list[str] | None = None,
 ) -> AppSettings:
@@ -181,6 +183,8 @@ def update_settings(
         current.vision_enabled = bool(vision_enabled)
     if vision_mode is not None:
         current.vision_mode = vision_mode
+    if show_annotated_pdf is not None:
+        current.show_annotated_pdf = bool(show_annotated_pdf)
     if translation_domain is not None:
         current.translation_domain = translation_domain
     if favorites is not None:
@@ -247,6 +251,7 @@ def serialize_settings(value: AppSettings) -> dict:
         "theme": value.theme,
         "vision_enabled": value.vision_enabled,
         "vision_mode": value.vision_mode,
+        "show_annotated_pdf": value.show_annotated_pdf,
         "translation_domain": value.translation_domain,
         "favorites": value.favorites,
     }

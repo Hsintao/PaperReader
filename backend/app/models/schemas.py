@@ -59,6 +59,7 @@ class DocumentStatusResponse(BaseModel):
     last_opened_at: str | None = None
     original_pdf_url: str | None = None
     translated_pdf_url: str | None = None
+    annotated_pdf_url: str | None = None
     artifacts: list[ArtifactItem] = []
     references: list[ReferenceItem] = []
     logs: list[str] = []

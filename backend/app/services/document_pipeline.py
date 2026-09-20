@@ -12,10 +12,12 @@ from app.models.store import (
     DocumentRecord,
     FailureEntry,
     ReferenceEntry,
+    annotated_pdf_filename,
     save_document,
     set_document_metadata,
     translated_pdf_filename,
 )
+from app.services.annotation_render import ANNOTATION_REVISION, render_annotated_pdf
 from app.services.cjk_fonts import require_cjk_font
 from app.services.layout_fit import TextMeasurer, plan_document
 from app.services.layout_model import (
@@ -233,11 +235,14 @@ def _to_data_url(path: Path) -> str | None:
     return "/data/" + str(rel).replace("\\", "/")
 
 
-def _append_artifact(record: DocumentRecord, name: str, kind: str, path: Path) -> None:
+def _append_artifact(
+    record: DocumentRecord, name: str, kind: str, path: Path, revision: int = 0
+) -> None:
     for artifact in record.artifacts:
         if artifact.kind == kind and Path(artifact.path) == path:
             artifact.name = name
             artifact.url = _to_data_url(path)
+            artifact.revision = revision
             return
     record.artifacts.append(
         ArtifactEntry(
@@ -245,6 +250,7 @@ def _append_artifact(record: DocumentRecord, name: str, kind: str, path: Path) -
             kind=kind,
             path=str(path),
             url=_to_data_url(path),
+            revision=revision,
         )
     )
 
@@ -262,6 +268,66 @@ def _publish_translated_pdf(
     record.translated_pdf_url = _to_data_url(output)
     _append_artifact(record, name, "translated_pdf", output)
     return output
+
+
+def _publish_annotated_pdf(
+    record: DocumentRecord,
+    ir_blocks: list,
+    frames: list[PageFrame],
+    output_dir: Path,
+) -> None:
+    """Box every parsed region on the source pages and publish the result.
+
+    Annotation is a side artifact: a failure here is logged and never fails the
+    document.
+    """
+    target = output_dir / annotated_pdf_filename(record.source_filename)
+    try:
+        drawn = render_annotated_pdf(
+            source_pdf=record.source_path,
+            frames=frames,
+            blocks=ir_blocks,
+            output_pdf=target,
+        )
+    except Exception as exc:  # noqa: BLE001 - never block the pipeline on this
+        record.logs.append(f"Annotated PDF skipped: {exc}")
+        return
+    _append_artifact(
+        record, target.name, "annotated_pdf", target, revision=ANNOTATION_REVISION
+    )
+    record.logs.append(f"Annotated {drawn} parsed region(s) on the source pages")
+
+
+def build_annotated_pdf(record: DocumentRecord) -> str | None:
+    """Rebuild the annotated source PDF from the document's parse cache.
+
+    Documents parsed before annotation existed have no such artifact; their
+    extraction checkpoint still holds the parsed blocks, so the file can be
+    produced without re-running the parser. An existing file is rebuilt as
+    well, so a document annotated by an older revision picks up the current
+    categories and caption boxes.
+    """
+    if not record.source_path.is_file():
+        return None
+    output_dir = settings.output_dir / record.document_id
+    checkpoint = _load_extraction_checkpoint(
+        output_dir / "extraction-checkpoint.json", record.source_path
+    )
+    if checkpoint is None:
+        return None
+    ir_blocks, frames, _notes = _build_ir_and_frames(checkpoint, record.source_path)
+    if not ir_blocks:
+        return None
+    # Geometry the renderer translates: corrected regions plus paragraphs
+    # recovered from the source text layer where the parser dropped them.
+    align_blocks_to_text_layer(frames, ir_blocks)
+    synthesize_unclaimed_paragraphs(frames, ir_blocks)
+    _publish_annotated_pdf(record, ir_blocks, frames, output_dir)
+    save_document(record)
+    artifact = next(
+        (item for item in record.artifacts if item.kind == "annotated_pdf"), None
+    )
+    return artifact.url if artifact else None
 
 
 def _extract_references_from_text(text: str) -> list[ReferenceEntry]:
@@ -663,6 +729,10 @@ def _translate_and_render(
             record.logs.append(
                 f"Merged {len(groups)} paragraph(s) that span several regions"
             )
+        # Annotate the geometry the renderer will actually translate, including
+        # paragraphs recovered from the source text layer after the parser
+        # dropped them.
+        _publish_annotated_pdf(record, ir_blocks, frames, output_dir)
         source_segments = collect_translatable_strings(ir_blocks)
         notes = translate_ir(
             ir_blocks,

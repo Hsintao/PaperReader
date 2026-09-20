@@ -132,6 +132,7 @@ class Table:
     caption: str = ""
     page_index: int = -1
     bbox: Rect | None = None
+    caption_bbox: Rect | None = None
     cells: list[TableCell] = field(default_factory=list)
 
 

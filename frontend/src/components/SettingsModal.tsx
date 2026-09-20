@@ -81,7 +81,8 @@ export function SettingsModal({ open, settings, onClose, onSettingsChange }: Pro
         next = await updateSettings({
           theme: reading.theme,
           vision_enabled: reading.vision_enabled,
-          vision_mode: reading.vision_mode
+          vision_mode: reading.vision_mode,
+          show_annotated_pdf: reading.show_annotated_pdf
         })
       }
       onSettingsChange(next)
@@ -105,7 +106,16 @@ export function SettingsModal({ open, settings, onClose, onSettingsChange }: Pro
           <div className="modal-body profile-body">
             {tab === 'providers' && <ProviderSettingsForm value={providers} onChange={setProviders} apiKeyConfigured={settings.api_key_configured} mineruKeyConfigured={settings.mineru_api_key_configured} allowClear />}
             {tab === 'translation' && <TranslationSettingsPanel domain={domain} onDomainChange={setDomain} />}
-            {tab === 'reading' && <section className="profile-section borderless"><div className="settings-section-heading"><div><h3>阅读体验</h3><p>这些偏好保存在本机数据目录。</p></div></div><div className="field-grid two"><label className="field"><span>主题</span><select value={reading.theme} onChange={(e) => setReading((v) => ({ ...v, theme: e.target.value as 'light' | 'dark' }))}><option value="light">浅色</option><option value="dark">深色</option></select></label><label className="field"><span>视觉校验</span><select value={reading.vision_enabled ? reading.vision_mode : 'off'} onChange={(e) => { const next = e.target.value; setReading((v) => ({ ...v, vision_enabled: next !== 'off', vision_mode: next === 'manual' ? 'manual' : 'auto' })) }}><option value="auto">开启 · 自动</option><option value="manual">开启 · 人工</option><option value="off">关闭</option></select></label></div></section>}
+            {tab === 'reading' && (
+              <section className="profile-section borderless">
+                <div className="settings-section-heading"><div><h3>阅读体验</h3><p>这些偏好保存在本机数据目录。</p></div></div>
+                <div className="field-grid two">
+                  <label className="field"><span>主题</span><select value={reading.theme} onChange={(e) => setReading((v) => ({ ...v, theme: e.target.value as 'light' | 'dark' }))}><option value="light">浅色</option><option value="dark">深色</option></select></label>
+                  <label className="field"><span>视觉校验</span><select value={reading.vision_enabled ? reading.vision_mode : 'off'} onChange={(e) => { const next = e.target.value; setReading((v) => ({ ...v, vision_enabled: next !== 'off', vision_mode: next === 'manual' ? 'manual' : 'auto' })) }}><option value="auto">开启 · 自动</option><option value="manual">开启 · 人工</option><option value="off">关闭</option></select></label>
+                  <label className="field"><span>原文标注</span><select value={reading.show_annotated_pdf ? 'on' : 'off'} onChange={(e) => setReading((v) => ({ ...v, show_annotated_pdf: e.target.value === 'on' }))}><option value="off">关闭 · 左侧显示原始 PDF</option><option value="on">开启 · 左侧显示标注版本</option></select></label>
+                </div>
+              </section>
+            )}
             {(message || error) && <div className={error ? 'form-error' : 'form-success'} role="status">{error || message}</div>}
           </div>
         </div>

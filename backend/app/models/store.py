@@ -34,6 +34,8 @@ class ArtifactEntry:
     kind: str
     path: str
     url: str | None = None
+    # Format revision of a derived artifact; 0 for artifacts that have none.
+    revision: int = 0
 
 
 @dataclass
@@ -145,6 +147,13 @@ def translated_pdf_filename(source_filename: str) -> str:
     stem = Path(source_filename or "document.pdf").stem
     stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", stem).strip(" .") or "document"
     return f"{stem[:120]}_Chinese_ver.pdf"
+
+
+def annotated_pdf_filename(source_filename: str) -> str:
+    """Return the user-facing annotated-source PDF filename for a document."""
+    stem = Path(source_filename or "document.pdf").stem
+    stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", stem).strip(" .") or "document"
+    return f"{stem[:120]}_原文标注.pdf"
 
 
 def _serialize_items(items: list) -> str:
