@@ -55,7 +55,7 @@ def test_pipeline_uses_the_configured_domain_and_records_terms(isolated_storage,
         apply_translations(
             ir, [f"译-{index}" for index, _ in enumerate(collect_translatable_strings(ir))]
         )
-        return []
+        return [], []
 
     monkeypatch.setattr(document_pipeline, "translate_ir", fake_translate_ir)
 
@@ -100,7 +100,7 @@ def test_pipeline_defaults_to_the_general_domain(isolated_storage, monkeypatch):
         apply_translations(
             ir, [f"译-{index}" for index, _ in enumerate(collect_translatable_strings(ir))]
         )
-        return []
+        return [], []
 
     monkeypatch.setattr(document_pipeline, "translate_ir", fake_translate_ir)
 

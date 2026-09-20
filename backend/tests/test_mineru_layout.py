@@ -86,21 +86,22 @@ def test_blocks_to_ir_extracts_titles_paragraphs_math_image():
     assert ir[5].caption == "A figure caption."
 
 
-def test_captions_and_headers_never_enter_the_translation_queue():
+def test_captions_enter_the_queue_and_author_names_do_not():
     ir = blocks_to_ir(SAMPLE_PAGES)
     segments = collect_translatable_strings(ir)
-    # Title, author paragraph, Problem 1, and the two prose runs around the
-    # inline formula. The figure caption stays in the source language.
+    # Title, author paragraph, Problem 1, the two prose runs around the inline
+    # formula, and the figure caption.
     assert segments == [
         "Math for CS & AI: Homework 7",
         "Sitian Ding ",
         "Problem 1",
         "Denote the first term as ",
         ". We have ",
+        "A figure caption.",
     ]
 
     # Author names stay in the source language; everything else translates.
-    assert translatable_mask(ir) == [True, False, True, True, True]
+    assert translatable_mask(ir) == [True, False, True, True, True, True]
 
     apply_translations(ir, [f"译{i}" for i in range(len(segments))])
     assert ir[0].text == "译0"
@@ -109,9 +110,10 @@ def test_captions_and_headers_never_enter_the_translation_queue():
     assert ir[3].runs[0].text == "译3"
     assert ir[3].runs[2].text == "译4"
     assert ir[5].caption == "A figure caption."
+    assert ir[5].translated_caption == "译5"
 
 
-def test_table_cells_are_translated_and_captions_are_not():
+def test_table_cells_and_caption_are_translated():
     pages = [[
         {
             "type": "title",
@@ -136,10 +138,11 @@ def test_table_cells_are_translated_and_captions_are_not():
     ]
 
     segments = collect_translatable_strings(ir)
-    assert segments == ["Paper", "Method", "Score"]
-    apply_translations(ir, ["论文", "方法", "分数"])
+    assert segments == ["Paper", "Table 1. Results.", "Method", "Score"]
+    apply_translations(ir, ["论文", "表 1。结果。", "方法", "分数"])
     assert [cell.translated for cell in table.cells] == ["方法", "分数"]
     assert table.caption == "Table 1. Results."
+    assert table.translated_caption == "表 1。结果。"
 
 
 def test_normalized_boxes_are_converted_to_page_points():

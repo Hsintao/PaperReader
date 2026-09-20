@@ -41,7 +41,7 @@ def _translate_ok(ir, **kwargs):
         ir,
         [f"译-{index}" for index, _ in enumerate(collect_translatable_strings(ir))],
     )
-    return []
+    return [], []
 
 
 def test_translation_retry_reuses_parse_checkpoint_and_finishes(
@@ -258,3 +258,88 @@ def test_document_stages_include_render(isolated_storage):
     keys = [stage.key for stage in record.stages]
     assert keys[-1] == "render"
     assert "latex_build" not in keys
+
+
+def test_failed_translation_block_is_recorded_as_a_layout_issue(
+    isolated_storage, tmp_path, monkeypatch
+):
+    from app.models import store
+
+    source = settings.upload_dir / "issue-doc.pdf"
+    # Four pages, so a single original page stays inside the fallback budget.
+    canvas = pdf_canvas.Canvas(str(source), pagesize=letter)
+    for index in range(4):
+        canvas.setFont("Helvetica", 11)
+        canvas.drawString(72, 700, f"Paragraph number {index} of the issue fixture.")
+        canvas.showPage()
+    canvas.save()
+    record = store.DocumentRecord("issue-doc", "pdf", source)
+
+    monkeypatch.setattr(
+        document_pipeline,
+        "extract_structured_from_pdf_local",
+        lambda *args, **kwargs: _structured_result(source),
+    )
+    monkeypatch.setattr(
+        document_pipeline, "extract_text_from_pdf_text_layer", lambda *a, **k: ""
+    )
+
+    def failing_translate_ir(ir, **kwargs):
+        # What translate_ir does when a piece fails: the block keeps its own
+        # wording, and the failure is reported as a structured issue.
+        texts = collect_translatable_strings(ir)
+        apply_translations(
+            ir, [texts[0]] + [f"译-{index}" for index in range(1, len(texts))]
+        )
+        return [], [
+            {
+                "kind": "block_original",
+                "logical_index": 0,
+                "source": texts[0],
+                "reason": "1 of 1 piece(s) could not be translated after repeated retries",
+            }
+        ]
+
+    monkeypatch.setattr(document_pipeline, "translate_ir", failing_translate_ir)
+
+    result = document_pipeline.process_document(record)
+
+    assert result.status == "done", result.logs
+    issues = result.metadata["layout_issues"]
+    assert issues == [
+        {
+            "kind": "block_original",
+            "page": 1,
+            "block_kind": "text_block",
+            "message": (
+                "翻译失败，保留原文：1 of 1 piece(s) could not be translated "
+                "after repeated retries"
+            ),
+        }
+    ]
+
+
+def test_reprocessing_clears_previous_layout_issues(isolated_storage, monkeypatch):
+    from app.models import store
+
+    source = settings.upload_dir / "issue-reset.pdf"
+    _write_source(source, ["A paragraph for the reprocess check."])
+    record = store.DocumentRecord("issue-reset", "pdf", source)
+    record.metadata["layout_issues"] = [
+        {"kind": "page_original", "page": 2, "block_kind": "page", "message": "old"}
+    ]
+
+    monkeypatch.setattr(
+        document_pipeline,
+        "extract_structured_from_pdf_local",
+        lambda *args, **kwargs: _structured_result(source),
+    )
+    monkeypatch.setattr(
+        document_pipeline, "extract_text_from_pdf_text_layer", lambda *a, **k: ""
+    )
+    monkeypatch.setattr(document_pipeline, "translate_ir", _translate_ok)
+
+    result = document_pipeline.process_document(record)
+
+    assert result.status == "done", result.logs
+    assert all(issue.get("message") != "old" for issue in result.metadata["layout_issues"])

@@ -276,7 +276,7 @@ def test_pipeline_annotates_text_the_parser_dropped(isolated_storage, monkeypatc
         apply_translations(
             ir, [f"译-{index}" for index, _ in enumerate(collect_translatable_strings(ir))]
         )
-        return []
+        return [], []
 
     monkeypatch.setattr(document_pipeline, "translate_ir", fake_translate_ir)
 

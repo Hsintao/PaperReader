@@ -37,6 +37,7 @@ from app.services.mineru_layout import (
     Paragraph as IRParagraph,
     TextRun as IRTextRun,
     Title as IRTitle,
+    _block_slots,
     blocks_to_ir,
     collect_translatable_strings,
     merge_continuation_groups,
@@ -595,6 +596,51 @@ def refit_with_concise_translations(plans: list, *, translate_fn, max_blocks: in
     return retried
 
 
+def _record_layout_issue(
+    record: DocumentRecord,
+    *,
+    kind: str,
+    page: int,
+    block_kind: str,
+    message: str,
+) -> None:
+    """Append one structured layout issue, de-duplicated by kind/page/block."""
+    issues = record.metadata.setdefault("layout_issues", [])
+    if not isinstance(issues, list):
+        issues = []
+        record.metadata["layout_issues"] = issues
+    entry = {
+        "kind": kind,
+        "page": max(1, int(page)),
+        "block_kind": block_kind,
+        "message": message,
+    }
+    for existing in issues:
+        if not isinstance(existing, dict):
+            continue
+        if (
+            existing.get("kind") == entry["kind"]
+            and existing.get("page") == entry["page"]
+            and existing.get("block_kind") == entry["block_kind"]
+            and existing.get("message") == entry["message"]
+        ):
+            return
+    issues.append(entry)
+
+
+def _page_of_logical_segment(ir_blocks: list, logical_index: int) -> int:
+    """One-based page holding the `logical_index`-th translatable string."""
+    if logical_index < 0:
+        return 1
+    cursor = 0
+    for block in ir_blocks:
+        for _source, _target, _attribute in _block_slots(block):
+            if cursor == logical_index:
+                return max(1, int(getattr(block, "page_index", 0)) + 1)
+            cursor += 1
+    return 1
+
+
 def _log_fallback_summary(record: DocumentRecord, plans: list) -> None:
     """Persist why blocks or cells were not translated, for tuning decisions."""
     counts: Counter = Counter()
@@ -735,7 +781,7 @@ def _translate_and_render(
         # dropped them.
         _publish_annotated_pdf(record, ir_blocks, frames, output_dir)
         source_segments = collect_translatable_strings(ir_blocks)
-        notes = translate_ir(
+        notes, translation_issues = translate_ir(
             ir_blocks,
             override_api_key=override_api_key,
             override_base_url=override_base_url,
@@ -753,6 +799,14 @@ def _translate_and_render(
         )
         for note in notes:
             record.logs.append(f"Translation: {note}")
+        for issue in translation_issues:
+            _record_layout_issue(
+                record,
+                kind="block_original",
+                page=_page_of_logical_segment(ir_blocks, issue.get("logical_index", -1)),
+                block_kind="text_block",
+                message=f"翻译失败，保留原文：{str(issue.get('reason') or '')}",
+            )
         record_candidate_terms(domain, document_terms, record.document_id)
         translated_segments = collect_translatable_strings(ir_blocks)
         alignment_path = save_exact_alignment(record, source_segments, translated_segments)
@@ -839,6 +893,8 @@ def process_document(
         provider_settings.translation_domain if provider_settings else None
     )
     record.status = "processing"
+    # Each run reports the layout fallbacks of the run it is producing.
+    record.metadata["layout_issues"] = []
     record.logs.append(
         f"Retry processing started from {resume_from}" if resume_from else "Processing started"
     )

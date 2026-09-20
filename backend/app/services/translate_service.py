@@ -6,6 +6,7 @@ import re
 import threading
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, TypeVar
 
@@ -482,7 +483,24 @@ _REFUSAL_FRAGMENTS = (
     "as an ai language model",
     "请提供需要翻译",
 )
-_TRANSLATION_CONTRACT_VERSION = "ir-translation-v2"
+_TRANSLATION_CONTRACT_VERSION = "ir-translation-v3"
+
+
+@dataclass
+class TranslationIssue:
+    """One logical block that kept its source wording after a failed chunk."""
+
+    logical_index: int
+    source: str
+    reason: str
+
+    def as_dict(self) -> dict:
+        return {
+            "kind": "block_original",
+            "logical_index": self.logical_index,
+            "source": self.source,
+            "reason": self.reason,
+        }
 
 
 class TranslationValidationError(RuntimeError):
@@ -818,24 +836,23 @@ def translate_ir(
     translation_context: str = "",
     domain: str = "",
     checkpoint_namespace: str = "ir",
-) -> list[str]:
+) -> tuple[list[str], list[dict]]:
     """Translate the prose content of an IR list in place.
 
-    Math (display + inline) and captions are left untouched. Only
-    `Title.text`, `TextRun.text`, list items and table cells are sent to the
-    LLM, minus the segments `translatable_mask` marks as source-language (the
-    bibliography).
+    Math (display + inline) is left untouched. `Title.text`, `TextRun.text`,
+    list items, table cells, figure/table captions and affiliation text are
+    sent to the LLM, minus the segments `translatable_mask` marks as
+    source-language (author names and the bibliography entries).
 
     A segment whose translation fails is retried with the rejection reason
-    fed back into the prompt (three retries); when every attempt fails, the
-    model's best-effort output is used if there is one, and only a segment
-    that produced nothing at all is omitted — the source wording is never
-    substituted as a fallback. The returned notes list what was omitted so
-    the pipeline can record it.
+    fed back into the prompt (three retries). A logical block is atomic: when
+    any of its pieces finally fails, the whole block keeps its complete source
+    wording instead of publishing a half-translated paragraph, and the failure
+    is returned as a structured issue. Returns `(notes, issues)`.
     """
     source_segments = collect_translatable_strings(ir)
     if not source_segments:
-        return []
+        return [], []
 
     # MinerU occasionally emits a whole page as one TextRun. Split each such
     # logical segment before batching, then reassemble it after translation.
@@ -884,15 +901,6 @@ def translate_ir(
     if progress_callback:
         progress_callback(len(segments) - len(pending), len(segments))
 
-    failed_slots: set[int] = set()
-    failures_lock = threading.Lock()
-
-    def mark_failed(slots) -> None:
-        """Remember these slots as failed; their translation stays empty."""
-        with failures_lock:
-            for slot in slots:
-                failed_slots.add(slot)
-
     def _do_batch(_i: int, batch: list[int]) -> str:
         batch_segments = [segments[j] for j in batch]
 
@@ -905,8 +913,8 @@ def translate_ir(
                 usable = False
             if not usable:
                 # Retry this slot on its own, feeding the rejection reason
-                # back into the prompt. A segment that still fails is omitted,
-                # never silently kept in English.
+                # back into the prompt. A piece that still fails keeps its
+                # translation empty, which restores the whole logical block.
                 try:
                     value = _translate_single_segment(
                         segments[slot],
@@ -918,7 +926,6 @@ def translate_ir(
                     )
                 except Exception as exc:
                     logger.warning("Segment %d could not be translated: %s", slot, exc)
-                    mark_failed([slot])
                     return
             with checkpoint_lock:
                 translations[slot] = value
@@ -941,7 +948,6 @@ def translate_ir(
             )
         except TranslationChunkError as exc:
             slot = batch[exc.index]
-            mark_failed([slot])
             remaining = [
                 index for index in batch[exc.index + 1 :] if not translations[index]
             ]
@@ -952,35 +958,43 @@ def translate_ir(
         return ""
 
     def _fallback(_i: int, batch: list[int], _exc: Exception) -> str:
-        mark_failed([index for index in batch if not translations[index]])
         return ""
 
     _run_concurrent(batches, worker=_do_batch, fallback=_fallback)
 
     logical_translations: list[str] = []
-    for indices, mapping in segment_groups:
+    issues: list[TranslationIssue] = []
+    for group_index, (indices, mapping) in enumerate(segment_groups):
         parts = [translations[idx].strip() for idx in indices]
         if any(not part for part in parts):
-            mark_failed([idx for idx in indices if not translations[idx]])
-        # Pieces that could not be translated are left out; the rest of the
-        # segment is still presented.
-        logical = " ".join(part for part in parts if part)
-        logical_translations.append(restore_placeholders(logical, mapping))
+            # The logical block is atomic: a failed piece restores the whole
+            # block's source wording rather than dropping that piece and
+            # publishing the rest.
+            failed = [idx for idx in indices if not translations[idx]]
+            source = source_segments[group_index]
+            logical_translations.append(source)
+            issues.append(
+                TranslationIssue(
+                    logical_index=group_index,
+                    source=source,
+                    reason=(
+                        f"{len(failed)} of {len(indices)} piece(s) could not be "
+                        "translated after repeated retries"
+                    ),
+                )
+            )
+            continue
+        logical_translations.append(
+            restore_placeholders(" ".join(parts), mapping)
+        )
 
     apply_translations(ir, logical_translations)
 
     notes: list[str] = []
-    if failed_slots:
-        logical_failed = {
-            group_index
-            for group_index, (indices, _mapping) in enumerate(segment_groups)
-            if any(index in failed_slots for index in indices)
-        }
-        sample = ", ".join(
-            source_segments[index][:40] for index in sorted(logical_failed)[:3]
-        )
+    if issues:
+        sample = ", ".join(issue.source[:40] for issue in issues[:3])
         notes.append(
-            f"{len(logical_failed)} segment(s) could not be translated after "
-            f"repeated retries and were omitted (e.g. {sample})"
+            f"{len(issues)} block(s) kept their source text after a piece "
+            f"failed to translate (e.g. {sample})"
         )
-    return notes
+    return notes, [issue.as_dict() for issue in issues]

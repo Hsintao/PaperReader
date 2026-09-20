@@ -59,13 +59,14 @@ def test_translate_ir_only_translates_text(monkeypatch):
     monkeypatch.setattr(translate_service.llm_client, "chat", fake_chat)
 
     ir = _make_ir()
-    assert translate_service.translate_ir(ir) == []
+    assert translate_service.translate_ir(ir) == ([], [])
 
-    # Title and both prose runs are translated; the figure caption is not.
+    # Title, both prose runs and the figure caption are translated.
     assert ir[0].text.startswith("[译]")
     assert ir[1].runs[0].text.startswith("[译]")
     assert ir[1].runs[2].text.startswith("[译]")
     assert ir[3].caption == "A nice figure"
+    assert ir[3].translated_caption.startswith("[译]")
 
     # Inline + display math are NOT touched.
     assert ir[1].runs[1].latex == "x^2"
@@ -75,7 +76,7 @@ def test_translate_ir_only_translates_text(monkeypatch):
 
     # All segments were sent in a single batched LLM call.
     assert len(captured) == 1
-    assert captured[0].count("@@SEG@@") == 2  # 3 segments => 2 separators
+    assert captured[0].count("@@SEG@@") == 3  # 4 segments => 3 separators
 
 
 def test_translate_ir_falls_back_when_batch_count_mismatches(monkeypatch):
@@ -94,8 +95,8 @@ def test_translate_ir_falls_back_when_batch_count_mismatches(monkeypatch):
     translate_service.translate_ir(ir)
 
     # Per-segment fallback yields exactly one extra call per segment.
-    # 1 batch call + 3 fallback calls = 4
-    assert len(calls) == 4
+    # 1 batch call + 4 fallback calls = 5
+    assert len(calls) == 5
     assert ir[0].text == "CN(Hello World)"
     assert ir[1].runs[1].latex == "x^2"  # math still untouched
 
@@ -163,7 +164,7 @@ def test_checkpoint_echo_of_the_source_is_not_reused(tmp_path, monkeypatch):
     monkeypatch.setattr(translate_service.llm_client, "chat", fake_chat)
     ir = [Paragraph(runs=[TextRun(text=source)])]
 
-    notes = translate_service.translate_ir(ir, checkpoint_path=checkpoint)
+    notes, _issues = translate_service.translate_ir(ir, checkpoint_path=checkpoint)
 
     assert calls, "the echoed cache entry must not satisfy the request"
     assert ir[0].runs[0].text == "边缘保持平滑算子被用于许多应用。"
@@ -177,30 +178,40 @@ def test_echo_from_the_model_is_reported_and_not_cached(tmp_path, monkeypatch):
     monkeypatch.setattr(translate_service.llm_client, "chat", lambda message, system_prompt=None, **k: message)
     ir = [Paragraph(runs=[TextRun(text=source)])]
 
-    notes = translate_service.translate_ir(ir, checkpoint_path=checkpoint)
+    notes, issues = translate_service.translate_ir(ir, checkpoint_path=checkpoint)
 
-    # An echo is never accepted as a translation: the segment is omitted.
-    assert ir[0].runs[0].text == ""
-    assert notes and "could not be translated" in notes[0]
+    # An echo is never accepted as a translation: the block keeps its source.
+    assert ir[0].runs[0].text == source
+    assert notes and "kept their source text" in notes[0]
+    assert issues and issues[0]["kind"] == "block_original"
     # Nothing is cached for an echoed segment, so a later run can try again.
     if checkpoint.is_file():
         payload = json.loads(checkpoint.read_text(encoding="utf-8"))
         assert translate_service._checkpoint_key(source) not in payload["segments"]
 
 
-def test_translate_ir_omits_segment_and_reports_failed_chunks(monkeypatch):
-    """A failed segment is omitted and reported, never kept in English."""
+def test_translate_ir_restores_the_whole_block_and_reports_it(monkeypatch):
+    """A failed block keeps its complete source wording, never a partial one."""
     def fake_chat(message, system_prompt, **kwargs):
         raise RuntimeError("provider unavailable")
 
     monkeypatch.setattr(translate_service.llm_client, "chat", fake_chat)
-    ir = [Paragraph(runs=[TextRun(text="This must not be silently left untranslated.")])]
+    source = "This must not be silently left untranslated."
+    ir = [Paragraph(runs=[TextRun(text=source)])]
 
-    notes = translate_service.translate_ir(ir)
+    notes, issues = translate_service.translate_ir(ir)
 
-    assert ir[0].runs[0].text == ""
+    assert ir[0].runs[0].text == source
     assert len(notes) == 1
-    assert "could not be translated" in notes[0]
+    assert "kept their source text" in notes[0]
+    assert issues == [
+        {
+            "kind": "block_original",
+            "logical_index": 0,
+            "source": source,
+            "reason": "1 of 1 piece(s) could not be translated after repeated retries",
+        }
+    ]
 
 
 def test_translate_ir_preserves_structural_think_tag_without_sending_it(monkeypatch):
@@ -292,11 +303,15 @@ def test_translate_ir_checkpoints_siblings_before_later_chunk_fails(tmp_path, mo
     monkeypatch.setattr(translate_service.llm_client, "chat", fake_chat)
     ir = [Paragraph(runs=[TextRun(text="First"), TextRun(text="Second")])]
 
-    notes = translate_service.translate_ir(ir, checkpoint_path=checkpoint)
+    notes, issues = translate_service.translate_ir(ir, checkpoint_path=checkpoint)
 
+    # The block is atomic: the failed piece keeps its source wording instead
+    # of being dropped, and the successful piece keeps its translation.
     assert ir[0].runs[0].text == "第一"
-    assert ir[0].runs[1].text == ""
-    assert notes and "could not be translated" in notes[0]
+    assert ir[0].runs[1].text == "Second"
+    assert notes and "kept their source text" in notes[0]
+    assert issues and issues[0]["source"] == "Second"
+    # The piece that did succeed is still cached, so a later run reuses it.
     payload = json.loads(checkpoint.read_text(encoding="utf-8"))
     assert payload["segments"][translate_service._checkpoint_key("First")] == "第一"
     assert translate_service._checkpoint_key("Second") not in payload["segments"]

@@ -818,7 +818,10 @@ def _block_slots(block: Block):
     """Yield `(source_text, target, attribute)` for one block's strings.
 
     Blocks that belong to a continuation group are translated through their
-    group's first block, so they contribute no slots of their own.
+    group's first block, so they contribute no slots of their own. Every other
+    string is yielded, including the ones `translatable_mask` marks as
+    source-language: they still need a slot so the mask and the write-back stay
+    aligned, they are simply filled with their own source wording.
     """
     if getattr(block, "continuation_member", False) and not getattr(
         block, "continuation_group", None
@@ -835,18 +838,23 @@ def _block_slots(block: Block):
             for run in item:
                 if isinstance(run, TextRun):
                     yield run.text, run, "text"
-    elif isinstance(block, Table):
-        for cell in block.cells:
-            if cell.text.strip():
-                yield cell.text, cell, "translated"
+    elif isinstance(block, (Image, Table)):
+        # Figure/table labels and notes translate; `caption` keeps the source
+        # wording so the renderer can match and fall back to it.
+        if block.caption.strip():
+            yield block.caption, block, "translated_caption"
+        if isinstance(block, Table):
+            for cell in block.cells:
+                if cell.text.strip():
+                    yield cell.text, cell, "translated"
 
 
 def _translation_slots(ir: list[Block]):
     """Yield `(source_text, target, attribute)` for every translatable string.
 
-    Captions, table notes and running headers never enter the queue: their
-    original wording is reused verbatim from the source page. Table cell text
-    does enter it, because the layout renderer replaces cell text in place.
+    Running headers never enter the queue: their original wording is reused
+    verbatim from the source page. Captions, table notes and table cell text
+    do enter it, because the renderer replaces them in place.
     """
     for block in ir:
         yield from _block_slots(block)
