@@ -1,4 +1,4 @@
-"""Reflow fallback: failed pages are rebuilt fresh instead of staying English."""
+"""One page in, one page out: a failed page reverts instead of adding sheets."""
 
 import pypdf
 import pypdfium2 as pdfium
@@ -7,9 +7,8 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas as pdf_canvas
 
 from app.services import layout_model, layout_render
-from app.services.cjk_fonts import require_cjk_font
-from app.services.layout_fit import PagePlan
-from app.services.mineru_layout import Paragraph, TextRun
+from app.services.layout_fit import BlockPlan, Fragment, PagePlan
+from app.services.mineru_layout import Paragraph
 
 
 def _source(path, lines) -> None:
@@ -46,8 +45,6 @@ def _failed_plan(frame) -> PagePlan:
 
 
 def _ok_plan(frame) -> PagePlan:
-    from app.services.layout_fit import BlockPlan, Fragment
-
     plan = PagePlan(index=frame.index, width=frame.width, height=frame.height)
     plan.blocks.append(
         BlockPlan(
@@ -87,6 +84,8 @@ def _render(tmp_path, blocks, lines=("Body paragraph.",)):
 
 
 def _translated_block(text: str, source: str) -> Paragraph:
+    from app.services.mineru_layout import Paragraph, TextRun
+
     return Paragraph(
         runs=[TextRun(text=text)],
         page_index=0,
@@ -95,36 +94,19 @@ def _translated_block(text: str, source: str) -> Paragraph:
     )
 
 
-def test_failed_page_is_reflowed_with_translated_content(tmp_path):
-    block = _translated_block("这是排版失败后重排出来的译文。", "Body paragraph.")
-    output, report = _render(tmp_path, [block])
-
-    assert report.pages[0].status == "reflow"
-    text = _page_text(output)
-    assert "这是排版失败后重排出来的译文。" in text
-    assert "Body paragraph." not in text
-
-
-def test_page_without_translation_stays_original(tmp_path):
-    block = _translated_block("Body paragraph.", "Body paragraph.")
+def test_failed_page_writes_exactly_one_original_page(tmp_path):
+    block = _translated_block("这是排版失败后本应重排的译文。", "Body paragraph.")
     output, report = _render(tmp_path, [block])
 
     assert report.pages[0].status == "original"
-    assert "Body paragraph." in _page_text(output)
+    assert report.pages[0].reason == "rotated page"
+    # The page keeps its own source text and no extra sheet is produced.
+    assert "Body paragraph." in _page_text(output, 0)
+    assert "这是排版失败后本应重排的译文。" not in _page_text(output, 0)
+    assert len(pypdf.PdfReader(str(output)).pages) == 2
 
 
-def test_reflow_can_be_disabled(tmp_path, monkeypatch):
-    from app.core.config import settings
-
-    monkeypatch.setattr(settings, "layout_reflow_fallback", False)
-    block = _translated_block("译文。", "Body paragraph.")
-    output, report = _render(tmp_path, [block])
-
-    assert report.pages[0].status == "original"
-    assert "Body paragraph." in _page_text(output)
-
-
-def test_reflow_overflow_spills_onto_extra_pages(tmp_path):
+def test_output_page_count_always_matches_the_source(tmp_path):
     long_text = "这是一段用来撑版面的译文，" * 40
     blocks = [
         _translated_block(long_text, "Body paragraph."),
@@ -139,32 +121,68 @@ def test_reflow_overflow_spills_onto_extra_pages(tmp_path):
         lines=["Body paragraph."] + [f"Extra {index}." for index in range(6)],
     )
 
-    assert report.pages[0].status == "reflow"
-    # One source page's content no longer fits one reflowed page.
-    assert len(pypdf.PdfReader(str(output)).pages) > 2
-    text = "".join(
-        _page_text(output, index=index)
-        for index in range(len(pypdf.PdfReader(str(output)).pages))
-    )
-    assert "第5段" in text
+    assert len(report.pages) == 2
+    assert len(pypdf.PdfReader(str(output)).pages) == 2
 
 
-def test_reflowed_pages_do_not_count_as_failures(tmp_path):
+def test_page_fallback_counts_towards_the_failure_budget(tmp_path):
     block = _translated_block("译文。", "Body paragraph.")
     _output, report = _render(tmp_path, [block])
-    assert report.failed == []
+    assert [page.index for page in report.failed] == [0]
 
 
-def test_reflow_draws_preserved_subscripts_instead_of_their_tags(tmp_path):
-    block = _translated_block(
-        "本文提出了一种混合ℓ<sub>1</sub>-ℓ<sub>0</sub>分解模型。", "Body paragraph."
+def test_all_pages_original_fails_the_document(tmp_path):
+    source = tmp_path / "source.pdf"
+    _source(source, ["Body paragraph."])
+    frames = layout_model.measure_pages(source)
+    plans = [_failed_plan(frames[0]), _failed_plan(frames[1])]
+    crops = layout_render.prepare_formula_crops(source, frames, [], tmp_path / "c")
+    try:
+        with pytest.raises(layout_render.LayoutRenderError):
+            layout_render.render_document(
+                source_pdf=source,
+                plans=plans,
+                frames=frames,
+                blocks=[],
+                output_pdf=tmp_path / "out.pdf",
+                crops=crops,
+            )
+    finally:
+        crops.close()
+
+
+@pytest.mark.parametrize(
+    "total, failed, expected",
+    [
+        (10, 3, True),
+        (20, 4, False),
+        (21, 4, True),
+        (2, 2, False),
+    ],
+)
+def test_failure_budget_thresholds(total, failed, expected):
+    report = layout_render.RenderReport(
+        pages=[
+            layout_render.PageResult(
+                index=index, status="original" if index < failed else "ok"
+            )
+            for index in range(total)
+        ]
     )
-    output, report = _render(tmp_path, [block])
+    if expected:
+        layout_render._enforce_failure_budget(report)
+    else:
+        with pytest.raises(layout_render.LayoutRenderError):
+            layout_render._enforce_failure_budget(report)
 
-    assert report.pages[0].status == "reflow"
-    text = _page_text(output)
-    assert "ℓ" in text
-    assert "<sub>" not in text and "</sub>" not in text
+
+def test_no_page_status_can_add_pages(tmp_path):
+    """Only ``ok``, ``masked`` and ``original`` are valid page outcomes."""
+    block = _translated_block("译文。", "Body paragraph.")
+    output, report = _render(tmp_path, [block])
+    statuses = {page.status for page in report.pages}
+    assert statuses <= {"ok", "masked", "original"}
+    assert len(report.pages) == len(pypdf.PdfReader(str(output)).pages)
 
 
 def test_masked_overlay_keeps_bbox_anchor_when_removal_is_unclean(tmp_path, monkeypatch):
@@ -173,8 +191,6 @@ def test_masked_overlay_keeps_bbox_anchor_when_removal_is_unclean(tmp_path, monk
     source = tmp_path / "source.pdf"
     _source(source, ["First line of a shared object"])
     frames = layout_model.measure_pages(source)
-
-    from app.services.layout_fit import BlockPlan, Fragment
 
     plan = PagePlan(index=0, width=frames[0].width, height=frames[0].height)
     plan.blocks.append(
@@ -218,7 +234,7 @@ def test_masked_overlay_keeps_bbox_anchor_when_removal_is_unclean(tmp_path, monk
     assert report.pages[0].status == "masked"
     text = _page_text(output)
     assert "共享对象第一行的译文。" in text
-    # No reflow spill: the page count matches the source.
+    # The page count matches the source: no reflow spill.
     assert len(pypdf.PdfReader(str(output)).pages) == 2
 
     # The masked page renders the translation over the masked source line.

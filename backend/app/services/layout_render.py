@@ -11,9 +11,10 @@ Two verification passes keep the result honest:
   the affected block falls back to its source wording;
 * text outside the replaced blocks must still be there, otherwise the page
   falls back — first to a masked overlay that keeps the translation anchored
-  at the source boxes without touching the content stream, then (for pages
-  without a usable plan, such as rotated pages) to a freshly typeset reflow
-  page, and only lastly to the untouched source page.
+  at the source boxes without touching the content stream, then to the
+  untouched source page.
+
+Every source page produces exactly one output page, whatever its outcome.
 """
 
 from __future__ import annotations
@@ -94,7 +95,7 @@ class RenderReport:
 
     @property
     def failed(self) -> list[PageResult]:
-        return [page for page in self.pages if page.status not in {"ok", "masked", "reflow"}]
+        return [page for page in self.pages if page.status not in {"ok", "masked"}]
 
 
 class FormulaCrops:
@@ -382,22 +383,6 @@ def _render_overlay(
     return buffer.getvalue()
 
 
-def _page_has_translation(page_blocks: list[Block]) -> bool:
-    """Whether the page holds any translated content worth reflowing."""
-    for block in page_blocks:
-        if isinstance(block, (Title, IRParagraph, ListBlock)):
-            if _normalize(current_text_of(block)) != _normalize(source_text_of(block)):
-                return True
-        elif isinstance(block, Table):
-            if any(
-                cell.translated.strip()
-                and _normalize(cell.translated) != _normalize(cell.text)
-                for cell in block.cells
-            ):
-                return True
-    return False
-
-
 def _try_masked_overlay(writer, source_page, plan, measurer, result) -> bool:
     """Draw the translation anchored at the source boxes over white masks,
     without touching the page's content stream.
@@ -423,25 +408,6 @@ def _try_masked_overlay(writer, source_page, plan, measurer, result) -> bool:
     result.status = "masked"
     result.blocks = len(plan.translated_plans)
     result.cells = sum(1 for cell in plan.cells if cell.status == "translated")
-    return True
-
-
-def _try_reflow(writer, frame, page_blocks, crops, fonts, result) -> bool:
-    """Replace a failed page with a freshly typeset reflow of its content."""
-    if not settings.layout_reflow_fallback:
-        return False
-    if not _page_has_translation(page_blocks):
-        return False
-    from app.services.reflow_render import reflow_page_pdf
-
-    try:
-        payload = reflow_page_pdf(frame, page_blocks, crops=crops, fonts=fonts)
-        for page in pypdf.PdfReader(io.BytesIO(payload)).pages:
-            writer.add_page(page)
-    except Exception as exc:
-        result.reason = f"{result.reason}; reflow fallback failed: {exc}"
-        return False
-    result.status = "reflow"
     return True
 
 
@@ -477,16 +443,11 @@ def render_document(
             report.pages.append(result)
             continue
         if plan.status != "ok":
+            # A page whose plan is unusable keeps its own source content: one
+            # source page always yields exactly one output page.
+            result.status = "original"
             result.reason = plan.reason or "page layout unavailable"
-            if _try_reflow(
-                writer, frame, blocks_by_page.get(index, []), crops, fonts, result
-            ):
-                report.notes.append(
-                    f"page {index + 1}: reflowed ({result.reason})"
-                )
-            else:
-                result.status = "original"
-                writer.add_page(source_page)
+            writer.add_page(source_page)
             report.pages.append(result)
             continue
 
@@ -510,13 +471,8 @@ def render_document(
                 report.notes.append(
                     f"page {index + 1}: masked overlay ({rendered.reason})"
                 )
-            elif _try_reflow(
-                writer, frame, blocks_by_page.get(index, []), crops, fonts, result
-            ):
-                report.notes.append(
-                    f"page {index + 1}: reflowed ({rendered.reason})"
-                )
             else:
+                result.status = "original"
                 writer.add_page(source_page)
         if rendered.reason:
             report.notes.append(f"page {index + 1}: {rendered.reason}")
