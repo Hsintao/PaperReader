@@ -19,10 +19,12 @@ from typing import Iterable, Sequence
 
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import (
+    ArrayObject,
     ContentStream,
     DecodedStreamObject,
     DictionaryObject,
     NameObject,
+    NumberObject,
     RectangleObject,
 )
 
@@ -240,6 +242,53 @@ def remove_text_page(writer: PdfWriter, reader: PdfReader, page, removal_rects):
                 else writer._add_object(stripped)
             )
     return target
+
+
+def hide_link_borders(page) -> int:
+    """Remove the visible border of every Link annotation on a cloned page.
+
+    The source page's link rectangles stay where they were while the translated
+    text moves, so their coloured borders end up drawn over unrelated Chinese
+    characters. Navigation is what matters, so the border is normalized away:
+    ``/Border`` becomes ``[0 0 0]``, ``/BS /W`` becomes 0, the border colour
+    ``/C`` is dropped, and a link-only appearance stream is removed. ``/Rect``,
+    ``/A`` and ``/Dest`` are preserved untouched, and non-Link annotations
+    (highlights, notes, form fields) are left exactly as they were.
+    """
+    annots = page.get("/Annots")
+    if annots is None:
+        return 0
+    annots = annots.get_object()
+    normalized = 0
+    for reference in annots:
+        annotation = reference.get_object()
+        if not isinstance(annotation, DictionaryObject):
+            continue
+        if annotation.get("/Subtype") != "/Link":
+            continue
+        annotation[NameObject("/Border")] = ArrayObject(
+            [NumberObject(0), NumberObject(0), NumberObject(0)]
+        )
+        border = annotation.get("/BS")
+        border = border.get_object() if border is not None else None
+        if isinstance(border, DictionaryObject):
+            border[NameObject("/W")] = NumberObject(0)
+        else:
+            annotation[NameObject("/BS")] = DictionaryObject(
+                {
+                    NameObject("/Type"): NameObject("/Border"),
+                    NameObject("/S"): NameObject("/S"),
+                    NameObject("/W"): NumberObject(0),
+                }
+            )
+        if "/C" in annotation:
+            del annotation[NameObject("/C")]
+        # A link's appearance stream exists only to paint its border; the
+        # clickable rectangle is `/Rect`, which stays.
+        if "/AP" in annotation:
+            del annotation[NameObject("/AP")]
+        normalized += 1
+    return normalized
 
 
 def merge_overlay_bytes(

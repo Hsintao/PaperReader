@@ -479,6 +479,15 @@ def render_document(
         report.pages.append(result)
 
     _enforce_failure_budget(report)
+    # Link borders are normalized last, so overlay, masked and original fallback
+    # pages all leave the translated PDF with invisible link rectangles.
+    normalized = 0
+    for page in writer.pages:
+        normalized += pdf_ops.hide_link_borders(page)
+    if normalized:
+        report.notes.append(
+            f"hid the visible border of {normalized} link annotation(s)"
+        )
     output_pdf.parent.mkdir(parents=True, exist_ok=True)
     with output_pdf.open("wb") as handle:
         writer.write(handle)

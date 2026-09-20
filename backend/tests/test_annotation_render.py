@@ -316,3 +316,26 @@ def test_pipeline_annotates_text_the_parser_dropped(isolated_storage, monkeypatc
     assert covered(663.0) and covered(643.0), [
         getattr(block, "bbox", None) for block in annotated_blocks
     ]
+
+
+def test_diagnostic_boxes_never_enter_the_source_or_translated_pdf(tmp_path):
+    """The annotation overlay is an artifact of its own."""
+    source = tmp_path / "source.pdf"
+    _source(source)
+    frames = measure_pages(source)
+    blocks = _blocks()
+    annotated = tmp_path / "annotated.pdf"
+
+    render_annotated_pdf(
+        source_pdf=source, frames=frames, blocks=blocks, output_pdf=annotated
+    )
+
+    def page_content(path) -> bytes:
+        reader = pypdf.PdfReader(str(path))
+        return reader.pages[0].get_contents().get_data()
+
+    # The annotated artifact carries the drawn overlay, the source file does not.
+    assert page_content(annotated) != page_content(source)
+    assert b"re" in page_content(annotated)
+    # Nothing about the annotation was written back to the source document.
+    assert b"Title" not in page_content(annotated).split(b"BT")[0]
