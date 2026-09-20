@@ -343,3 +343,91 @@ def test_reprocessing_clears_previous_layout_issues(isolated_storage, monkeypatc
 
     assert result.status == "done", result.logs
     assert all(issue.get("message") != "old" for issue in result.metadata["layout_issues"])
+
+
+def test_layout_plan_v2_records_typography_and_fallbacks(isolated_storage, monkeypatch):
+    import json
+
+    from app.models import store
+    from app.services.layout_fit import TypographyProfile
+
+    source = settings.upload_dir / "plan-v2.pdf"
+    _write_source(source, ["A paragraph for the layout plan."])
+    record = store.DocumentRecord("plan-v2", "pdf", source)
+
+    monkeypatch.setattr(
+        document_pipeline,
+        "extract_structured_from_pdf_local",
+        lambda *args, **kwargs: _structured_result(source),
+    )
+    monkeypatch.setattr(
+        document_pipeline, "extract_text_from_pdf_text_layer", lambda *a, **k: ""
+    )
+    monkeypatch.setattr(document_pipeline, "translate_ir", _translate_ok)
+
+    result = document_pipeline.process_document(record)
+    assert result.status == "done", result.logs
+
+    plan_path = settings.output_dir / "plan-v2" / "layout-plan.json"
+    payload = json.loads(plan_path.read_text(encoding="utf-8"))
+    assert payload["version"] == "layout-plan-v2"
+    assert payload["source"]["document_id"] == "plan-v2"
+    assert payload["source"]["page_count"] == 1
+    assert payload["typography"]["body_single"] == TypographyProfile.BODY_SINGLE.size
+    assert payload["typography"]["min_body"] == 6.0
+    page = payload["pages"][0]
+    assert page["status"] in {"ok", "masked", "original"}
+    assert page["columns"]["kind"] in {"single", "double", "mixed"}
+    assert "flow_chains" in page
+    assert all("formula_fallback" in block for block in page["blocks"])
+    assert "captions" in page and "cells" in page
+
+
+def test_planning_fallbacks_become_structured_issues(isolated_storage, monkeypatch):
+    from app.models import store
+
+    source = settings.upload_dir / "issues.pdf"
+    # Two pages, so one page falling back stays inside the failure budget.
+    canvas = pdf_canvas.Canvas(str(source), pagesize=letter)
+    for index in range(2):
+        canvas.setFont("Helvetica", 11)
+        canvas.drawString(72, 700, f"Paragraph {index} whose plan falls back.")
+        canvas.showPage()
+    canvas.save()
+    record = store.DocumentRecord("issues", "pdf", source)
+
+    monkeypatch.setattr(
+        document_pipeline,
+        "extract_structured_from_pdf_local",
+        lambda *args, **kwargs: _structured_result(source),
+    )
+    monkeypatch.setattr(
+        document_pipeline, "extract_text_from_pdf_text_layer", lambda *a, **k: ""
+    )
+    monkeypatch.setattr(document_pipeline, "translate_ir", _translate_ok)
+
+    original_plan = document_pipeline.plan_document
+
+    def failing_plan(frames, blocks, *, measurer):
+        plans = original_plan(frames, blocks, measurer=measurer)
+        plans[0].status = "original"
+        plans[0].reason = (
+            "body text does not fit inside its column at the minimum font size of 6pt"
+        )
+        return plans
+
+    monkeypatch.setattr(document_pipeline, "plan_document", failing_plan)
+
+    result = document_pipeline.process_document(record)
+
+    assert result.status == "done", result.logs
+    issues = result.metadata["layout_issues"]
+    kinds = {issue["kind"] for issue in issues}
+    assert "page_original" in kinds
+    assert all(issue["page"] == 1 for issue in issues)
+    assert all(issue["message"] for issue in issues)
+    # The plan is written before the translated PDF is published.
+    plan_path = settings.output_dir / "issues" / "layout-plan.json"
+    assert plan_path.is_file()
+    payload = json.loads(plan_path.read_text(encoding="utf-8"))
+    assert payload["pages"][0]["status"] == "original"

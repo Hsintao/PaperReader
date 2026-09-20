@@ -40,6 +40,19 @@ export type FailureItem = {
   retry_count: number
 }
 
+export type LayoutIssueKind =
+  | 'block_original'
+  | 'cell_original'
+  | 'caption_original'
+  | 'page_original'
+
+export type LayoutIssueItem = {
+  kind: LayoutIssueKind | string
+  page: number
+  block_kind: string
+  message: string
+}
+
 export type DocumentStatus = {
   document_id: string
   status: string
@@ -53,6 +66,7 @@ export type DocumentStatus = {
   artifacts: ArtifactItem[]
   references: ReferenceItem[]
   logs: string[]
+  layout_issues: LayoutIssueItem[]
   progress: number
   current_stage?: string | null
   current_stage_label?: string | null

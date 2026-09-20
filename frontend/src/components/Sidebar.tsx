@@ -15,7 +15,12 @@ import {
   Sun,
   Trash2,
 } from 'lucide-react'
-import type { ArtifactItem, DocumentSummary, LibrarySearchHit } from '../lib/api'
+import type {
+  ArtifactItem,
+  DocumentSummary,
+  LayoutIssueItem,
+  LibrarySearchHit,
+} from '../lib/api'
 import { getDocumentBibtex, makeDataUrl, searchLibrary } from '../lib/api'
 import { ArtifactPreviewTip } from './ArtifactPreviewTip'
 
@@ -28,6 +33,7 @@ type Props = {
   uploading: boolean
   artifacts: ArtifactItem[]
   logs: string[]
+  layoutIssues: LayoutIssueItem[]
   theme: 'light' | 'dark'
   visionEnabled: boolean
   visionMode: 'auto' | 'manual'
@@ -46,6 +52,7 @@ type Props = {
   onToggleTheme: () => void
   onRefreshStatus: () => void
   onSearchLocate: (hit: LibrarySearchHit) => void
+  onOpenLayoutIssue: (page: number) => void
 }
 
 function formatSize(bytes: number): string {
@@ -65,6 +72,75 @@ function formatTime(value?: string | null): string {
   return new Date(value).toLocaleString()
 }
 
+const ISSUE_LABELS: Record<string, string> = {
+  block_original: '保留原文的翻译块',
+  cell_original: '保留英文的表格单元格',
+  caption_original: '保留原文的图表注',
+  page_original: '完整回退的页面',
+}
+
+const ISSUE_ORDER = ['page_original', 'block_original', 'caption_original', 'cell_original']
+
+function issueLabel(kind: string): string {
+  return ISSUE_LABELS[kind] ?? kind
+}
+
+function LayoutIssuesPanel({
+  issues,
+  onOpenPage,
+}: {
+  issues: LayoutIssueItem[]
+  onOpenPage: (page: number) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const counts = new Map<string, number>()
+  const byPage = new Map<number, LayoutIssueItem[]>()
+  for (const issue of issues) {
+    counts.set(issue.kind, (counts.get(issue.kind) ?? 0) + 1)
+    const page = Math.max(1, Math.round(issue.page || 1))
+    const list = byPage.get(page) ?? []
+    list.push(issue)
+    byPage.set(page, list)
+  }
+  const summary = ISSUE_ORDER.filter((kind) => counts.has(kind))
+    .map((kind) => `${issueLabel(kind)} ${counts.get(kind)}`)
+    .join(' · ')
+  const pages = [...byPage.keys()].sort((left, right) => left - right)
+
+  return (
+    <div className="sidebar-section">
+      <button className="section-toggle" onClick={() => setOpen((value) => !value)}>
+        <ChevronRight size={12} className={`chev-toggle ${open ? 'open' : ''}`} />
+        排版回退 ({issues.length})
+      </button>
+      {issues.length === 0 ? (
+        <div className="muted small" style={{ padding: '4px 12px' }}>本页无回退</div>
+      ) : (
+        <div className="muted small" style={{ padding: '0 12px 4px' }}>{summary}</div>
+      )}
+      {open &&
+        pages.map((page) => (
+          <div key={page} className="layout-issue-page">
+            <button className="layout-issue-page-btn" onClick={() => onOpenPage(page)}>
+              第 {page} 页
+            </button>
+            {byPage.get(page)!.map((issue, index) => (
+              <div
+                key={`${issue.kind}-${issue.block_kind}-${index}`}
+                className="layout-issue-item"
+                title={issue.message}
+                onClick={() => onOpenPage(page)}
+              >
+                <span className="layout-issue-kind">{issueLabel(issue.kind)}</span>
+                <span className="muted small">{issue.message}</span>
+              </div>
+            ))}
+          </div>
+        ))}
+    </div>
+  )
+}
+
 export function Sidebar({
   documents,
   activeDocumentId,
@@ -72,6 +148,7 @@ export function Sidebar({
   uploading,
   artifacts,
   logs,
+  layoutIssues,
   theme,
   visionEnabled,
   visionMode,
@@ -90,6 +167,7 @@ export function Sidebar({
   onToggleTheme,
   onRefreshStatus,
   onSearchLocate,
+  onOpenLayoutIssue,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [tab, setTab] = useState<Tab>('tasks')
@@ -343,6 +421,8 @@ export function Sidebar({
 
       {activeDocumentId && (
         <>
+          <div className="sidebar-divider" />
+          <LayoutIssuesPanel issues={layoutIssues} onOpenPage={onOpenLayoutIssue} />
           <div className="sidebar-divider" />
           <div className="sidebar-section">
             <button className="section-toggle" onClick={() => setShowArtifacts((v) => !v)}>

@@ -450,6 +450,33 @@ textarea { resize: vertical; }
 .chev-toggle { transition: transform 0.15s; }
 .chev-toggle.open { transform: rotate(90deg); }
 
+.layout-issue-page {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 2px 8px 6px;
+}
+.layout-issue-page-btn {
+  align-self: flex-start;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent, #2563eb);
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+}
+.layout-issue-page-btn:hover { background: var(--bg); }
+.layout-issue-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--bg);
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.layout-issue-item:hover { background: var(--bg-soft, var(--bg)); }
+.layout-issue-kind { font-size: 12px; font-weight: 500; }
+
 .artifact-list {
   display: flex;
   flex-direction: column;

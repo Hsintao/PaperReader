@@ -19,7 +19,12 @@ from app.models.store import (
 )
 from app.services.annotation_render import ANNOTATION_REVISION, render_annotated_pdf
 from app.services.cjk_fonts import require_cjk_font
-from app.services.layout_fit import TextMeasurer, plan_document
+from app.services.layout_fit import (
+    MIN_BODY_SIZE,
+    TextMeasurer,
+    TypographyProfile,
+    plan_document,
+)
 from app.services.layout_model import (
     PageFrame,
     align_blocks_to_text_layer,
@@ -483,9 +488,36 @@ def _model_geometry(mineru_result: MinerUResult):
     return None
 
 
-def _save_layout_plan(path: Path, plans: list) -> None:
+LAYOUT_PLAN_VERSION = "layout-plan-v2"
+
+
+def _round_rect(rect) -> list[float]:
+    return [round(float(value), 1) for value in rect]
+
+
+def _save_layout_plan(path: Path, plans: list, *, source: dict | None = None) -> None:
+    """Write the versioned layout plan the reader uses for diagnostics.
+
+    Version 2 records the typography template, the column model, the same-column
+    flow chains, every formula fallback, the caption plans and the per-page and
+    per-cell status, so any fallback in the translated PDF can be located here.
+    """
     payload = {
-        "version": "layout-plan-v1",
+        "version": LAYOUT_PLAN_VERSION,
+        "source": source or {},
+        "typography": {
+            "body_single": TypographyProfile.BODY_SINGLE.size,
+            "body_double": TypographyProfile.BODY_DOUBLE.size,
+            "title_levels": [
+                TypographyProfile.TITLE_1.size,
+                TypographyProfile.TITLE_2.size,
+                TypographyProfile.TITLE_3.size,
+            ],
+            "caption": TypographyProfile.CAPTION.size,
+            "table_cell": TypographyProfile.TABLE_CELL.size,
+            "footnote": TypographyProfile.FOOTNOTE.size,
+            "min_body": MIN_BODY_SIZE,
+        },
         "pages": [
             {
                 "index": plan.index,
@@ -493,6 +525,21 @@ def _save_layout_plan(path: Path, plans: list) -> None:
                 "reason": plan.reason,
                 "body_size": round(plan.body_size, 2),
                 "leading": round(plan.leading, 2),
+                "columns": {
+                    "kind": (plan.columns.kind if plan.columns else "single"),
+                    "rects": [
+                        _round_rect(rect)
+                        for rect in (plan.columns.columns if plan.columns else [])
+                    ],
+                },
+                "flow_chains": [
+                    {
+                        "column": _round_rect(chain.column_rect),
+                        "items": [item.block_plan_index for item in chain.items],
+                        "obstacles": [_round_rect(rect) for rect in chain.obstacles],
+                    }
+                    for chain in _page_chains(plan)
+                ],
                 "blocks": [
                     {
                         "kind": block.kind,
@@ -501,17 +548,29 @@ def _save_layout_plan(path: Path, plans: list) -> None:
                         "size": round(block.size, 2),
                         "baseline_size": round(block.baseline_size, 2),
                         "leading": round(block.leading, 2),
-                        "source_rect": [round(value, 1) for value in block.source_rect],
-                        "target": [round(value, 1) for value in block.target],
+                        "source_rect": _round_rect(block.source_rect),
+                        "target": _round_rect(block.target),
+                        "formula_fallback": block.formula_fallback,
                     }
                     for block in plan.blocks
+                ],
+                "captions": [
+                    {
+                        "owner_kind": caption.owner_kind,
+                        "status": caption.status,
+                        "reason": caption.reason,
+                        "size": round(caption.size, 2),
+                        "source_rect": _round_rect(caption.source_rect),
+                        "target": _round_rect(caption.target),
+                    }
+                    for caption in plan.captions
                 ],
                 "cells": [
                     {
                         "status": cell.status,
                         "reason": cell.reason,
                         "size": round(cell.size, 2),
-                        "source_rect": [round(value, 1) for value in cell.source_rect],
+                        "source_rect": _round_rect(cell.source_rect),
                     }
                     for cell in plan.cells
                 ],
@@ -522,6 +581,16 @@ def _save_layout_plan(path: Path, plans: list) -> None:
     temporary = path.with_name(f".{path.name}.tmp")
     temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(path)
+
+
+def _page_chains(plan) -> list:
+    """The same-column chains the page was solved along."""
+    from app.services.layout_fit import build_flow_chains
+    from app.services.layout_model import PageColumns, PageFrame
+
+    frame = PageFrame(index=plan.index, width=plan.width, height=plan.height)
+    columns = plan.columns or PageColumns(kind="single", columns=[frame.rect])
+    return build_flow_chains(frame, plan, columns)
 
 
 _REFIT_MAX_BLOCKS = 30
@@ -696,7 +765,15 @@ def _render_translated_pdf(
             plans = plan_document(frames, ir_blocks, measurer=measurer)
             record.translated_text = _ir_to_translated_markdown(ir_blocks)
         plan_path = output_dir / "layout-plan.json"
-        _save_layout_plan(plan_path, plans)
+        _save_layout_plan(
+            plan_path,
+            plans,
+            source={
+                "document_id": record.document_id,
+                "source_filename": record.source_filename,
+                "page_count": len(frames),
+            },
+        )
         _append_artifact(record, plan_path.name, "layout_plan", plan_path)
         debug_pdf = output_dir / "layout-debug.pdf" if settings.layout_debug else None
         report = render_document(
@@ -713,6 +790,7 @@ def _render_translated_pdf(
     _log_fallback_summary(record, plans)
     for note in report.notes:
         record.logs.append(f"Layout: {note}")
+    _record_planning_issues(record, plans, report)
     produced = len(report.pages) - len(report.failed)
     record.logs.append(
         f"Layout: {produced}/{len(report.pages)} page(s) translated on the source page"
@@ -720,6 +798,56 @@ def _render_translated_pdf(
     if debug_pdf is not None and debug_pdf.is_file():
         _append_artifact(record, debug_pdf.name, "layout_debug", debug_pdf)
     return output_dir / "rendered.pdf"
+
+
+def _record_planning_issues(record: DocumentRecord, plans: list, report) -> None:
+    """Turn the plan's fallbacks into the structured issues the reader shows."""
+    failed_pages = {page.index: page.reason for page in report.failed}
+    for plan in plans:
+        # "nothing to translate" is a property of the document, not a fallback:
+        # the page never had anything to replace.
+        if plan.status == "original" and plan.reason != "nothing to translate on this page":
+            _record_layout_issue(
+                record,
+                kind="page_original",
+                page=plan.index + 1,
+                block_kind="page",
+                message=(
+                    failed_pages.get(plan.index)
+                    or plan.reason
+                    or "page kept its source layout"
+                ),
+            )
+        for block in plan.blocks:
+            if block.status == "translated":
+                continue
+            _record_layout_issue(
+                record,
+                kind="block_original",
+                page=plan.index + 1,
+                block_kind=block.kind,
+                message=block.reason or "block kept its source text",
+            )
+        for caption in plan.captions:
+            if caption.status == "translated":
+                continue
+            _record_layout_issue(
+                record,
+                kind="caption_original",
+                page=plan.index + 1,
+                block_kind=f"{caption.owner_kind}_caption",
+                message=caption.reason or "caption kept its source text",
+            )
+        for cell in plan.cells:
+            if cell.status == "translated":
+                continue
+            _record_layout_issue(
+                record,
+                kind="cell_original",
+                page=plan.index + 1,
+                block_kind="table_cell",
+                message=cell.reason or "cell kept its source text",
+            )
 
 
 def _translate_and_render(

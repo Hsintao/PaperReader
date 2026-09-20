@@ -163,3 +163,49 @@ def test_document_status_exposes_structured_layout_issues(client, isolated_stora
     assert issues[0]["page"] == 4
     assert issues[0]["block_kind"] == "page"
     assert issues[1]["message"] == "cell translation does not fit"
+
+
+def test_document_status_reports_every_issue_kind(client, isolated_storage):
+    document_id = "doc-layout-issue-kinds"
+    source = settings.upload_dir / f"{document_id}.pdf"
+    _source(source)
+    record = _record(document_id, source)
+    record.metadata["layout_issues"] = [
+        {
+            "kind": "block_original",
+            "page": 1,
+            "block_kind": "paragraph",
+            "message": "1 of 2 piece(s) could not be translated after repeated retries",
+        },
+        {
+            "kind": "cell_original",
+            "page": 2,
+            "block_kind": "table_cell",
+            "message": "cell translation does not fit",
+        },
+        {
+            "kind": "caption_original",
+            "page": 3,
+            "block_kind": "figure_caption",
+            "message": "caption translation does not fit at the minimum font size",
+        },
+        {
+            "kind": "page_original",
+            "page": 4,
+            "block_kind": "page",
+            "message": "body text does not fit inside its column at the minimum font size of 6pt",
+        },
+    ]
+    save_document(record)
+
+    issues = client.get(f"/api/document/{document_id}").json()["layout_issues"]
+    assert [issue["page"] for issue in issues] == [1, 2, 3, 4]
+    assert {issue["kind"] for issue in issues} == {
+        "block_original",
+        "cell_original",
+        "caption_original",
+        "page_original",
+    }
+    for issue in issues:
+        assert set(issue) == {"kind", "page", "block_kind", "message"}
+        assert isinstance(issue["page"], int) and issue["page"] >= 1

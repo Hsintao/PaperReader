@@ -83,6 +83,7 @@ export type PdfPaneHandle = {
     positionRatio: number
   }) => Promise<void>
   scrollToRatio: (ratio: number) => void
+  goToPage: (page: number) => void
   openSearch: () => void
 }
 
@@ -624,6 +625,24 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
       window.setTimeout(() => {
         isProgrammaticScrollRef.current = false
       }, 120)
+    },
+    goToPage(page: number) {
+      const target = Math.max(1, Math.min(numPages || 1, Math.round(page)))
+      if (mode !== 'scroll') {
+        setPageNumber(target)
+        return
+      }
+      const scroller = scrollRef.current
+      const el = pageRefs.current[target - 1]
+      if (!scroller) return
+      isProgrammaticScrollRef.current = true
+      if (el) {
+        scroller.scrollTop = el.offsetTop - 8
+      }
+      updateRenderRange()
+      window.setTimeout(() => {
+        isProgrammaticScrollRef.current = false
+      }, 200)
     },
     openSearch() {
       search.openSearch()

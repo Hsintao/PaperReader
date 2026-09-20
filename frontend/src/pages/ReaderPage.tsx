@@ -304,6 +304,12 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
     void downloadNotes(activeId).catch((e: any) => setNotice(`导出笔记失败：${e?.message ?? String(e)}`))
   }, [activeId])
 
+  const handleOpenLayoutIssue = useCallback((page: number) => {
+    // Point both panes at the page the issue belongs to.
+    originalPaneRef.current?.goToPage(page)
+    translatedPaneRef.current?.goToPage(page)
+  }, [])
+
   const handleProgressChange = useCallback((page: number, ratio: number) => {
     if (!activeId) return
     void updateReadingProgress(activeId, page, ratio).catch(() => {})
@@ -471,6 +477,7 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
           uploading={uploading}
           artifacts={artifacts}
           logs={logs}
+          layoutIssues={activeDoc?.layout_issues ?? []}
           theme={theme}
           visionEnabled={visionEnabled}
           visionMode={visionMode}
@@ -491,6 +498,7 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
             void persistPreferences({ theme: next })
           }}
           onRefreshStatus={refreshActive}
+          onOpenLayoutIssue={handleOpenLayoutIssue}
           onSearchLocate={(hit) => {
             if (hit.document_id !== activeId) setActiveId(hit.document_id)
             setPendingLocate({ text: hit.snippet, side: hit.side })
