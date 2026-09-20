@@ -24,7 +24,7 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-from app.services.cjk_fonts import CjkFontFamily
+from app.services.cjk_fonts import CjkFontSet
 from app.services.layout_fit import (
     DEFAULT_BODY_SIZE,
     SMALL_TITLE_SIZE,
@@ -52,7 +52,7 @@ CELL_SIZE = 9.0
 BODY_LEADING = 1.5
 
 
-def _styles(fonts: CjkFontFamily) -> dict[str, ParagraphStyle]:
+def _styles(fonts: CjkFontSet) -> dict[str, ParagraphStyle]:
     return {
         "body": ParagraphStyle(
             "body", fontName=fonts.name(False), fontSize=DEFAULT_BODY_SIZE,
@@ -151,7 +151,7 @@ def reflow_page_pdf(
     page_blocks: list[Block],
     *,
     crops,
-    fonts: CjkFontFamily,
+    fonts: CjkFontSet,
 ) -> bytes:
     """Typeset one source page's blocks fresh; may spill onto extra pages."""
     styles = _styles(fonts)

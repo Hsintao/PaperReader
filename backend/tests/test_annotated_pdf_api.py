@@ -9,13 +9,9 @@ from reportlab.pdfgen import canvas as pdf_canvas
 
 from app.core.config import settings
 from app.models.store import ArtifactEntry, DocumentRecord, save_document
-from app.services.cjk_fonts import find_cjk_font
+from app.services.cjk_fonts import require_cjk_font
 from app.services.document_pipeline import _save_extraction_checkpoint
 from app.services.mineru_service import MinerUResult
-
-pytestmark = pytest.mark.skipif(
-    find_cjk_font() is None, reason="requires an installed CJK font"
-)
 
 
 def _source(path: Path) -> None:

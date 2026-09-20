@@ -1,9 +1,10 @@
-"""System CJK font discovery for the layout renderer.
+"""Fixed Chinese fonts bundled with the application.
 
-Translated text is drawn with a Chinese font already installed on the host;
-blocks keep the original page's geometry, so the only font the renderer needs
-is one serif CJK family with a bold face. The family is registered once per
-process and reused for every page.
+Translated text is drawn with the fonts shipped in ``app/assets/fonts``, not
+with whatever the host happens to have installed: every platform then renders
+the same glyphs at the same metrics, and the faces travel inside the exported
+PDF. The set holds a Song (serif) regular/bold pair for body copy and a Hei
+(sans) medium/bold pair for headings.
 """
 
 from __future__ import annotations
@@ -14,8 +15,17 @@ from pathlib import Path
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont, TTFError
 
-REGULAR_NAME = "PaperReaderCJK"
-BOLD_NAME = "PaperReaderCJK-Bold"
+SERIF_REGULAR_NAME = "PaperReaderSong"
+SERIF_BOLD_NAME = "PaperReaderSong-Bold"
+SANS_MEDIUM_NAME = "PaperReaderHei"
+SANS_BOLD_NAME = "PaperReaderHei-Bold"
+
+_FONT_ASSETS = {
+    SERIF_REGULAR_NAME: "NotoSerifSC-Regular.ttf",
+    SERIF_BOLD_NAME: "NotoSerifSC-Bold.ttf",
+    SANS_MEDIUM_NAME: "NotoSansSC-Medium.ttf",
+    SANS_BOLD_NAME: "NotoSansSC-Bold.ttf",
+}
 
 # Coverage probe: common Han characters, CJK punctuation, and the Latin/digit
 # range the translated prose mixes in (acronyms, numbers, units).
@@ -28,58 +38,54 @@ _PROBE_CHARACTERS = (
 
 
 @dataclass(frozen=True)
-class CjkFontFamily:
-    regular: str
-    bold: str
-    path: str
+class CjkFontSet:
+    """The bundled faces, plus the asset files they were loaded from."""
+
+    serif_regular: str
+    serif_bold: str
+    sans_medium: str
+    sans_bold: str
+    asset_paths: tuple[str, ...]
+
+    def serif(self, bold: bool = False) -> str:
+        return self.serif_bold if bold else self.serif_regular
+
+    def sans(self, bold: bool = False) -> str:
+        return self.sans_bold if bold else self.sans_medium
+
+    # Body copy is Song and headings are Hei, so the unqualified family is the
+    # serif one; `name()` keeps the two-face call sites reading naturally.
+    @property
+    def regular(self) -> str:
+        return self.serif_regular
+
+    @property
+    def bold(self) -> str:
+        return self.serif_bold
 
     def name(self, bold: bool = False) -> str:
-        return self.bold if bold else self.regular
+        return self.serif(bold)
 
-
-# Candidate font files per platform. Serif families come first so translated
-# pages match the printed look of the source paper. Each entry maps the
-# TrueType collection index of the regular and bold faces; `None` means the
-# file has no bold face and the renderer strokes the regular one instead.
-_CANDIDATES: dict[str, list[tuple[str, int, int | None]]] = {
-    "darwin": [
-        ("/System/Library/Fonts/Supplemental/Songti.ttc", 6, 1),
-        ("/Library/Fonts/Songti.ttc", 6, 1),
-        ("/System/Library/Fonts/Supplemental/STSong.ttf", 0, None),
-        ("/System/Library/Fonts/STHeiti Medium.ttc", 1, 1),
-    ],
-    "win32": [
-        (r"C:\Windows\Fonts\simsun.ttc", 0, None),
-        (r"C:\Windows\Fonts\msyh.ttc", 0, None),
-        (r"C:\Windows\Fonts\simhei.ttf", 0, None),
-    ],
-    "linux": [
-        ("/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc", 0, None),
-        ("/usr/share/fonts/truetype/noto/NotoSerifCJK-Regular.ttc", 0, None),
-        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0, None),
-        ("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf", 0, None),
-        ("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 0, None),
-    ],
-}
-
-_EXTRA_DIRECTORIES = (
-    "/System/Library/Fonts/Supplemental",
-    "/Library/Fonts",
-    r"C:\Windows\Fonts",
-    "/usr/share/fonts",
-    str(Path.home() / "Library" / "Fonts"),
-)
-
-_CACHE: CjkFontFamily | None = None
+    @property
+    def path(self) -> str:
+        return self.asset_paths[0]
 
 
 class CjkFontUnavailable(RuntimeError):
-    """Raised when no usable Chinese font can be found on this host."""
+    """Raised when a bundled Chinese font cannot be loaded."""
 
 
-def _covers(file_path: str, index: int) -> bool:
+_CACHE: CjkFontSet | None = None
+
+
+def font_asset_dir() -> Path:
+    """Directory holding the bundled font files, packaged or in a checkout."""
+    return Path(__file__).resolve().parent.parent / "assets" / "fonts"
+
+
+def _covers(file_path: Path) -> bool:
     try:
-        face = TTFont("probe", file_path, subfontIndex=index)
+        face = TTFont("probe", str(file_path))
     except (TTFError, OSError, ValueError, TypeError, KeyError, IndexError):
         return False
     glyphs = getattr(face.face, "charToGlyph", None)
@@ -88,93 +94,53 @@ def _covers(file_path: str, index: int) -> bool:
     return all(ord(char) in glyphs for char in _PROBE_CHARACTERS)
 
 
-def _register(file_path: str, index: int, name: str) -> bool:
+def _register(file_path: Path, name: str) -> bool:
     try:
-        pdfmetrics.registerFont(TTFont(name, file_path, subfontIndex=index))
+        pdfmetrics.registerFont(TTFont(name, str(file_path)))
     except (TTFError, OSError, ValueError, TypeError, KeyError, IndexError):
         return False
     return True
 
 
-def _extra_candidates(platform: str) -> list[tuple[str, int, int | None]]:
-    """Scan font directories for other TrueType CJK files as a last resort."""
-    found: list[tuple[str, int, int | None]] = []
-    preferred = (
-        ("song", "noto serif cjk", "sourcehanserif", "stsong")
-        if platform == "darwin"
-        else ("song", "serif cjk", "simsun", "wqy", "droidsansfallback")
-    )
-    seen = 0
-    for directory in _EXTRA_DIRECTORIES:
-        root = Path(directory)
-        if not root.is_dir():
-            continue
-        for entry in sorted(root.rglob("*")):
-            seen += 1
-            if seen > 20000:
-                return found
-            if not entry.is_file() or entry.suffix.lower() not in {".ttc", ".ttf"}:
-                continue
-            lowered = entry.name.lower()
-            if not any(token in lowered for token in preferred):
-                continue
-            found.append((str(entry), 0, None))
-    return found
-
-
-def _activate(
-    file_path: str, regular_index: int, bold_index: int | None
-) -> CjkFontFamily | None:
-    if not Path(file_path).is_file() or not _covers(file_path, regular_index):
-        return None
-    if not _register(file_path, regular_index, REGULAR_NAME):
-        return None
-    bold_name = REGULAR_NAME
-    if bold_index is not None and bold_index != regular_index:
-        if _covers(file_path, bold_index) and _register(
-            file_path, bold_index, BOLD_NAME
-        ):
-            bold_name = BOLD_NAME
-    return CjkFontFamily(regular=REGULAR_NAME, bold=bold_name, path=file_path)
-
-
-def find_cjk_font() -> CjkFontFamily | None:
-    """Return the first CJK family that covers the probe string, or None."""
+def load_cjk_fonts() -> CjkFontSet:
+    """Register the bundled faces once and return the set."""
     global _CACHE
     if _CACHE is not None:
         return _CACHE
 
-    import sys
+    directory = font_asset_dir()
+    registered: dict[str, str] = {}
+    paths: list[str] = []
+    for name, filename in _FONT_ASSETS.items():
+        file_path = directory / filename
+        if not file_path.is_file() or not _covers(file_path):
+            raise CjkFontUnavailable(
+                f"Bundled Chinese font is missing or unusable: {file_path}"
+            )
+        if not _register(file_path, name):
+            raise CjkFontUnavailable(
+                f"Bundled Chinese font could not be registered: {file_path}"
+            )
+        registered[name] = str(file_path)
+        paths.append(str(file_path))
 
-    platform = sys.platform
-    platform_key = (
-        "darwin"
-        if platform == "darwin"
-        else "win32"
-        if platform.startswith("win")
-        else "linux"
+    _CACHE = CjkFontSet(
+        serif_regular=SERIF_REGULAR_NAME,
+        serif_bold=SERIF_BOLD_NAME,
+        sans_medium=SANS_MEDIUM_NAME,
+        sans_bold=SANS_BOLD_NAME,
+        asset_paths=tuple(paths),
     )
-    for file_path, regular_index, bold_index in _CANDIDATES.get(platform_key, []):
-        family = _activate(file_path, regular_index, bold_index)
-        if family is not None:
-            _CACHE = family
-            return _CACHE
-    # Nothing in the known locations: scan the font directories once.
-    for file_path, regular_index, bold_index in _extra_candidates(platform_key):
-        family = _activate(file_path, regular_index, bold_index)
-        if family is not None:
-            _CACHE = family
-            return _CACHE
-    return None
+    return _CACHE
 
 
-def require_cjk_font() -> CjkFontFamily:
-    family = find_cjk_font()
-    if family is None:
-        raise CjkFontUnavailable(
-            "No Chinese font with the required coverage was found. Install a "
-            "serif CJK font (macOS: Songti SC; Windows: SimSun; Linux: "
-            "fonts-noto-cjk) and retry."
-        )
-    return family
+def find_cjk_font() -> CjkFontSet | None:
+    """Return the bundled font set, or None when it cannot be loaded."""
+    try:
+        return load_cjk_fonts()
+    except CjkFontUnavailable:
+        return None
 
+
+def require_cjk_font() -> CjkFontSet:
+    return load_cjk_fonts()

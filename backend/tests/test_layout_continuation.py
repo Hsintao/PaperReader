@@ -6,7 +6,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas as pdf_canvas
 
 from app.services import document_pipeline, layout_fit, layout_model, layout_render, translate_service
-from app.services.cjk_fonts import find_cjk_font, require_cjk_font
+from app.services.cjk_fonts import require_cjk_font
 from app.services.layout_model import PageFrame, attach_inline_formula_boxes
 from app.services.mineru_layout import (
     InlineMath,
@@ -17,10 +17,6 @@ from app.services.mineru_layout import (
     merge_continuation_groups,
     plan_continuation_groups,
     split_continuation_groups,
-)
-
-pytestmark = pytest.mark.skipif(
-    find_cjk_font() is None, reason="requires an installed CJK font"
 )
 
 FRAMES = [PageFrame(index=0, width=612.0, height=792.0)]

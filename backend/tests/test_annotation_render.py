@@ -15,7 +15,7 @@ from app.services.annotation_render import (
     render_annotated_pdf,
 )
 from app.services.app_settings import AppSettings
-from app.services.cjk_fonts import find_cjk_font
+from app.services.cjk_fonts import require_cjk_font
 from app.services.layout_model import caption_rect, document_lines, measure_pages
 from app.services.mineru_layout import (
     Author,
@@ -30,10 +30,6 @@ from app.services.mineru_layout import (
     collect_translatable_strings,
 )
 from app.services.mineru_service import MinerUResult
-
-pytestmark = pytest.mark.skipif(
-    find_cjk_font() is None, reason="requires an installed CJK font"
-)
 
 
 def _source(path) -> None:

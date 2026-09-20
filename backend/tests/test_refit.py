@@ -5,12 +5,8 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas as pdf_canvas
 
 from app.services import document_pipeline, layout_fit, layout_model, layout_render
-from app.services.cjk_fonts import find_cjk_font, require_cjk_font
+from app.services.cjk_fonts import require_cjk_font
 from app.services.mineru_layout import InlineMath, Paragraph, Table, TableCell, TextRun
-
-pytestmark = pytest.mark.skipif(
-    find_cjk_font() is None, reason="requires an installed CJK font"
-)
 
 _LONG_TRANSLATION = (
     "这段译文非常非常长，既放不下也无处可去，因此只能在自身区域内缩小字号，"

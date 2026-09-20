@@ -8,12 +8,8 @@ themselves into the translated PDF.
 
 import pytest
 
-from app.services.cjk_fonts import find_cjk_font, require_cjk_font
+from app.services.cjk_fonts import require_cjk_font
 from app.services.layout_fit import Fragment, TextMeasurer, _inline_markup
-
-pytestmark = pytest.mark.skipif(
-    find_cjk_font() is None, reason="requires an installed CJK font"
-)
 
 
 @pytest.mark.parametrize(

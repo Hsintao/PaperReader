@@ -29,7 +29,7 @@ from reportlab.pdfgen import canvas as pdf_canvas
 
 from app.core.config import settings
 from app.services import pdf_ops
-from app.services.cjk_fonts import CjkFontFamily, require_cjk_font
+from app.services.cjk_fonts import CjkFontSet, require_cjk_font
 from app.services.layout_fit import (
     Fragment,
     PagePlan,
@@ -392,7 +392,7 @@ def render_document(
     blocks: list[Block],
     output_pdf: Path,
     crops: FormulaCrops,
-    fonts: CjkFontFamily | None = None,
+    fonts: CjkFontSet | None = None,
     debug_pdf: Path | None = None,
 ) -> RenderReport:
     fonts = fonts or require_cjk_font()

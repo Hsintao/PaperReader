@@ -21,7 +21,7 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.pdfgen import canvas as pdf_canvas
 from reportlab.platypus import Paragraph
 
-from app.services.cjk_fonts import CjkFontFamily
+from app.services.cjk_fonts import CjkFontSet
 from app.services.layout_model import PageFrame, SourceChar
 from app.services.mineru_layout import (
     Block,
@@ -298,7 +298,7 @@ def _measure_alignment(
 class TextMeasurer:
     """Builds and measures the same paragraph markup the renderer draws."""
 
-    def __init__(self, fonts: CjkFontFamily, image_paths=None, image_aspects=None):
+    def __init__(self, fonts: CjkFontSet, image_paths=None, image_aspects=None):
         self.fonts = fonts
         self.image_paths = image_paths or {}
         self.image_aspects = image_aspects or {}

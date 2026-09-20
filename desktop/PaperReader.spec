@@ -13,6 +13,7 @@ hiddenimports = ["webview.platforms.edgechromium"]
 datas = [
     (str(project_root / "frontend" / "dist"), "frontend_dist"),
     (str(project_root / "desktop" / "assets" / "PaperReader.ico"), "."),
+    (str(backend_dir / "app" / "assets" / "fonts"), "app/assets/fonts"),
 ]
 datas += collect_data_files("pypdfium2")
 datas += collect_data_files("reportlab")

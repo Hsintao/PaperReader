@@ -9,7 +9,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas as pdf_canvas
 
 from app.services import layout_fit, layout_model, layout_render
-from app.services.cjk_fonts import find_cjk_font, require_cjk_font
+from app.services.cjk_fonts import require_cjk_font
 from app.services.layout_fit import BlockPlan, Fragment, PagePlan
 from app.services.mineru_layout import (
     Paragraph,
@@ -20,10 +20,6 @@ from app.services.mineru_layout import (
     blocks_to_ir,
     collect_translatable_strings,
     apply_translations,
-)
-
-pytestmark = pytest.mark.skipif(
-    find_cjk_font() is None, reason="requires an installed CJK font"
 )
 
 

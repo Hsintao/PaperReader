@@ -7,13 +7,9 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas as pdf_canvas
 
 from app.services import layout_model, layout_render
-from app.services.cjk_fonts import find_cjk_font
+from app.services.cjk_fonts import require_cjk_font
 from app.services.layout_fit import PagePlan
 from app.services.mineru_layout import Paragraph, TextRun
-
-pytestmark = pytest.mark.skipif(
-    find_cjk_font() is None, reason="requires an installed CJK font"
-)
 
 
 def _source(path, lines) -> None:
