@@ -181,8 +181,8 @@ def main() -> int:
 
     _load_env()
     api_key = args.api_key or os.getenv("OPENAI_API_KEY")
-    base_url = args.base_url or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-    model = args.model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    base_url = args.base_url or os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com")
+    model = args.model or os.getenv("OPENAI_MODEL", "deepseek-flash")
 
     if not api_key:
         print("ERROR: OPENAI_API_KEY is not set (check .env or pass --api-key).", file=sys.stderr)

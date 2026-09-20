@@ -2,6 +2,7 @@ import logging
 import random
 import threading
 import time
+from urllib.parse import urlparse
 
 from openai import OpenAI
 
@@ -12,6 +13,20 @@ logger = logging.getLogger(__name__)
 
 class LLMOutputTruncatedError(RuntimeError):
     """Raised when the provider reports that its output token limit was hit."""
+
+
+def _extra_body(base_url: str) -> dict:
+    """Provider-specific request fields for the translation calls.
+
+    DeepSeek turns thinking mode on by default, which adds reasoning tokens to
+    every batch and makes ``temperature`` a no-op. Translation wants the direct
+    answer instead. Other OpenAI-compatible endpoints reject unknown top-level
+    fields, so the parameter is only sent to DeepSeek.
+    """
+    host = urlparse(base_url).hostname or ""
+    if host == "deepseek.com" or host.endswith(".deepseek.com"):
+        return {"thinking": {"type": "disabled"}}
+    return {}
 
 
 class _TokenBucket:
@@ -89,6 +104,7 @@ class OpenAICompatClient:
                         {"role": "user", "content": message},
                     ],
                     temperature=0.2,
+                    extra_body=_extra_body(base_url),
                 )
                 choice = response.choices[0]
                 finish_reason = getattr(choice, "finish_reason", None)
@@ -158,6 +174,7 @@ class OpenAICompatClient:
                     ],
                     temperature=0.2,
                     stream=True,
+                    extra_body=_extra_body(base_url),
                 )
                 break
             except Exception as exc:

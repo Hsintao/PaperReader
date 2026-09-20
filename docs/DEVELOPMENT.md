@@ -1068,12 +1068,12 @@ cp .env.example .env
 ### 可选 / 调优变量
 
 - `SQLITE_DB_NAME`（默认 `paperreader.db`）— `DATA_DIR` 下的本地持久化数据库文件。
-- `TRANSLATE_CONCURRENCY`（默认 `4`）— 并行翻译的 chunk 数。
+- `TRANSLATE_CONCURRENCY`（默认 `16`）— 并行翻译的 chunk 数。DeepSeek `deepseek-flash` 的并发限制为账号级 2500，翻译批次的单次请求耗时通常在数十秒量级，因此默认值远低于上限；仅当服务商并发很低时才需要下调。
 - `TRANSLATE_MAX_RETRIES`（默认 `5`）— 单次 LLM 调用的重试预算；使用带抖动的指数退避，并遵守 `Retry-After`。
 - `LLM_RATE_LIMIT_RPS`（默认 `4`）— 所有 worker 线程共享的 LLM 全局限速（每秒请求数，令牌桶）。设为 `0` 关闭。建议低于服务商/密钥公布的 RPM 以避免 429。注意：该限速按单个 uvicorn 进程生效；若扩展为 N 个 worker，实际限速为 `N × LLM_RATE_LIMIT_RPS`。
 - `TRANSLATE_BATCH_MAX_CHARS`（默认 `6000`）— 每个 IR 批量请求拼接字符数上限。调大可摊薄往返延迟，但单次请求体更大。
 - `TRANSLATE_SEGMENT_MAX_CHARS`（默认 `2000`）— 单个散文本段落的硬上限。超长 MinerU 段落会被拆分再重组，避免模型输出上限截断后半段。
-- `VISION_MODEL`（默认 `GLM-4.5V`）— Phase D 视觉校验使用的多模态模型，必须与 `OPENAI_BASE_URL` 同一 OpenAI 兼容端点且支持视觉（如 `GLM-4.5V`、`GLM-4.6V`、`Qwen3-VL-30B-A3B-Instruct`、`Qwen3-VL-235B-A22B-Instruct`）。
+- `VISION_MODEL`（默认 `deepseek-flash`）— Phase D 视觉校验使用的多模态模型，必须与 `OPENAI_BASE_URL` 同一 OpenAI 兼容端点且支持视觉（如 `deepseek-flash`、`GLM-4.5V`、`GLM-4.6V`、`Qwen3-VL-30B-A3B-Instruct`、`Qwen3-VL-235B-A22B-Instruct`）。
 - `VISION_CHECK_ENABLED`（默认 `false`）、`VISION_CHECK_MODE`（`auto` | `manual`）、`VISION_CHECK_MAX_PAGES`（默认 `8`）— Phase D 的部署默认值。默认关闭校验，可在「设置 → 阅读偏好」中开启自动/手动校验。
 - `LAYOUT_DEBUG` — 设为 true 时额外产出 `outputs/<document_id>/layout-debug.pdf`，在原页上标出块类别与实际沿用的图注区域。
 

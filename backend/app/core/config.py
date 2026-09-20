@@ -29,8 +29,8 @@ class Settings(BaseSettings):
     sqlite_db_name: str = Field(default="paperreader.db", alias="SQLITE_DB_NAME")
 
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
-    openai_base_url: str = Field(default="https://api.openai.com/v1", alias="OPENAI_BASE_URL")
-    openai_model: str = Field(default="gpt-4o-mini", alias="OPENAI_MODEL")
+    openai_base_url: str = Field(default="https://api.deepseek.com", alias="OPENAI_BASE_URL")
+    openai_model: str = Field(default="deepseek-flash", alias="OPENAI_MODEL")
 
     # PDF parsing backend: "local" extracts the embedded text layer with pypdf
     # (no external service / API key needed); "mineru" uses the MinerU cloud API.
@@ -54,15 +54,16 @@ class Settings(BaseSettings):
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
 
     # Vision-model adversarial check (Phase D)
-    # Disabled by default: DeepSeek (and most text-only endpoints) has no
-    # vision-capable model. Requires a multimodal model at OPENAI_BASE_URL.
-    vision_model: str = Field(default="GLM-4.5V", alias="VISION_MODEL")
+    # Disabled by default. The model must be multimodal and reachable at
+    # OPENAI_BASE_URL; deepseek-flash accepts image input on the default
+    # endpoint.
+    vision_model: str = Field(default="deepseek-flash", alias="VISION_MODEL")
     vision_check_enabled: bool = Field(default=False, alias="VISION_CHECK_ENABLED")
     vision_check_mode: str = Field(default="auto", alias="VISION_CHECK_MODE")  # auto | manual
     vision_check_max_pages: int = Field(default=8, alias="VISION_CHECK_MAX_PAGES")
 
     # Translation concurrency (chunked LLM calls)
-    translate_concurrency: int = Field(default=4, alias="TRANSLATE_CONCURRENCY")
+    translate_concurrency: int = Field(default=16, alias="TRANSLATE_CONCURRENCY")
     translate_max_retries: int = Field(default=5, alias="TRANSLATE_MAX_RETRIES")
     # Global LLM request rate limit (requests per second). 0 disables limiting.
     # Applied as a shared token bucket across all threads to avoid 429s under
