@@ -6,6 +6,8 @@ returns a non-zero exit code when any acceptance rule in
 
 * page count, page size and page order differ from the source;
 * body text smaller than the 6pt floor;
+* a heading that is not one point above its page's body size, or below its 7pt
+  floor;
 * a page that fell back to the original without being reported in the plan;
 * a formula fragment that the plan says was kept but is missing from the PDF;
 * a visible Link annotation border;
@@ -30,6 +32,8 @@ import pypdf  # noqa: E402
 import pypdfium2 as pdfium  # noqa: E402
 
 MIN_BODY_SIZE = 6.0
+MIN_TITLE_SIZE = 7.0
+TITLE_SIZE_BONUS = 1.0
 MAX_FALLBACK_PAGES = 3
 MAX_FALLBACK_RATIO = 0.2
 # A page the parser found nothing translatable on is not a fallback.
@@ -110,6 +114,21 @@ def check_plan(plan: dict, page_count: int, failures: list[str]) -> dict:
                 failures.append(
                     f"page {page.get('index', 0) + 1} block size {size} is below the 6pt floor"
                 )
+            if (
+                body
+                and page.get("status") == "ok"
+                and block.get("kind") == "title"
+                and block.get("status") == "translated"
+            ):
+                if size < MIN_TITLE_SIZE - 0.01:
+                    failures.append(
+                        f"page {page.get('index', 0) + 1} heading size {size} is below the 7pt floor"
+                    )
+                if abs(size - (body + TITLE_SIZE_BONUS)) > 0.05:
+                    failures.append(
+                        f"page {page.get('index', 0) + 1} heading size {size} is not the body size "
+                        f"{body} plus {TITLE_SIZE_BONUS}pt"
+                    )
         for caption in page.get("captions", []):
             size = caption.get("size") or 0.0
             if caption.get("status") == "translated" and 0 < size < MIN_BODY_SIZE - 0.01:

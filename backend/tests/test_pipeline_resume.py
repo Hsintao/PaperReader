@@ -374,6 +374,9 @@ def test_layout_plan_v2_records_typography_and_fallbacks(isolated_storage, monke
     assert payload["source"]["document_id"] == "plan-v2"
     assert payload["source"]["page_count"] == 1
     assert payload["typography"]["body_single"] == TypographyProfile.BODY_SINGLE.size
+    assert payload["typography"]["title_bonus"] == 1.0
+    assert payload["typography"]["title_min"] == 7.0
+    assert payload["typography"]["title_leading"] == pytest.approx(1.3)
     assert payload["typography"]["min_body"] == 6.0
     page = payload["pages"][0]
     assert page["status"] in {"ok", "masked", "original"}

@@ -5,10 +5,10 @@
 
 | 文件 | 家族 | 字重 | 用途 |
 |---|---|---|---|
-| `NotoSerifSC-Regular.ttf` | Noto Serif SC | Regular 400 | 宋体正文、图表注、表格单元格、脚注 |
+| `NotoSerifSC-Regular.ttf` | Noto Serif SC | Regular 400 | 宋体正文、标题、图表注、表格单元格、脚注 |
 | `NotoSerifSC-Bold.ttf` | Noto Serif SC | Bold 700 | 宋体强调 |
-| `NotoSansSC-Medium.ttf` | Noto Sans SC | Medium 500 | 黑体中黑，三级及更深标题 |
-| `NotoSansSC-Bold.ttf` | Noto Sans SC | Bold 700 | 黑体粗体，论文标题与一、二级标题 |
+| `NotoSansSC-Medium.ttf` | Noto Sans SC | Medium 500 | 随应用内置的黑体（无衬线）字族 |
+| `NotoSansSC-Bold.ttf` | Noto Sans SC | Bold 700 | 随应用内置的黑体粗体 |
 
 ## 上游与许可
 

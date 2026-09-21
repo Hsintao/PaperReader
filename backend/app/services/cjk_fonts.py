@@ -3,8 +3,8 @@
 Translated text is drawn with the fonts shipped in ``app/assets/fonts``, not
 with whatever the host happens to have installed: every platform then renders
 the same glyphs at the same metrics, and the faces travel inside the exported
-PDF. The set holds a Song (serif) regular/bold pair for body copy and a Hei
-(sans) medium/bold pair for headings.
+PDF. The set holds a Song (serif) regular/bold pair, which the layout template
+uses for body copy and headings alike, and a Hei (sans) medium/bold pair.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ class CjkFontSet:
     def sans(self, bold: bool = False) -> str:
         return self.sans_bold if bold else self.sans_medium
 
-    # Body copy is Song and headings are Hei, so the unqualified family is the
+    # Body copy and headings are both Song, so the unqualified family is the
     # serif one; `name()` keeps the two-face call sites reading naturally.
     @property
     def regular(self) -> str:

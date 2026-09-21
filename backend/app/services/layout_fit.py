@@ -2,12 +2,13 @@
 
 A translated block keeps the source block's box, but its typography comes from
 the fixed Chinese template rather than from the source page: body copy is Song
-at 10.5pt in one column and 9pt in two, headings are Hei, and captions, table
-cells and footnotes have their own sizes and leading. Only alignment and
-paragraph indentation are still read from the source. When a translation does
-not fit, the page gives ground in the order the layout design prescribes: use
-the whitespace below the block, move later text down, shrink the whole page's
-body size down to 6pt, and only then fall back to the original page.
+at 10.5pt in one column and 9pt in two, every heading is Song regular one point
+above the page's final body size, and captions, table cells and footnotes have
+their own sizes and leading. Only alignment and paragraph indentation are still
+read from the source. When a translation does not fit, the page gives ground in
+the order the layout design prescribes: use the whitespace below the block, move
+later text down, shrink the whole page's body size down to 6pt, and only then
+fall back to the original page.
 """
 
 from __future__ import annotations
@@ -49,13 +50,13 @@ NOTHING_TO_TRANSLATE = "nothing to translate on this page"
 DEFAULT_BODY_SIZE = 10.5      # single-column body baseline
 DOUBLE_COLUMN_BODY_SIZE = 9.0
 MIN_BODY_SIZE = 6.0           # design floor: the page falls back below this
-TITLE_SIZES = {1: 16.0, 2: 13.0}
-SMALL_TITLE_SIZE = 11.5       # title level 3 and deeper
+TITLE_SIZE_BONUS = 1.0        # a heading sits one point above the body size
+MIN_TITLE_SIZE = 7.0          # design floor for headings
+TITLE_LEADING_RATIO = 1.3
 MIN_SIZE_RATIO = 0.85         # a block never shrinks below 85% of its default
 SIZE_CEIL_RATIO = 1.1         # the unified page size grows at most this much
 ABS_MIN_SIZE = 6.0            # hard bounds: never too small, never too large
 ABS_MAX_SIZE = 22.0
-TITLE_KEEP_RATIO = 1.25       # headings bigger than this keep their own level
 MIN_LEADING_RATIO = 1.25      # design floor for line spacing
 MAX_LEADING_RATIO = 1.8
 CELL_MIN_RATIO = 0.75         # table cell text shrinks at most to this ratio
@@ -74,10 +75,10 @@ class TypographyProfile:
     bold: bool = False
 
 
-# Named rows of the template (docs/translation-layout.md section 3).
-TypographyProfile.TITLE_1 = TypographyProfile(16.0, 1.2, serif=False, bold=True)
-TypographyProfile.TITLE_2 = TypographyProfile(13.0, 1.25, serif=False, bold=True)
-TypographyProfile.TITLE_3 = TypographyProfile(11.5, 1.3, serif=False, bold=False)
+# Named rows of the template (docs/translation-layout.md section 3). The heading
+# row carries no size of its own: every heading is one point above the page's
+# final body size, so `title_size` derives it and `title_profile` is built per
+# page.
 TypographyProfile.BODY_SINGLE = TypographyProfile(DEFAULT_BODY_SIZE, 1.5)
 TypographyProfile.BODY_DOUBLE = TypographyProfile(DOUBLE_COLUMN_BODY_SIZE, 1.5)
 TypographyProfile.AFFILIATION = TypographyProfile(8.5, 1.35)
@@ -86,18 +87,25 @@ TypographyProfile.TABLE_CELL = TypographyProfile(8.0, 1.25)
 TypographyProfile.FOOTNOTE = TypographyProfile(7.5, 1.3)
 
 
-def title_profile(level: int) -> TypographyProfile:
-    if level <= 1:
-        return TypographyProfile.TITLE_1
-    if level == 2:
-        return TypographyProfile.TITLE_2
-    return TypographyProfile.TITLE_3
-
-
 def body_profile(columns: PageColumns) -> TypographyProfile:
     if columns.kind in {"double", "mixed"}:
         return TypographyProfile.BODY_DOUBLE
     return TypographyProfile.BODY_SINGLE
+
+
+def title_size(body_size: float) -> float:
+    """The heading size for a page whose body copy ends up at `body_size`."""
+    return min(max(body_size + TITLE_SIZE_BONUS, MIN_TITLE_SIZE), ABS_MAX_SIZE)
+
+
+def title_profile(columns: PageColumns | None = None) -> TypographyProfile:
+    """The heading row: Song regular, one point above the body size.
+
+    The title level no longer changes the size or the weight; the hierarchy is
+    carried by the numbering, the position and the surrounding space.
+    """
+    body = body_profile(columns or PageColumns())
+    return TypographyProfile(title_size(body.size), TITLE_LEADING_RATIO)
 
 
 def role_profile(role: str, columns: PageColumns) -> TypographyProfile:
@@ -348,11 +356,11 @@ def chars_in_rect(frame: PageFrame, rect: Rect) -> list[SourceChar]:
 
 
 def style_profile(
-    role: str, columns: PageColumns, *, is_title: bool, level: int = 1
+    role: str, columns: PageColumns, *, is_title: bool
 ) -> TypographyProfile:
     """The fixed template row for a block, before any page-level shrinking."""
     if is_title:
-        return title_profile(level)
+        return title_profile(columns)
     return role_profile(role, columns)
 
 
@@ -368,11 +376,11 @@ def block_style(
     """(font size, bold, leading ratio, alignment, serif) for a block.
 
     Size, weight and leading come from the fixed template; only alignment is
-    still measured from the source layout.
+    still measured from the source layout. A heading's template size is the
+    page's body template plus one point; the solver restates it against the
+    page's final body size.
     """
-    profile = style_profile(
-        role, columns or PageColumns(), is_title=is_title, level=level
-    )
+    profile = style_profile(role, columns or PageColumns(), is_title=is_title)
     size = min(max(profile.size, ABS_MIN_SIZE), ABS_MAX_SIZE)
     return (
         size,
@@ -1433,10 +1441,11 @@ def solve_page_layout(
 ) -> bool:
     """Lay a page's text out along its same-column chains.
 
-    Every movable item is measured at the page's shared body size, existing
-    gaps are consumed and paragraph spacing is reduced to its source-safe
-    minimum before later items shift down. Nothing crosses an immutable
-    obstacle, a column boundary or the page edge. Returns whether the page fits.
+    Every movable item is measured at the page's shared body size, headings at
+    one point above it, existing gaps are consumed and paragraph spacing is
+    reduced to its source-safe minimum before later items shift down. Nothing
+    crosses an immutable obstacle, a column boundary or the page edge. Returns
+    whether the page fits.
     """
     columns = page_plan.columns or PageColumns()
     frame = PageFrame(
@@ -1453,13 +1462,13 @@ def solve_page_layout(
     body_blocks = [block for block in translatable if block.kind != "title"]
     if body_size is None:
         body_size = min(
-            (block.size for block in (body_blocks or translatable)),
-            default=DEFAULT_BODY_SIZE,
+            (block.size for block in body_blocks),
+            default=body_profile(columns).size,
         )
     body_size = max(MIN_BODY_SIZE, min(body_size, ABS_MAX_SIZE))
 
     sizes: dict[int, float] = {
-        index: (body_size if block.kind != "title" else block.baseline_size)
+        index: (body_size if block.kind != "title" else title_size(body_size))
         for index, block in enumerate(page_plan.blocks)
         if block.status == "translated"
     }
@@ -1556,9 +1565,10 @@ def _solve_page(page_plan: PagePlan, measurer: TextMeasurer) -> None:
     """Pick one body size for the whole page, then lay its chains out.
 
     The search starts at the page's template baseline and shrinks the body copy
-    until every chain fits, down to the design's 6pt floor. A page that still
-    overflows falls back whole; a single dense paragraph is never shrunk alone
-    and no page ever grows an extra sheet.
+    until every chain fits, down to the design's 6pt floor; every heading
+    follows at one point above the body size the page settles on. A page that
+    still overflows falls back whole; a single dense paragraph is never shrunk
+    alone and no page ever grows an extra sheet.
     """
     translated = page_plan.translated_plans
     if not translated and not any(
@@ -1567,8 +1577,8 @@ def _solve_page(page_plan: PagePlan, measurer: TextMeasurer) -> None:
         return
     body_blocks = [block for block in translated if block.kind != "title"]
     baseline = min(
-        (block.baseline_size for block in (body_blocks or translated)),
-        default=DEFAULT_BODY_SIZE,
+        (block.baseline_size for block in body_blocks),
+        default=body_profile(page_plan.columns or PageColumns()).size,
     )
     high = max(MIN_BODY_SIZE, baseline)
     if solve_page_layout(page_plan, measurer, body_size=high, commit=False):

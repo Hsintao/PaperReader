@@ -41,7 +41,8 @@ def test_four_faces_are_registered_and_usable(tmp_path):
     assert fonts.serif(bold=True) == SERIF_BOLD_NAME
     assert fonts.sans() == SANS_MEDIUM_NAME
     assert fonts.sans(bold=True) == SANS_BOLD_NAME
-    # Body copy is the serif face and headings are the sans face.
+    # Body copy and headings are both the serif face; the sans pair ships as the
+    # bundled Hei family.
     assert fonts.name(False) == SERIF_REGULAR_NAME
     assert fonts.name(True) == SERIF_BOLD_NAME
     assert fonts.regular == SERIF_REGULAR_NAME

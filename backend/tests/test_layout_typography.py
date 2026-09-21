@@ -9,8 +9,9 @@ from app.services.layout_fit import (
     block_style,
     body_profile,
     title_profile,
+    title_size,
 )
-from app.services.layout_model import PageFrame, SourceChar, detect_page_columns
+from app.services.layout_model import PageColumns, PageFrame, SourceChar, detect_page_columns
 from app.services.mineru_layout import Paragraph, TextRun, Title
 
 
@@ -94,15 +95,18 @@ def test_full_width_title_does_not_create_a_third_column():
     assert len(columns.columns) == 2
 
 
-def test_title_levels_captions_and_footnotes_use_their_profile_sizes():
+def test_headings_are_song_regular_one_point_above_the_body_size():
     frame = _frame()
-    assert title_profile(1).size == pytest.approx(16.0)
-    assert title_profile(2).size == pytest.approx(13.0)
-    assert title_profile(3).size == pytest.approx(11.5)
-    assert title_profile(9).size == pytest.approx(11.5)
-    assert title_profile(1).serif is False
-    assert title_profile(1).bold is True
-    assert title_profile(3).bold is False
+    single = PageColumns(kind="single", columns=[frame.rect])
+    double = PageColumns(
+        kind="double",
+        columns=[(72.0, 0.0, 290.0, 792.0), (320.0, 0.0, 540.0, 792.0)],
+    )
+    assert title_profile(single).size == pytest.approx(11.5)
+    assert title_profile(double).size == pytest.approx(10.0)
+    assert title_profile(single).leading_ratio == pytest.approx(1.3)
+    assert title_profile(single).serif is True
+    assert title_profile(single).bold is False
 
     assert TypographyProfile.CAPTION.size == pytest.approx(8.0)
     assert TypographyProfile.CAPTION.leading_ratio == pytest.approx(1.3)
@@ -111,22 +115,73 @@ def test_title_levels_captions_and_footnotes_use_their_profile_sizes():
     assert TypographyProfile.AFFILIATION.size == pytest.approx(8.5)
 
     columns = detect_page_columns(frame, [])
-    single = body_profile(columns)
+    single_body = body_profile(columns)
 
     size, bold, leading_ratio, align, serif = block_style(
         frame, (72, 700, 540, 720), role="body", columns=columns, level=1
     )
-    assert size == pytest.approx(single.size)
+    assert size == pytest.approx(single_body.size)
     assert bold is False
-    assert leading_ratio == pytest.approx(single.leading_ratio)
+    assert leading_ratio == pytest.approx(single_body.leading_ratio)
     assert serif is True
 
-    size, bold, _, _, serif = block_style(
+    size, bold, leading_ratio, _, serif = block_style(
         frame, (72, 730, 540, 760), role="body", columns=columns, level=1, is_title=True
     )
-    assert size == pytest.approx(16.0)
-    assert bold is True
-    assert serif is False
+    assert size == pytest.approx(single_body.size + 1.0)
+    assert bold is False
+    assert leading_ratio == pytest.approx(1.3)
+    assert serif is True
+
+
+def test_heading_size_has_its_own_floor_and_ceiling():
+    assert title_size(10.5) == pytest.approx(11.5)
+    assert title_size(6.0) == pytest.approx(7.0)
+    assert title_size(4.0) == pytest.approx(7.0)
+    assert title_size(30.0) == pytest.approx(layout_fit.ABS_MAX_SIZE)
+
+
+def test_a_heading_tracks_the_page_body_size():
+    """A heading is one point above whatever body size the page settles on."""
+    measurer = layout_fit.TextMeasurer(require_cjk_font())
+
+    def plan(body_text: str, body_box) -> layout_fit.PagePlan:
+        frame = _frame()
+        heading = Title(
+            level=1,
+            text="1 引言",
+            source_text="1 Introduction",
+            page_index=0,
+            bbox=(72.0, 700.0, 400.0, 716.0),
+        )
+        body = Paragraph(
+            runs=[TextRun("body")],
+            page_index=0,
+            bbox=body_box,
+            source_text="body",
+        )
+        body.runs[0].text = body_text
+        return layout_fit.plan_page(frame, [heading, body], measurer=measurer)
+
+    shrunk = plan(
+        "这是一段很长的中文译文，需要整页缩小才能放下。" * 12,
+        (72.0, 20.0, 540.0, 40.0),
+    )
+    assert shrunk.status == "ok"
+    assert shrunk.body_size < 10.5
+    heading = next(block for block in shrunk.blocks if block.kind == "title")
+    body = next(block for block in shrunk.blocks if block.kind == "paragraph")
+    assert body.size == pytest.approx(shrunk.body_size)
+    assert heading.size == pytest.approx(shrunk.body_size + 1.0)
+    assert heading.size >= 7.0
+    assert heading.leading == pytest.approx(heading.size * 1.3)
+    assert heading.bold is False
+    assert heading.serif is True
+
+    roomy = plan("短译文。", (72.0, 300.0, 540.0, 320.0))
+    roomy_heading = next(block for block in roomy.blocks if block.kind == "title")
+    assert roomy.body_size == pytest.approx(10.5)
+    assert roomy_heading.size == pytest.approx(11.5)
 
 
 def test_leading_comes_from_the_template_not_the_source_line_pitch():

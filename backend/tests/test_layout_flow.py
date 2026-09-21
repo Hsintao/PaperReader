@@ -149,12 +149,12 @@ def test_a_full_width_heading_feeds_both_columns():
         source_rect=(72.0, 700.0, 540.0, 720.0),
         target=(72.0, 700.0, 540.0, 720.0),
         fragments=[Fragment(kind="text", text="1 引言")],
-        size=16.0,
-        baseline_size=16.0,
-        leading=16.0 * 1.2,
-        leading_ratio=1.2,
-        bold=True,
-        serif=False,
+        size=11.5,
+        baseline_size=11.5,
+        leading=11.5 * 1.3,
+        leading_ratio=1.3,
+        bold=False,
+        serif=True,
     )
     left = _body(1, (72.0, 600.0, 290.0, 620.0), "左栏。")
     right = _body(2, (320.0, 600.0, 540.0, 620.0), "右栏。")

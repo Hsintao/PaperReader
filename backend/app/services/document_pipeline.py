@@ -21,7 +21,10 @@ from app.services.annotation_render import ANNOTATION_REVISION, render_annotated
 from app.services.cjk_fonts import require_cjk_font
 from app.services.layout_fit import (
     MIN_BODY_SIZE,
+    MIN_TITLE_SIZE,
     NOTHING_TO_TRANSLATE,
+    TITLE_LEADING_RATIO,
+    TITLE_SIZE_BONUS,
     TextMeasurer,
     TypographyProfile,
     plan_document,
@@ -509,11 +512,9 @@ def _save_layout_plan(path: Path, plans: list, *, source: dict | None = None) ->
         "typography": {
             "body_single": TypographyProfile.BODY_SINGLE.size,
             "body_double": TypographyProfile.BODY_DOUBLE.size,
-            "title_levels": [
-                TypographyProfile.TITLE_1.size,
-                TypographyProfile.TITLE_2.size,
-                TypographyProfile.TITLE_3.size,
-            ],
+            "title_bonus": TITLE_SIZE_BONUS,
+            "title_min": MIN_TITLE_SIZE,
+            "title_leading": TITLE_LEADING_RATIO,
             "caption": TypographyProfile.CAPTION.size,
             "table_cell": TypographyProfile.TABLE_CELL.size,
             "footnote": TypographyProfile.FOOTNOTE.size,
