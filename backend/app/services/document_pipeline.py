@@ -21,6 +21,7 @@ from app.services.annotation_render import ANNOTATION_REVISION, render_annotated
 from app.services.cjk_fonts import require_cjk_font
 from app.services.layout_fit import (
     MIN_BODY_SIZE,
+    NOTHING_TO_TRANSLATE,
     TextMeasurer,
     TypographyProfile,
     plan_document,
@@ -806,7 +807,7 @@ def _record_planning_issues(record: DocumentRecord, plans: list, report) -> None
     for plan in plans:
         # "nothing to translate" is a property of the document, not a fallback:
         # the page never had anything to replace.
-        if plan.status == "original" and plan.reason != "nothing to translate on this page":
+        if plan.status == "original" and plan.reason != NOTHING_TO_TRANSLATE:
             _record_layout_issue(
                 record,
                 kind="page_original",

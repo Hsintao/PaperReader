@@ -74,6 +74,9 @@ _DEBUG_COLORS = {
 }
 
 
+NOTHING_TO_TRANSLATE = "nothing to translate on this page"
+
+
 class LayoutRenderError(RuntimeError):
     """Raised when too many pages fail to produce a usable document."""
 
@@ -81,6 +84,9 @@ class LayoutRenderError(RuntimeError):
 @dataclass
 class PageResult:
     index: int
+    # ``ok`` and ``masked`` carry a translation, ``original`` fell back to the
+    # source page, and ``source`` never had anything to translate (a
+    # bibliography page, for example) so it is not a fallback.
     status: str = "ok"
     reason: str = ""
     blocks: int = 0
@@ -95,7 +101,11 @@ class RenderReport:
 
     @property
     def failed(self) -> list[PageResult]:
-        return [page for page in self.pages if page.status not in {"ok", "masked"}]
+        return [page for page in self.pages if page.status == "original"]
+
+    @property
+    def source_only(self) -> list[PageResult]:
+        return [page for page in self.pages if page.status == "source"]
 
 
 class FormulaCrops:
@@ -444,8 +454,13 @@ def render_document(
             continue
         if plan.status != "ok":
             # A page whose plan is unusable keeps its own source content: one
-            # source page always yields exactly one output page.
-            result.status = "original"
+            # source page always yields exactly one output page. A page with
+            # nothing to translate was never a fallback, so it is not budgeted.
+            result.status = (
+                "source"
+                if plan.reason == NOTHING_TO_TRANSLATE
+                else "original"
+            )
             result.reason = plan.reason or "page layout unavailable"
             writer.add_page(source_page)
             report.pages.append(result)

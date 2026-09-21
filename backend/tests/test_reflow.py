@@ -242,3 +242,74 @@ def test_masked_overlay_keeps_bbox_anchor_when_removal_is_unclean(tmp_path, monk
     image = bitmap.to_pil().convert("L")
     assert image.getextrema()[0] < 128  # glyphs were actually drawn
     bitmap.close()
+
+
+def test_a_page_with_nothing_to_translate_is_not_a_fallback(tmp_path):
+    """A bibliography page keeps the source page and is not a failure."""
+    from app.services.layout_fit import NOTHING_TO_TRANSLATE
+
+    source = tmp_path / "source.pdf"
+    _source(source, ["Body paragraph."])
+    frames = layout_model.measure_pages(source)
+    empty = PagePlan(index=1, width=frames[1].width, height=frames[1].height)
+    empty.status = "original"
+    empty.reason = NOTHING_TO_TRANSLATE
+    crops = layout_render.prepare_formula_crops(source, frames, [], tmp_path / "c")
+    try:
+        output = tmp_path / "out.pdf"
+        report = layout_render.render_document(
+            source_pdf=source,
+            plans=[_ok_plan(frames[0]), empty],
+            frames=frames,
+            blocks=[],
+            output_pdf=output,
+            crops=crops,
+        )
+    finally:
+        crops.close()
+
+    assert [page.status for page in report.pages] == ["ok", "source"]
+    assert report.failed == []
+    assert report.source_only and report.source_only[0].index == 1
+    assert len(pypdf.PdfReader(str(output)).pages) == 2
+
+
+def test_many_bibliography_pages_still_publish(tmp_path):
+    """Source-only pages never exhaust the fallback budget."""
+    from app.services.layout_fit import NOTHING_TO_TRANSLATE
+
+    source = tmp_path / "source.pdf"
+    _source(source, ["Body paragraph."])
+    frames = layout_model.measure_pages(source)
+    plans = [_ok_plan(frames[0]), _failed_plan(frames[1])]
+    # Six extra source-only pages, as a long bibliography produces.
+    for index in range(2, 8):
+        page = PagePlan(index=index, width=612.0, height=792.0)
+        page.status = "original"
+        page.reason = NOTHING_TO_TRANSLATE
+        plans.append(page)
+        frames.append(layout_model.PageFrame(index=index, width=612.0, height=792.0))
+
+    writer = pypdf.PdfWriter()
+    for _ in range(len(frames)):
+        writer.add_blank_page(width=612, height=792)
+    padded = tmp_path / "padded.pdf"
+    with padded.open("wb") as handle:
+        writer.write(handle)
+
+    crops = layout_render.FormulaCrops(padded, tmp_path / "c")
+    try:
+        report = layout_render.render_document(
+            source_pdf=padded,
+            plans=plans,
+            frames=frames,
+            blocks=[],
+            output_pdf=tmp_path / "out.pdf",
+            crops=crops,
+        )
+    finally:
+        crops.close()
+
+    assert len(report.pages) == len(frames)
+    assert [page.status for page in report.pages].count("source") == 6
+    assert len(report.failed) == 1

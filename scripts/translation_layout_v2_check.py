@@ -32,6 +32,8 @@ import pypdfium2 as pdfium  # noqa: E402
 MIN_BODY_SIZE = 6.0
 MAX_FALLBACK_PAGES = 3
 MAX_FALLBACK_RATIO = 0.2
+# A page the parser found nothing translatable on is not a fallback.
+NOTHING_TO_TRANSLATE = "nothing to translate on this page"
 
 
 class CheckFailure(Exception):
@@ -75,12 +77,20 @@ def check_plan(plan: dict, page_count: int, failures: list[str]) -> dict:
         failures.append(
             f"layout plan covers {len(pages)} page(s), the PDF has {page_count}"
         )
-    original = [page for page in pages if page.get("status") == "original"]
-    if pages and len(original) == len(pages):
+    # A page with nothing to translate (a bibliography page) keeps the source
+    # page on purpose and is not a fallback.
+    fallbacks = [
+        page
+        for page in pages
+        if page.get("status") == "original"
+        and page.get("reason") != NOTHING_TO_TRANSLATE
+    ]
+    translatable = [page for page in pages if page.get("status") != "source"]
+    if pages and translatable and len(fallbacks) == len(translatable):
         failures.append("every page fell back to the original; the document must not publish")
-    if len(original) > MAX_FALLBACK_PAGES and len(original) >= MAX_FALLBACK_RATIO * len(pages):
+    if len(fallbacks) > MAX_FALLBACK_PAGES and len(fallbacks) >= MAX_FALLBACK_RATIO * max(1, len(pages)):
         failures.append(
-            f"{len(original)} of {len(pages)} pages fell back, past the failure budget"
+            f"{len(fallbacks)} of {len(pages)} pages fell back, past the failure budget"
         )
     for page in pages:
         if page.get("status") == "original" and not page.get("reason"):
@@ -108,7 +118,12 @@ def check_plan(plan: dict, page_count: int, failures: list[str]) -> dict:
                 )
     return {
         "pages": len(pages),
-        "original_pages": [page.get("index", 0) + 1 for page in original],
+        "original_pages": [page.get("index", 0) + 1 for page in fallbacks],
+        "source_only_pages": [
+            page.get("index", 0) + 1
+            for page in pages
+            if page.get("reason") == NOTHING_TO_TRANSLATE
+        ],
         "min_body_size": min(
             (page.get("body_size") or 0.0 for page in pages if page.get("body_size")),
             default=0.0,

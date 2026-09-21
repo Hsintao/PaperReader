@@ -42,6 +42,10 @@ from app.services.mineru_layout import (
 
 Rect = tuple[float, float, float, float]
 
+# A page the parser found nothing translatable on: it keeps the source page and
+# is not a layout fallback.
+NOTHING_TO_TRANSLATE = "nothing to translate on this page"
+
 DEFAULT_BODY_SIZE = 10.5      # single-column body baseline
 DOUBLE_COLUMN_BODY_SIZE = 9.0
 MIN_BODY_SIZE = 6.0           # design floor: the page falls back below this
@@ -1664,7 +1668,7 @@ def plan_page(
         cell.status == "translated" for cell in plan.cells
     ) and not any(caption.status == "translated" for caption in plan.captions):
         plan.status = "original"
-        plan.reason = "nothing to translate on this page"
+        plan.reason = NOTHING_TO_TRANSLATE
     return plan
 
 
