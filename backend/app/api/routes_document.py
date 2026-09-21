@@ -375,5 +375,5 @@ def locate_counterpart(
 def delete_document(
     document_id: str
 ) -> dict:
-    soft_delete_document(document_id)
-    return {"ok": True, "document_id": document_id}
+    removed = soft_delete_document(document_id)
+    return {"ok": True, "document_id": document_id, "removed": removed}

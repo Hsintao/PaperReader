@@ -506,8 +506,56 @@ def mark_document_failed(document_id: str, stage: str, message: str) -> None:
         pass
 
 
-def soft_delete_document(document_id: str) -> None:
+def purge_document_artifacts(record: DocumentRecord) -> list[str]:
+    """Delete everything the pipeline derived for a document.
+
+    That is the document's whole output directory (translated and annotated
+    PDFs, layout plan, alignment index, checkpoints, crops and previews) plus
+    the source file uploaded for it. Returns a human-readable line per removed
+    path, so the caller can report what happened.
+    """
+    import shutil
+
+    from app.core.config import settings
+
+    removed: list[str] = []
+
+    output_dir = settings.output_dir / record.document_id
+    if output_dir.is_dir():
+        try:
+            shutil.rmtree(output_dir)
+        except OSError as exc:
+            removed.append(f"could not remove output dir {output_dir.name}: {exc}")
+        else:
+            removed.append(f"removed output dir {output_dir.name}")
+
+    # The upload is removed only when it really is this document's own file in
+    # the upload directory: a record may point anywhere (tests, fixtures).
+    source = Path(record.source_path)
+    try:
+        inside_uploads = source.parent.resolve() == settings.upload_dir.resolve()
+    except OSError:
+        inside_uploads = False
+    if inside_uploads and source.is_file():
+        try:
+            size = source.stat().st_size
+        except OSError:
+            size = 0
+        try:
+            source.unlink()
+        except OSError as exc:
+            removed.append(f"could not remove source {source.name}: {exc}")
+        else:
+            removed.append(f"removed source {source.name} ({size} B)")
+
+    return removed
+
+
+def soft_delete_document(document_id: str) -> list[str]:
+    """Remove a document from the library and delete its derived artifacts."""
     record = require_document(document_id)
+    removed = purge_document_artifacts(record)
     record.deleted_at = _utcnow()
     save_document(record)
     DOCUMENTS.pop(document_id, None)
+    return removed
