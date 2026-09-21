@@ -403,9 +403,14 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
   }, [favorites, persistPreferences])
 
   const handleDelete = useCallback(async (docId: string) => {
-    if (!window.confirm('删除这条历史记录？对应文件不会从系统默认输出目录移除。')) return
+    if (
+      !window.confirm(
+        '删除这条历史记录？对应的译文 PDF、原文标注 PDF、布局计划等产物，以及上传的原始 PDF，都会从输出目录一并删除。'
+      )
+    )
+      return
     try {
-      await deleteDocument(docId)
+      const result = await deleteDocument(docId)
       setDocCache((prev) => {
         const next = { ...prev }
         delete next[docId]
@@ -416,6 +421,9 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
       void persistPreferences({ favorites: nextFavorites })
       setSummaries((prev) => prev.filter((item) => item.document_id !== docId))
       setActiveId((prev) => (prev === docId ? undefined : prev))
+      // Surface a cleanup that could not finish instead of failing silently.
+      const problems = (result?.removed ?? []).filter((line) => line.startsWith('could not'))
+      if (problems.length) setNotice(`记录已删除，但有文件未能移除：${problems.join('；')}`)
     } catch (e: any) {
       alert(`删除失败：${e?.message ?? String(e)}`)
     }

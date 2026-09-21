@@ -329,8 +329,15 @@ export async function listDocuments(): Promise<DocumentSummary[]> {
   return apiFetch('/api/documents')
 }
 
-export async function deleteDocument(documentId: string): Promise<void> {
-  await apiFetch(`/api/document/${documentId}`, { method: 'DELETE' })
+export type DeleteDocumentResult = {
+  ok: boolean
+  document_id: string
+  // One line per path the server removed, including any it could not remove.
+  removed: string[]
+}
+
+export async function deleteDocument(documentId: string): Promise<DeleteDocumentResult> {
+  return apiFetch(`/api/document/${documentId}`, { method: 'DELETE' })
 }
 
 export async function renameDocument(documentId: string, name: string): Promise<DocumentStatus> {
