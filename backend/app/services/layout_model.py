@@ -94,22 +94,25 @@ class PageColumns:
 
 # Column detection works on body blocks only: a full-width title or abstract
 # spans both columns without being a column of its own.
-_COLUMN_OVERLAP_RATIO = 0.6
 _COLUMN_MIN_WIDTH_RATIO = 0.2
-_COLUMN_MIN_BLOCKS = 1
-_COLUMN_BAND_TOLERANCE = 0.15
+_COLUMN_FULL_WIDTH_RATIO = 0.75
+_COLUMN_MIN_GUTTER = 6.0
 
 
 def detect_page_columns(frame: PageFrame, blocks: Sequence[Block]) -> PageColumns:
     """Classify a page as single-, double- or mixed-column.
 
-    Body block horizontal ranges are clustered into bands. Two stable,
-    non-overlapping bands that each hold substantial text make a double-column
-    page; a single band is single-column. Pages with both a full-width band and
-    two narrower bands are mixed, and the narrower bands are the columns.
+    Sweep horizontal coverage across the page's middle: on a two-column page
+    the gutter is the widest stretch that almost no body block crosses, and
+    text piles up on both sides of it. Blocks that do cross it (a wide
+    equation, a table row the parser split into cells) are spanners and never
+    take part in either column's extent; full-width blocks only mark the page
+    as mixed. Anything without a real gutter is single-column.
     """
     frame_rect = frame.rect
+    frame_width = max(1.0, frame.width)
     ranges: list[tuple[float, float]] = []
+    has_full_width = False
     for block in blocks:
         if not isinstance(block, (Paragraph, ListBlock)):
             continue
@@ -119,63 +122,60 @@ def detect_page_columns(frame: PageFrame, blocks: Sequence[Block]) -> PageColumn
         width = box[2] - box[0]
         if width <= 0:
             continue
+        if width >= _COLUMN_FULL_WIDTH_RATIO * frame_width:
+            has_full_width = True
+            continue
         ranges.append((box[0], box[2]))
     if not ranges:
         return PageColumns(kind="single", columns=[frame_rect])
 
-    bands: list[list[tuple[float, float]]] = []
-    for start, end in sorted(ranges):
-        placed = False
-        for band in bands:
-            band_start = min(item[0] for item in band)
-            band_end = max(item[1] for item in band)
-            narrower = min(band_end - band_start, end - start)
-            overlap = min(band_end, end) - max(band_start, start)
-            if narrower > 0 and overlap / narrower >= _COLUMN_OVERLAP_RATIO:
-                band.append((start, end))
-                placed = True
-                break
-        if not placed:
-            bands.append([(start, end)])
+    lo, hi = 0.2 * frame_width, 0.8 * frame_width
+    events: list[tuple[float, int]] = []
+    for start, end in ranges:
+        events.append((start, 1))
+        events.append((end, -1))
+    events.sort()
+    segments: list[tuple[float, float, int]] = []
+    coverage = 0
+    previous: float | None = None
+    for x, delta in events:
+        if previous is not None and x > previous:
+            start, end = max(previous, lo), min(x, hi)
+            if end > start:
+                segments.append((start, end, coverage))
+        coverage += delta
+        previous = x
+    if not segments:
+        return PageColumns(kind="single", columns=[frame_rect])
 
-    frame_width = max(1.0, frame.width)
+    lowest = min(count for _, _, count in segments)
+    gap_start, gap_end, _ = max(
+        (segment for segment in segments if segment[2] == lowest),
+        key=lambda segment: segment[1] - segment[0],
+    )
+    if gap_end - gap_start < _COLUMN_MIN_GUTTER:
+        return PageColumns(kind="single", columns=[frame_rect])
+
+    left = [r for r in ranges if r[1] <= gap_start + 1.0]
+    right = [r for r in ranges if r[0] >= gap_end - 1.0]
+    if not left or not right:
+        return PageColumns(kind="single", columns=[frame_rect])
+
     min_width = _COLUMN_MIN_WIDTH_RATIO * frame_width
-    substantial = [
-        band
-        for band in bands
-        if len(band) >= _COLUMN_MIN_BLOCKS
-        and max(item[1] for item in band) - min(item[0] for item in band) >= min_width
+    left_x0 = min(r[0] for r in left)
+    left_x1 = max(r[1] for r in left)
+    right_x0 = min(r[0] for r in right)
+    right_x1 = max(r[1] for r in right)
+    if left_x1 - left_x0 < min_width or right_x1 - right_x0 < min_width:
+        return PageColumns(kind="single", columns=[frame_rect])
+
+    spanners = len(ranges) - len(left) - len(right)
+    kind = "mixed" if (has_full_width or spanners) else "double"
+    columns: list[Rect] = [
+        (left_x0, frame_rect[1], left_x1, frame_rect[3]),
+        (right_x0, frame_rect[1], right_x1, frame_rect[3]),
     ]
-    substantial.sort(key=lambda band: min(item[0] for item in band))
-
-    if len(substantial) < 2:
-        return PageColumns(kind="single", columns=[frame_rect])
-
-    # Keep only bands that are narrow enough to be one column of a two-column
-    # layout; a full-width band means the page also has single-column text.
-    full_width = [
-        band
-        for band in substantial
-        if max(item[1] for item in band) - min(item[0] for item in band)
-        >= 0.75 * frame_width
-    ]
-    column_bands = [band for band in substantial if band not in full_width]
-    if len(column_bands) < 2:
-        return PageColumns(kind="single", columns=[frame_rect])
-
-    bands_rects: list[Rect] = []
-    for band in column_bands:
-        x0 = min(item[0] for item in band)
-        x1 = max(item[1] for item in band)
-        bands_rects.append((x0, frame_rect[1], x1, frame_rect[3]))
-    bands_rects.sort(key=lambda rect: rect[0])
-
-    left, right = bands_rects[0], bands_rects[-1]
-    if right[0] < left[2] - 1.0:
-        return PageColumns(kind="single", columns=[frame_rect])
-
-    kind = "mixed" if full_width else "double"
-    return PageColumns(kind=kind, columns=[left, right])
+    return PageColumns(kind=kind, columns=columns)
 
 
 def _font_is_bold(textpage, index: int, buffer=None) -> bool:

@@ -201,7 +201,8 @@ def test_a_page_that_cannot_fit_at_six_points_falls_back_whole():
 
 
 def test_a_long_first_paragraph_does_not_push_the_rest_off_the_page():
-    """A column of source paragraphs is anchored, not stacked."""
+    """A paragraph too long for its column reverts the page instead of
+    printing its ink over the following blocks."""
     frame = _frame()
     blocks = [
         _body(0, (72.0, 600.0, 300.0, 730.0), "第一段译文。" * 80),
@@ -211,13 +212,60 @@ def test_a_long_first_paragraph_does_not_push_the_rest_off_the_page():
     ]
     plan = _page_plan(frame, blocks)
     measurer = layout_fit.TextMeasurer(require_cjk_font())
-    solve_page_layout(plan, measurer)
+    fits = solve_page_layout(plan, measurer)
+
+    assert not fits
+    assert plan.status == "original"
+    for block in blocks:
+        assert block.target == block.source_rect
+
+
+def test_a_translation_that_would_overlap_ink_shrinks_instead():
+    """A paragraph that outgrows its gap at the template size must shrink the
+    page, not print over the next block."""
+    frame = _frame()
+    first = _body(
+        0,
+        (72.0, 640.0, 300.0, 730.0),
+        "第一段的中文译文比原文长出不少，需要借掉下方的空白。" * 6,
+    )
+    second = _body(1, (72.0, 560.0, 300.0, 630.0), "第二段译文。")
+    plan = _page_plan(frame, blocks=[first, second])
+    measurer = layout_fit.TextMeasurer(require_cjk_font())
+
+    assert not solve_page_layout(plan, measurer, body_size=10.5, commit=False)
+    assert solve_page_layout(plan, measurer, body_size=9.0)
 
     assert plan.status == "ok"
-    # Every block keeps its own source top edge, so the last one stays on page.
+    assert first.target[3] == first.source_rect[3]
+    assert first.target[1] > second.target[3]
+    assert second.target[3] == second.source_rect[3]
+
+
+def test_side_by_side_blocks_in_one_chain_do_not_count_as_overlap():
+    """A row of figure labels shares a column lane while sitting side by
+    side; only x-overlapping ink constrains the solve."""
+    frame = _frame()
+    blocks = [
+        _body(0, (262.5, 660.5, 348.8, 670.0), "中等尺度增强"),
+        _body(1, (167.7, 660.5, 247.9, 669.2), "粗尺度增强"),
+        _body(2, (72.0, 400.0, 290.0, 420.0), "正文段落。"),
+    ]
+    plan = _page_plan(frame, blocks)
+    plan.columns = layout_model.PageColumns(
+        kind="double",
+        columns=[(52.0, 0.0, 296.2, 792.0), (316.4, 0.0, 560.0, 792.0)],
+    )
+    measurer = layout_fit.TextMeasurer(require_cjk_font())
+
+    chains = build_flow_chains(frame, plan, plan.columns)
+    labels = [item for chain in chains for item in chain.items[:2]]
+    assert len(chains) >= 1 and len(labels) >= 2
+
+    assert solve_page_layout(plan, measurer)
+    assert plan.status == "ok"
     for block in blocks:
         assert block.target[3] == block.source_rect[3]
-        assert block.target[1] >= 0.0
 
 
 def test_a_paragraph_may_grow_into_the_gap_without_dragging_the_column():

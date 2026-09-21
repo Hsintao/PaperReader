@@ -95,6 +95,35 @@ def test_full_width_title_does_not_create_a_third_column():
     assert len(columns.columns) == 2
 
 
+def test_spanner_blocks_do_not_hide_the_columns():
+    """A label row split into cells and a wide equation line bridge the
+    gutter; the two text columns underneath must still be found."""
+    frame = _frame()
+    blocks = [
+        _body(72, 400, 296, 700),
+        _body(72, 100, 296, 380),
+        _body(316, 400, 560, 700),
+        _body(316, 100, 560, 380),
+        # A figure's label row that the parser split into cells.
+        _body(167, 720, 248, 732),
+        _body(262, 720, 349, 732),
+        _body(369, 720, 439, 732),
+        _body(472, 720, 533, 732),
+        # A wide line bridging both columns.
+        _body(87, 705, 525, 716),
+        # A full-width caption.
+        _body(52, 60, 560, 80),
+    ]
+
+    columns = detect_page_columns(frame, blocks)
+    assert columns.kind == "mixed"
+    left, right = sorted(columns.columns)
+    assert left[0] == pytest.approx(72, abs=6)
+    assert left[2] == pytest.approx(296, abs=6)
+    assert right[0] == pytest.approx(316, abs=6)
+    assert right[2] == pytest.approx(560, abs=6)
+
+
 def test_headings_are_song_regular_one_point_above_the_body_size():
     frame = _frame()
     single = PageColumns(kind="single", columns=[frame.rect])

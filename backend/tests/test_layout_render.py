@@ -174,7 +174,7 @@ def test_translation_uses_whitespace_below_before_shrinking(tmp_path):
     assert plan.target[1] < plan.source_rect[1]  # the box grew downwards
 
 
-def test_block_grows_into_the_gap_above_its_neighbour(tmp_path):
+def test_block_shrinks_clear_of_its_neighbour(tmp_path):
     source = tmp_path / "tight.pdf"
     _source(source, ["Line one of a bounded paragraph that must fit."], footer="1")
     frames = layout_model.measure_pages(source)
@@ -204,11 +204,11 @@ def test_block_grows_into_the_gap_above_its_neighbour(tmp_path):
 
     plan = plans[0].blocks[0]
     assert plan.status == "translated"
-    # The page keeps its template size and the block grows down to the
-    # neighbour instead of shrinking on its own.
-    assert plan.size == plan.baseline_size
+    # The block keeps its own top and grows down toward the neighbour; the
+    # page sheds a little size so the two texts never print over each other.
     assert plan.target[3] == plan.source_rect[3]
-    assert plan.target[1] <= 680.5
+    assert plan.target[1] >= neighbour.bbox[3] - 6.0
+    assert plan.size < plan.baseline_size
 
 
 def test_missing_inline_formula_geometry_keeps_the_formula(tmp_path):
@@ -233,14 +233,14 @@ def test_missing_inline_formula_geometry_keeps_the_formula(tmp_path):
         crops.close()
 
     plan = plans[0].blocks[0]
-    # A formula the parser reported without a box is located on the page, so it
+    # A formula the parser reported without a box still gets an image, so it
     # stays in the translated paragraph instead of being dropped.
     formula = next(
         fragment for fragment in plan.fragments if fragment.kind == "formula"
     )
     assert formula.image_key
     assert measurer.has_image(formula.image_key)
-    assert formula.fallback in {"recovered_bbox", "line_crop"}
+    assert formula.fallback in {"recovered_bbox", "line_crop", "latex_render"}
     assert any(fragment.kind == "text" for fragment in plan.fragments)
 
 

@@ -194,6 +194,44 @@ def test_extract_structured_from_pdf_somark_happy_path(tmp_path):
     assert progress[-1] == (0.95, "SoMark 解析完成")
 
 
+def test_paragraph_inline_math_is_typed(tmp_path):
+    """Inline ``$...$`` in prose becomes equation_inline items, not plain text.
+
+    SoMark types display equations as blocks but embeds inline math in the
+    text; without the split, `_has_typed_math` sees the interline blocks and
+    disables bare-dollar splitting, so the LaTeX would reach the rendered PDF
+    as literal ``$...$`` text.
+    """
+    pdf = tmp_path / "demo.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake")
+
+    page = _page()
+    page["blocks"][3]["content"] = (
+        r"The kernels $G _ {\sigma _ {s}}$ and $G _ {\sigma _ {r}}$ are Gaussians."
+    )
+    payload = _success_payload()
+    payload["data"]["result"]["outputs"]["json"]["pages"] = [page]
+
+    submit = _json_resp(200, {"code": 0, "data": {"task_id": "T1", "status": "QUEUING"}})
+    success = _json_resp(200, payload)
+    image = _bytes_resp(200, b"png-bytes")
+
+    with patch.object(somark_service.requests, "post", side_effect=[submit, success]), \
+         patch.object(somark_service.requests, "get", return_value=image):
+        result = somark_service.extract_structured_from_pdf_somark(
+            str(pdf), tmp_path / "out", config=_config()
+        )
+
+    paragraph = next(b for b in result.content_blocks[0] if b["type"] == "paragraph")
+    assert paragraph["content"]["paragraph_content"] == [
+        {"type": "text", "content": "The kernels "},
+        {"type": "equation_inline", "content": r"G _ {\sigma _ {s}}"},
+        {"type": "text", "content": " and "},
+        {"type": "equation_inline", "content": r"G _ {\sigma _ {r}}"},
+        {"type": "text", "content": " are Gaussians."},
+    ]
+
+
 def test_unreferenced_caption_block_keeps_its_text(tmp_path):
     """A caption no figure claims is emitted as text instead of disappearing."""
     pdf = tmp_path / "demo.pdf"

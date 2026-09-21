@@ -21,6 +21,7 @@ from urllib.parse import unquote, urlparse
 import requests
 
 from app.core.config import settings
+from app.services.mineru_layout import InlineMath, _split_text_at_math
 from app.services.mineru_service import MinerUResult
 
 
@@ -263,6 +264,23 @@ def _caption_text(block: dict, captions: dict[int, str]) -> str:
     return " ".join(part for part in parts if part).strip()
 
 
+def _paragraph_items(text: str) -> list[dict]:
+    """Split prose from inline math so the paragraph reads as typed content.
+
+    SoMark types display equations as their own blocks but leaves inline math
+    as ``$...$`` inside the text. Emitting it as ``equation_inline`` items
+    keeps it out of the translation layer and lets the renderer lift the
+    formula from the source page, exactly as MinerU's typed output does.
+    """
+    items: list[dict] = []
+    for run in _split_text_at_math(text, split_bare_dollars=True):
+        if isinstance(run, InlineMath):
+            items.append({"type": "equation_inline", "content": run.latex})
+        else:
+            items.append({"type": "text", "content": run.text})
+    return items
+
+
 def _convert_block(
     block: dict,
     kind: str,
@@ -326,7 +344,7 @@ def _convert_block(
     return {
         "type": "paragraph",
         "bbox": bbox,
-        "content": {"paragraph_content": [{"type": "text", "content": text}]},
+        "content": {"paragraph_content": _paragraph_items(text)},
     }
 
 

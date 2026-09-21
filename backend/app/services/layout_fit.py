@@ -13,6 +13,7 @@ fall back to the original page.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import re
 from dataclasses import dataclass, field
@@ -478,10 +479,17 @@ class TextMeasurer:
         align: str,
         serif: bool = True,
     ) -> Paragraph:
-        return Paragraph(
+        paragraph = Paragraph(
             self.markup(fragments, size) or " ",
             self.style(size, leading, bold=bold, align=align, serif=serif),
         )
+        # reportlab's CJK breaker runs ord() on the glyph that overflows the
+        # line, and an inline image's frag text is empty. The draw path never
+        # paints an image frag's text, so a placeholder space is invisible.
+        for frag in paragraph.frags:
+            if getattr(frag, "cbDefn", None) is not None and not frag.text:
+                frag.text = " "
+        return paragraph
 
     def measure(
         self,
@@ -512,14 +520,27 @@ def formula_key(page_index: int, bbox: Rect | None) -> str:
     return f"{page_index}:{bbox[0]:.1f}:{bbox[1]:.1f}:{bbox[2]:.1f}:{bbox[3]:.1f}"
 
 
+def latex_formula_key(latex: str) -> str:
+    """Image key for a formula typeset from its LaTeX rather than cropped.
+
+    Identical LaTeX shares one rendered image, so the key derives from the
+    content instead of a position the parser never reported.
+    """
+    digest = hashlib.sha1((latex or "").encode("utf-8")).hexdigest()[:16]
+    return f"latex:{digest}"
+
+
 def _formula_fragment(page_index: int, run: InlineMath) -> Fragment:
-    if not run.bbox:
-        fallback = ""
-    else:
+    if run.bbox:
+        image_key = formula_key(page_index, run.bbox)
         fallback = getattr(run, "fallback", "") or "exact_crop"
+    else:
+        # No source geometry: the image is typeset from the reported LaTeX.
+        image_key = latex_formula_key(getattr(run, "latex", ""))
+        fallback = getattr(run, "fallback", "") or "latex_render"
     return Fragment(
         kind="formula",
-        image_key=formula_key(page_index, run.bbox),
+        image_key=image_key,
         source_bbox=run.bbox,
         fallback=fallback,
     )
@@ -885,8 +906,8 @@ def resolve_formula_fragments(
     """Give every geometry-less inline formula a croppable box.
 
     Tried in order: the box recovered from the surrounding text spans, then the
-    source line that holds the formula. Returns the fallback name that worked,
-    or None when the formula cannot be located at all.
+    source line that holds a known position. Returns the fallback name that
+    worked, or None when the formula cannot be located at all.
     """
     runs = list(getattr(block, "runs", []) or [])
     resolved = "recovered_bbox"
@@ -896,10 +917,9 @@ def resolve_formula_fragments(
         run = runs[run_index] if 0 <= run_index < len(runs) else None
         bbox = recover_inline_formula_box(frame, block, run_index)
         mode = "recovered_bbox"
-        if bbox is None:
-            bbox = source_line_box(
-                frame, block, fragment.source_bbox or getattr(run, "bbox", None)
-            )
+        anchor = fragment.source_bbox or getattr(run, "bbox", None)
+        if bbox is None and anchor is not None:
+            bbox = source_line_box(frame, block, anchor)
             mode = "line_crop"
         if bbox is None:
             return None
@@ -1480,6 +1500,7 @@ def solve_page_layout(
     for chain in chains:
         cursor = chain.column_rect[3]
         floor = _chain_floor(chain)
+        placed: list[tuple[float, float, float]] = []
         for item in chain.items:
             if item.caption:
                 caption = page_plan.captions[item.caption_index]
@@ -1498,6 +1519,14 @@ def solve_page_layout(
                     fits = False
                 if top > cursor + FIT_EPSILON:
                     fits = False
+                pad = max(0.0, (caption.leading - caption.size) * 0.5)
+                for prev_x0, prev_x1, prev_ink_bottom in placed:
+                    if (
+                        min(prev_x1, item.source_rect[2])
+                        > max(prev_x0, item.source_rect[0]) + FIT_EPSILON
+                        and prev_ink_bottom < top - pad - FIT_EPSILON
+                    ):
+                        fits = False
                 caption_targets[item.caption_index] = (
                     item.source_rect[0],
                     bottom,
@@ -1505,6 +1534,7 @@ def solve_page_layout(
                     top,
                 )
                 cursor = bottom
+                placed.append((item.source_rect[0], item.source_rect[2], bottom + pad))
                 continue
             block = page_plan.blocks[item.block_plan_index]
             size = sizes[item.block_plan_index]
@@ -1527,6 +1557,18 @@ def solve_page_layout(
             bottom = top - height
             if bottom < floor - FIT_EPSILON:
                 fits = False
+            # Growing into the gap below stops where the ink of any earlier
+            # item sharing its x-range starts: a line box keeps up to half a
+            # line of padding on each side, and only ink printing over ink
+            # means the page must shrink.
+            pad = max(0.0, size * (block.leading_ratio - 1.0) * 0.5)
+            for prev_x0, prev_x1, prev_ink_bottom in placed:
+                if (
+                    min(prev_x1, item.source_rect[2])
+                    > max(prev_x0, item.source_rect[0]) + FIT_EPSILON
+                    and prev_ink_bottom < top - pad - FIT_EPSILON
+                ):
+                    fits = False
             targets[item.block_plan_index] = (
                 item.source_rect[0],
                 bottom,
@@ -1537,6 +1579,7 @@ def solve_page_layout(
             # text that may hang below it: a paragraph is allowed to grow into
             # the gap underneath without dragging the rest of the column down.
             cursor = top - item.min_gap_before
+            placed.append((item.source_rect[0], item.source_rect[2], bottom + pad))
 
     if not fits:
         if commit:

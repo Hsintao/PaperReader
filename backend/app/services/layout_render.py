@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pypdf
 import pypdfium2 as pdfium
+from PIL import Image as PILImage
 from reportlab.pdfgen import canvas as pdf_canvas
 
 from app.core.config import settings
@@ -40,8 +41,8 @@ from app.services.layout_fit import (
     current_text_of,
     formula_key,
     fragments_of,
+    latex_formula_key,
     recover_inline_formula_box,
-    source_line_box,
     source_text_of,
 )
 from app.services.layout_model import PageFrame, SourceChar, lost_regions, measure_pages
@@ -109,7 +110,7 @@ class RenderReport:
 
 
 class FormulaCrops:
-    """Raster crops of inline formulas, taken from the source page."""
+    """Inline formula images: crops of the source page, or typeset LaTeX."""
 
     def __init__(self, source_pdf: Path, cache_dir: Path):
         self.source_pdf = Path(source_pdf)
@@ -122,6 +123,22 @@ class FormulaCrops:
         if self._document is None:
             self._document = pdfium.PdfDocument(str(self.source_pdf))
         return self._document[index]
+
+    def render_latex(self, key: str, latex: str) -> str:
+        """Typeset a formula the parser reported without a source box."""
+        if not key or not latex.strip():
+            return ""
+        if key in self.paths:
+            return self.paths[key]
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        target = self.cache_dir / f"{_safe_key(key)}.png"
+        try:
+            pixel_width, pixel_height = _render_latex_image(latex, target)
+        except Exception:
+            return ""
+        self.paths[key] = str(target)
+        self.aspects[key] = (pixel_width / pixel_height) if pixel_height else 1.0
+        return self.paths[key]
 
     def crop(self, key: str, page_index: int, bbox: Rect | None) -> str:
         if not key or bbox is None:
@@ -165,6 +182,30 @@ def _safe_key(key: str) -> str:
     return re.sub(r"[^0-9A-Za-z]+", "_", key).strip("_")
 
 
+def _render_latex_image(latex: str, target: Path) -> tuple[int, int]:
+    """Typeset a formula with matplotlib's mathtext; no TeX install needed.
+
+    Parsers often pad sub- and superscripts with spaces (``_ {s}``), which
+    mathtext does not read as a script, so those are collapsed first.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    matplotlib.rcParams["mathtext.fontset"] = "cm"
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    cleaned = re.sub(r"([_^])\s*{", r"\1{", latex.strip())
+    figure = Figure(figsize=(1, 1))
+    FigureCanvasAgg(figure)
+    figure.text(0, 0, f"${cleaned}$", fontsize=10)
+    figure.savefig(
+        target, dpi=300, bbox_inches="tight", pad_inches=0.02, transparent=True
+    )
+    with PILImage.open(target) as image:
+        return image.size
+
+
 def prepare_formula_crops(
     source_pdf: Path, frames: list[PageFrame], blocks: list[Block], cache_dir: Path
 ) -> FormulaCrops:
@@ -184,17 +225,17 @@ def prepare_formula_crops(
             if not isinstance(run, InlineMath) or run.bbox:
                 continue
             bbox = recover_inline_formula_box(frame, block, run_index)
-            mode = "recovered_bbox"
-            if bbox is None:
-                bbox = source_line_box(frame, block, None)
-                mode = "line_crop"
-            if bbox is None:
+            if bbox is not None:
+                # Record the recovered box on the run itself: the plan then
+                # names the same crop instead of resolving the formula again.
+                run.bbox = bbox
+                run.fallback = "recovered_bbox"
+                crops.crop(formula_key(page_index, bbox), page_index, bbox)
                 continue
-            # Record the recovered box on the run itself: the plan then names
-            # the same crop instead of resolving the formula a second time.
-            run.bbox = bbox
-            run.fallback = mode
-            crops.crop(formula_key(page_index, bbox), page_index, bbox)
+            # The gap search only bounds formulas whose glyphs are absent from
+            # the text layer; otherwise the reported LaTeX is typeset directly.
+            if crops.render_latex(latex_formula_key(run.latex), run.latex):
+                run.fallback = "latex_render"
     return crops
 
 

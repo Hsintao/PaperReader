@@ -382,7 +382,7 @@ def _extract_references_from_text(text: str) -> list[ReferenceEntry]:
     return refs
 
 
-_EXTRACTION_CHECKPOINT_VERSION = "pdf-extraction-v2"
+_EXTRACTION_CHECKPOINT_VERSION = "pdf-extraction-v3"
 
 
 def _source_digest(path: Path) -> str:

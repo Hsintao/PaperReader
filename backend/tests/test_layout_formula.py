@@ -1,5 +1,7 @@
 """Inline and display formulas survive translation in every fallback mode."""
 
+from pathlib import Path
+
 import pypdf
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas as pdf_canvas
@@ -125,12 +127,13 @@ def test_missing_geometry_is_recovered_from_the_surrounding_text(tmp_path):
     assert kinds.index("formula") not in (0, len(kinds) - 1)
 
 
-def test_line_crop_keeps_the_formula_when_the_gap_cannot_be_bounded(tmp_path):
+def test_unlocatable_formula_is_typeset_from_its_latex(tmp_path):
     source = tmp_path / "line.pdf"
     _source(source, [("Before", 72), ("after", 130)])
     frames = layout_model.measure_pages(source)
-    # The paragraph box does not reach the formula, so the gap cannot be
-    # bounded and the formula falls back to the source line that holds it.
+    # The translation reached the block before the crops were prepared, so the
+    # gap between the source words cannot be matched to the runs any more; the
+    # formula is typeset from its reported LaTeX instead of cropping text.
     block = Paragraph(
         runs=[
             TextRun(text="Before "),
@@ -146,7 +149,7 @@ def test_line_crop_keeps_the_formula_when_the_gap_cannot_be_bounded(tmp_path):
 
     crops = layout_render.prepare_formula_crops(source, frames, [block], tmp_path / "c")
     try:
-        assert crops.paths, "the source line must be cropped as the fallback"
+        assert crops.paths, "the LaTeX render must produce an image"
         measurer = layout_fit.TextMeasurer(
             require_cjk_font(), crops.paths, crops.aspects, crops.crop
         )
@@ -156,15 +159,15 @@ def test_line_crop_keeps_the_formula_when_the_gap_cannot_be_bounded(tmp_path):
 
     plan = plans[0].blocks[0]
     assert plan.status == "translated"
-    assert plan.formula_fallback == "line_crop"
+    assert plan.formula_fallback == "latex_render"
     formula = next(
         fragment for fragment in plan.fragments if fragment.kind == "formula"
     )
-    assert formula.fallback == "line_crop"
+    assert formula.fallback == "latex_render"
     assert formula.image_key
     assert measurer.has_image(formula.image_key)
-    # The whole source line is kept, so the formula cannot be lost.
-    assert formula.source_bbox[2] - formula.source_bbox[0] > 60.0
+    # No source geometry is claimed: the image was typeset, not cropped.
+    assert formula.source_bbox is None
 
 
 def test_formula_without_any_geometry_keeps_the_whole_block_original(tmp_path):
@@ -195,6 +198,23 @@ def test_formula_without_any_geometry_keeps_the_whole_block_original(tmp_path):
     plan = plans[0].blocks[0]
     assert plan.status == "original"
     assert plan.formula_fallback == "original_block"
+
+
+def test_render_latex_typesets_and_caches(tmp_path):
+    source = tmp_path / "latex.pdf"
+    _source(source, [("Body", 72)])
+    crops = layout_render.FormulaCrops(source, tmp_path / "c")
+    try:
+        key = layout_fit.latex_formula_key(r"G _ {\sigma _ {s}}")
+        path = crops.render_latex(key, r"G _ {\sigma _ {s}}")
+        assert path
+        assert Path(path).is_file()
+        assert crops.aspects[key] > 0
+        # Same content renders once; empty input never produces an image.
+        assert crops.render_latex(key, r"G _ {\sigma _ {s}}") == path
+        assert crops.render_latex(layout_fit.latex_formula_key(""), "") == ""
+    finally:
+        crops.close()
 
 
 def test_display_math_is_an_immutable_obstacle(tmp_path):
@@ -284,3 +304,33 @@ def test_rendered_page_keeps_the_formula_visible(tmp_path):
 
     assert output.is_file()
     assert len(pypdf.PdfReader(str(output)).pages) == 1
+
+
+def test_cjk_paragraph_with_inline_formulas_measures_at_every_size(tmp_path):
+    """reportlab's CJK breaker runs ord() on the glyph that overflows the
+    line, and an inline image's glyph text is empty; the measurer then read
+    the block as unplaceable and the whole page shrank to the 6pt floor."""
+    from PIL import Image as PILImage
+
+    narrow = tmp_path / "narrow.png"
+    PILImage.new("RGBA", (34, 33), (0, 0, 0, 255)).save(narrow)
+    wide = tmp_path / "wide.png"
+    PILImage.new("RGBA", (420, 33), (0, 0, 0, 255)).save(wide)
+
+    measurer = layout_fit.TextMeasurer(
+        require_cjk_font(),
+        {"narrow": str(narrow), "wide": str(wide)},
+        {"narrow": 34 / 33, "wide": 420 / 33},
+    )
+    fragments = [
+        layout_fit.Fragment(kind="text", text="其中"),
+        layout_fit.Fragment(kind="formula", image_key="narrow"),
+        layout_fit.Fragment(kind="text", text="是亮度范围的均值，S 是 sigmoid 曲线，"),
+        layout_fit.Fragment(kind="formula", image_key="wide"),
+        layout_fit.Fragment(kind="text", text="（经过适当的平移和归一化）。"),
+    ]
+    for size in (6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0, 10.5):
+        height = measurer.measure(
+            fragments, size, size * 1.5, bold=False, align="left", width=244.2
+        )
+        assert 0.0 < height < 1000.0
