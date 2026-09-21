@@ -1,9 +1,11 @@
+import json
 from pathlib import Path
 
 import pytest
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
+from app.core.config import settings
 from app.models.store import DocumentRecord
 from app.services.document_structure import _with_pdf_previews, build_document_structure
 
@@ -43,6 +45,34 @@ def _write_pdf_with_artwork(path, figure_caption, table_caption):
         '50 600 300 1 re f 50 450 300 1 re f'.encode())
     page[NameObject('/Contents')] = writer._add_object(stream)
     writer.write(path)
+
+
+def test_checkpoint_blocks_resolve_images_against_the_extraction_dir(isolated_storage):
+    """Parser assets live beside the parser output, not beside the checkpoint."""
+    document_id = 'checkpoint-figures'
+    output_dir = settings.output_dir / document_id
+    images_dir = output_dir / 'somark' / 'images'
+    images_dir.mkdir(parents=True)
+    (images_dir / 'fig1.png').write_bytes(b'png')
+    blocks = [[
+        {'type': 'title', 'bbox': [10, 10, 100, 20],
+         'content': {'title_content': [{'type': 'text', 'content': 'Intro'}], 'level': 1}},
+        {'type': 'image', 'bbox': [10, 30, 100, 60],
+         'content': {'image_source': {'path': 'images/fig1.png'},
+                     'image_caption': [{'type': 'text', 'content': 'Figure 1. Demo'}]}},
+    ]]
+    (output_dir / 'extraction-checkpoint.json').write_text(
+        json.dumps({'content_blocks': blocks, 'images_dir': str(images_dir)}), encoding='utf-8'
+    )
+    record = DocumentRecord(document_id=document_id, source_type='pdf',
+                            source_path=isolated_storage / 'source.pdf',
+                            source_filename='source.pdf')
+
+    structure = build_document_structure(record)
+
+    assert [item['title'] for item in structure['outline']] == ['Intro']
+    assert structure['figures'][0]['url'] == f'/data/outputs/{document_id}/somark/images/fig1.png'
+    assert structure['figures'][0]['caption'] == 'Figure 1. Demo'
 
 
 def test_previews_crop_embedded_artwork_beside_captions(isolated_storage):

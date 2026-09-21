@@ -10,22 +10,22 @@ v2.2.0 replaces the reflowed LaTeX translation with a page-faithful one: every t
 
 ![](./images/demo1.png)
 
-PaperReader is a full-stack bilingual paper-reading app. Upload a PDF; PaperReader parses it (MinerU cloud API or the built-in text-layer parser), translates it with an LLM, lays the translation out on the source page — same page size, same page count, figures and formulas untouched — and lets you read both versions side by side.
+PaperReader is a full-stack bilingual paper-reading app. Upload a PDF; PaperReader parses it (SoMark cloud API, optional MinerU cloud API, or the built-in text-layer parser), translates it with an LLM, lays the translation out on the source page — same page size, same page count, figures and formulas untouched — and lets you read both versions side by side.
 
 ## Desktop quick start
 
 - **Windows**: download the ZIP from the release page, extract the complete archive, and run `PaperReader.exe`. If it fails to open, unblock the ZIP first — see the [User Guide](docs/user_instruction.md).
 - **macOS (Apple Silicon)**: open the DMG and copy PaperReader to Applications.
-- Both builds ask for your LLM and [MinerU](https://mineru.net/apiManage/docs) credentials in the in-app Settings dialog; everything else is bundled.
+- Both builds ask for your LLM and [SoMark](https://somark.cn) (or MinerU) credentials in the in-app Settings dialog; everything else is bundled.
 - Translated PDF generation requires a Chinese font on the host (macOS: Songti SC; Windows: SimSun; Linux: fonts-noto-cjk). No TeX installation is needed.
 - Platform guides: [Windows](desktop/README_zh.md) · [macOS](desktop/README_macos_zh.md)
 
 ## Features
 
-- No accounts and no sign-in: one local operator uses the whole app, with LLM / MinerU / parser / vision settings kept in a `0600` local file; stored keys are never returned to the frontend
+- No accounts and no sign-in: one local operator uses the whole app, with LLM / SoMark / MinerU / parser / vision settings kept in a `0600` local file; stored keys are never returned to the frontend
 - Persistent history in local SQLite; processed files reopen after a restart
-- PDF-only upload: `.pdf` files are parsed with the MinerU cloud API or the built-in local text-layer extractor
-- PDF parsing via the MinerU cloud API — no local OCR or GPU required
+- PDF-only upload: `.pdf` files are parsed with the SoMark cloud API (default), the optional MinerU cloud API, or the built-in local text-layer extractor
+- PDF parsing via the SoMark cloud API — no local OCR or GPU required
 - Concurrent LLM translation with validated per-chunk checkpoints and automatic retry; failed documents resume from the last checkpoint instead of starting over
 - Translation domain setting (computer science / medicine / general academic) that selects the translation prompt and its terminology rules; each domain keeps its own glossary, which accumulates the terms learned from translated documents and is consolidated on a fixed interval
 - Page-faithful translation layout: every block is pinned to its source coordinates with the source's own font size, weight, alignment and line spacing; when the translation does not fit it first uses the whitespace below, then shrinks that block only, then continues into a region the parser dropped, and finally falls back to the source wording

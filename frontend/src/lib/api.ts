@@ -128,7 +128,9 @@ export type UserSettings = {
   api_key_configured: boolean
   base_url: string
   model: string
-  pdf_parser: 'local' | 'mineru'
+  pdf_parser: 'local' | 'mineru' | 'somark'
+  somark_api_key_configured: boolean
+  somark_base_url: string
   mineru_api_key_configured: boolean
   mineru_base_url: string
   mineru_model_version: string
@@ -191,7 +193,10 @@ export type ProviderSettingsDraft = {
   clear_api_key?: boolean
   base_url: string
   model: string
-  pdf_parser: 'local' | 'mineru'
+  pdf_parser: 'local' | 'mineru' | 'somark'
+  somark_api_key: string
+  clear_somark_api_key?: boolean
+  somark_base_url: string
   mineru_api_key: string
   clear_mineru_api_key?: boolean
   mineru_base_url: string

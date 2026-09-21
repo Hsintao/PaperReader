@@ -28,6 +28,9 @@ class UpdateProviderSettingsRequest(BaseModel):
     base_url: str | None = None
     model: str | None = None
     pdf_parser: str | None = None
+    somark_api_key: str | None = None
+    clear_somark_api_key: bool = False
+    somark_base_url: str | None = None
     mineru_api_key: str | None = None
     clear_mineru_api_key: bool = False
     mineru_base_url: str | None = None
@@ -68,6 +71,9 @@ def put_provider_settings(payload: UpdateProviderSettingsRequest) -> dict:
         base_url=payload.base_url,
         model=payload.model,
         pdf_parser=payload.pdf_parser,
+        somark_api_key=payload.somark_api_key,
+        clear_somark_api_key=payload.clear_somark_api_key,
+        somark_base_url=payload.somark_base_url,
         mineru_api_key=payload.mineru_api_key,
         clear_mineru_api_key=payload.clear_mineru_api_key,
         mineru_base_url=payload.mineru_base_url,

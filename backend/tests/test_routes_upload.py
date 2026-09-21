@@ -70,6 +70,19 @@ def test_mineru_parser_requires_mineru_key(client, configure_provider, monkeypat
     assert "MinerU" in response.json()["detail"]["message"]
 
 
+def test_somark_parser_requires_somark_key(client, configure_provider, monkeypatch):
+    from app.api import routes_upload
+
+    monkeypatch.setattr(routes_upload, "_run_pipeline", lambda record_id: None)
+    configure_provider(pdf_parser="somark")
+
+    response = client.post("/api/upload", files={"file": ("paper.pdf", b"%PDF-1.4")})
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "config_required"
+    assert "SoMark" in response.json()["detail"]["message"]
+
+
 def test_chat_without_api_key_raises(monkeypatch):
     monkeypatch.setattr(settings, "openai_api_key", "")
 

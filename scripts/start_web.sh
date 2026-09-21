@@ -70,7 +70,7 @@ open_url() {
 
 if [ ! -f "$ROOT/.env" ]; then
   cp "$ROOT/.env.example" "$ROOT/.env"
-  echo "created .env from .env.example — fill in OPENAI_API_KEY / MINERU_API_KEY"
+  echo "created .env from .env.example — fill in OPENAI_API_KEY / SOMARK_API_KEY"
   echo "or set them in the in-app Settings before uploading a paper."
 fi
 

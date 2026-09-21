@@ -18,7 +18,7 @@ class Settings(BaseSettings):
         if not self.data_dir.is_absolute():
             self.data_dir = (project_root / self.data_dir).resolve()
         if not self.pdf_parser:
-            self.pdf_parser = "mineru"
+            self.pdf_parser = "somark"
 
     app_env: str = Field(default="dev", alias="APP_ENV")
     desktop_mode: bool = Field(default=False, alias="PAPERREADER_DESKTOP")
@@ -33,8 +33,14 @@ class Settings(BaseSettings):
     openai_model: str = Field(default="deepseek-flash", alias="OPENAI_MODEL")
 
     # PDF parsing backend: "local" extracts the embedded text layer with pypdf
-    # (no external service / API key needed); "mineru" uses the MinerU cloud API.
+    # (no external service / API key needed); "somark" (default) and "mineru"
+    # use the respective cloud API.
     pdf_parser: str = Field(default="", alias="PDF_PARSER")
+
+    somark_api_key: str = Field(default="", alias="SOMARK_API_KEY")
+    somark_base_url: str = Field(default="https://somark.cn/api/v1", alias="SOMARK_BASE_URL")
+    somark_poll_interval: float = Field(default=3.0, alias="SOMARK_POLL_INTERVAL")
+    somark_timeout: float = Field(default=600.0, alias="SOMARK_TIMEOUT")
 
     mineru_api_key: str = Field(default="", alias="MINERU_API_KEY")
     mineru_base_url: str = Field(default="https://mineru.net/api/v4", alias="MINERU_BASE_URL")

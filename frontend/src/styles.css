@@ -1416,7 +1416,7 @@ textarea { resize: vertical; }
 .glossary-term-target { font-weight: 600; overflow-wrap: anywhere; }
 .glossary-term-count { color: var(--muted); font-variant-numeric: tabular-nums; }
 .glossary-empty { margin: 0; padding: 14px; color: var(--muted); font-size: 12px; text-align: center; border: 1px dashed var(--border); border-radius: var(--radius); }
-.mineru-fields { padding: 14px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--bg-elev); }
+.parser-fields { padding: 14px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--bg-elev); }
 .danger-check { color: var(--danger); }
 
 /* ============ First-run setup ============ */

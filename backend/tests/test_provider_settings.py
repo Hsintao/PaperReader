@@ -14,14 +14,17 @@ def test_settings_roundtrip_masks_keys(isolated_storage):
                 "base_url": "https://llm.example/v1",
                 "model": "paper-model",
                 "pdf_parser": "local",
+                "somark_api_key": "somark-secret",
                 "mineru_api_key": "mineru-secret",
             },
         )
         assert response.status_code == 200, response.text
         payload = response.json()
         assert payload["api_key_configured"] is True
+        assert payload["somark_api_key_configured"] is True
         assert payload["mineru_api_key_configured"] is True
         assert "secret-key" not in response.text
+        assert "somark-secret" not in response.text
         assert "mineru-secret" not in response.text
         assert payload["base_url"] == "https://llm.example/v1"
         assert payload["model"] == "paper-model"
@@ -29,6 +32,26 @@ def test_settings_roundtrip_masks_keys(isolated_storage):
         stored = client.get("/api/settings/me")
         assert stored.status_code == 200
         assert stored.json() == payload
+
+
+def test_default_parser_is_somark(isolated_storage):
+    with TestClient(app) as client:
+        assert client.get("/api/settings/me").json()["pdf_parser"] == "somark"
+
+
+def test_somark_base_url_defaults_and_rejects_bad_values(isolated_storage):
+    with TestClient(app) as client:
+        assert client.get("/api/settings/me").json()["somark_base_url"] == "https://somark.cn/api/v1"
+
+        updated = client.put(
+            "/api/settings/me/providers", json={"somark_base_url": "https://somark.ai/api/v1"}
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["somark_base_url"] == "https://somark.ai/api/v1"
+
+        rejected = client.put("/api/settings/me/providers", json={"somark_base_url": "somark.cn"})
+        assert rejected.status_code == 400, rejected.text
+        assert "SoMark Base URL" in rejected.text
 
 
 def test_settings_file_is_owner_only(isolated_storage):
@@ -68,6 +91,19 @@ def test_provider_keys_update_independently(isolated_storage):
     app_settings.update_settings(clear_mineru_api_key=True)
     stored = load_settings()
     assert (stored.api_key, stored.mineru_api_key) == ("llm-two", "")
+
+
+def test_somark_key_updates_independently_of_mineru(isolated_storage):
+    from app.services.app_settings import load_settings
+
+    app_settings.update_settings(somark_api_key="somark-one", mineru_api_key="mineru-one")
+    app_settings.update_settings(somark_api_key="  ", mineru_api_key="mineru-two")
+    stored = load_settings()
+    assert (stored.somark_api_key, stored.mineru_api_key) == ("somark-one", "mineru-two")
+
+    app_settings.update_settings(clear_somark_api_key=True)
+    stored = load_settings()
+    assert (stored.somark_api_key, stored.mineru_api_key) == ("", "mineru-two")
 
 
 def test_provider_validation_rejects_bad_urls(isolated_storage):

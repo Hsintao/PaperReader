@@ -61,6 +61,7 @@ from app.services.mineru_service import (
     extract_structured_from_pdf_local,
     extract_text_from_pdf_text_layer,
 )
+from app.services.somark_service import SoMarkConfig, extract_structured_from_pdf_somark
 from app.services.stage_tracker import (
     init_stages,
     prepare_stages_for_retry,
@@ -1021,6 +1022,16 @@ def process_document(
         if provider_settings
         else None
     )
+    somark_config = (
+        SoMarkConfig(
+            api_key=provider_settings.somark_api_key,
+            base_url=provider_settings.somark_base_url,
+            poll_interval=settings.somark_poll_interval,
+            timeout=settings.somark_timeout,
+        )
+        if provider_settings
+        else None
+    )
     vision_model = provider_settings.vision_model if provider_settings else settings.vision_model
     translation_domain = normalize_domain(
         provider_settings.translation_domain if provider_settings else None
@@ -1132,7 +1143,35 @@ def process_document(
                 _append_artifact(record, "original.pdf", "original_pdf", original_out)
                 _append_artifact(record, record.source_path.name, "source_pdf", record.source_path)
 
-                if parser == "mineru":
+                if parser == "somark":
+                    extract_dir = output_dir / "somark"
+                    record.logs.append("Submitting PDF to SoMark")
+                    try:
+                        mineru_result = extract_structured_from_pdf_somark(
+                            str(record.source_path),
+                            extract_dir,
+                            log_sink=record.logs,
+                            progress_cb=lambda frac, label: set_stage_progress(
+                                record, "parse", frac, label
+                            ),
+                            config=somark_config,
+                        )
+                    except Exception as somark_exc:
+                        # Mirror the MinerU branch: keep the document usable for
+                        # text-layer PDFs instead of failing the whole task.
+                        record.logs.append(
+                            f"SoMark unavailable ({somark_exc}); falling back to local PDF parsing"
+                        )
+                        extract_dir = output_dir / "local"
+                        try:
+                            mineru_result = extract_structured_from_pdf_local(
+                                str(record.source_path), extract_dir, log_sink=record.logs
+                            )
+                        except Exception as local_exc:
+                            raise RuntimeError(
+                                f"SoMark parsing failed: {somark_exc}; local fallback also failed: {local_exc}"
+                            ) from local_exc
+                elif parser == "mineru":
                     extract_dir = output_dir / "mineru"
                     record.logs.append("Submitting PDF to MinerU")
                     try:
@@ -1185,7 +1224,7 @@ def process_document(
                 raise RuntimeError(
                     "No readable text could be extracted from this PDF. "
                     "It may be a scanned / image-only PDF with no embedded text layer "
-                    "(the local parser has no OCR; set PDF_PARSER=mineru to use cloud OCR)."
+                    "(the local parser has no OCR; switch to the SoMark or MinerU cloud parser for OCR)."
                 )
             if missing_page_count:
                 record.logs.append(

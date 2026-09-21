@@ -34,9 +34,9 @@ PaperReader 没有账号，也不需要注册或登录：打开即可使用，�
 
 点击左侧栏工具栏最右侧的齿轮按钮打开「设置」，在「AI 服务」页填入 API Key 和 Base URL、模型名称，即可用自己的大模型密钥调用翻译、版式合成等服务。推荐使用价格相对较低的模型，如 DeepSeek-V4-Flash-0731。
 
-PDF 解析默认使用 **MinerU 云解析**，需要单独配置 MinerU API Key，可到 [MinerU](https://mineru.net/) 官网获取免费的 API Key；也可以在设置里切换到无需密钥的本地解析。
+PDF 解析默认使用 **SoMark 云解析**，需要单独配置 SoMark API Key，可到 [SoMark](https://somark.cn/) 官网的「API Workbench → APIKey」获取；也可以在设置里切换到 MinerU 云解析或无需密钥的本地解析。
 
-大模型与 MinerU 密钥独立保存。更新一个密钥时，另一个留空即可保持原值；只有勾选对应的删除选项才会清除。缺少 MinerU Key 时仍可保存大模型设置，上传 PDF 前需要补齐 MinerU Key，或明确切换到本地解析。
+大模型、SoMark 与 MinerU 密钥独立保存。更新一个密钥时，其余留空即可保持原值；只有勾选对应的删除选项才会清除。缺少所选解析器的 Key 时仍可保存大模型设置，上传 PDF 前需要补齐该 Key，或明确切换到本地解析。
 
 配置保存在本机数据目录的 `settings.json`（仅当前用户可读），密钥不会回传给前端界面。
 
@@ -49,7 +49,7 @@ PDF 解析默认使用 **MinerU 云解析**，需要单独配置 MinerU API Key�
 ![](../images/0910-1.png)
 PaperReader 是一款保留公式、图片等结构的论文翻译器，目前仅支持上传 **PDF 文件**：点击“新解析”直接上传即可。
 
-PaperReader 的工作流为：PDF 文件 → MinerU 云解析（或本地文字层解析）→ 解析结果 → 翻译 → 版式合成 → 输出 PDF。译文按原稿坐标排回原页：页幅与页数不变，图片、块级公式、图注与表格线条直接沿用原稿，表格只替换已翻译的单元格文字。译文 PDF 需要在电脑上安装中文字体（macOS 自带 Songti SC，Windows 自带 SimSun），不需要安装 TeX。
+PaperReader 的工作流为：PDF 文件 → SoMark 云解析（或 MinerU 云解析 / 本地文字层解析）→ 解析结果 → 翻译 → 版式合成 → 输出 PDF。译文按原稿坐标排回原页：页幅与页数不变，图片、块级公式、图注与表格线条直接沿用原稿，表格只替换已翻译的单元格文字。译文 PDF 需要在电脑上安装中文字体（macOS 自带 Songti SC，Windows 自带 SimSun），不需要安装 TeX。
 
 ### 排版与降级
 

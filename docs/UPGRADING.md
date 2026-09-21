@@ -165,6 +165,8 @@ npm --prefix frontend run build
 
 Keep your existing `.env`; add desired new options from `.env.example` instead of overwriting credentials or paths. An old configuration with `MINERU_API_KEY` and no `PDF_PARSER` retains MinerU parsing. New installations use `PDF_PARSER=mineru`. Set `PDF_PARSER=local` to explicitly use local extraction.
 
+Since the SoMark parser was added, the built-in default is `PDF_PARSER=somark`. An installation that sets neither `PDF_PARSER` nor a saved parser choice now needs `SOMARK_API_KEY`; keep `PDF_PARSER=mineru` (or `local`) to stay on the previous backend. A saved `settings.json` that already names a parser keeps it.
+
 `make backend` / `make frontend` remain supported. A built frontend is also served by FastAPI at port 8000. Production builds use same-origin API and file URLs by default, including `127.0.0.1` in the Windows app. For a separately hosted UI, set `VITE_BACKEND_URL` at frontend build time and configure `CORS_ORIGINS` on the backend. Keep the UI and API on the same origin.
 
 ## Moving from the anonymous v1.0 release

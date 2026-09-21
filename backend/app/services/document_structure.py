@@ -286,7 +286,11 @@ def build_document_structure(record: DocumentRecord) -> dict:
             payload = json.loads(checkpoint.read_text(encoding="utf-8"))
             pages = payload.get("content_blocks")
             if pages:
-                structure = _structure_from_blocks(pages, checkpoint.parent)
+                # Block image paths are relative to the parser's extraction
+                # directory, which the checkpoint records through images_dir.
+                images_dir = payload.get("images_dir")
+                base_dir = Path(images_dir).parent if images_dir else checkpoint.parent
+                structure = _structure_from_blocks(pages, base_dir)
                 if structure["outline"] or structure["figures"]:
                     return _with_previews(record, structure)
         except Exception:

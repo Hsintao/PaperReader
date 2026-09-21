@@ -15,7 +15,7 @@ npm.cmd --prefix frontend run build
 
 浏览器回归路径：在已显示文字的页首次执行对照高亮；跳转到未渲染的远端页；点击批注查看备注；打开图表浮层，分别点击 Figure、Table 及同页多个 Table；切换论文并确认列表更新。文字高亮在 `onRenderTextLayerSuccess` 后绘制。图表结构接口返回原文 `figures` 与译文 `translated_figures`，预览位于 `outputs/<document_id>/figure-previews/`，译文 PDF 更新后刷新。缩略图按标题旁的矢量插图、嵌入图片与表格横线裁剪。
 
-设置密钥回归需分别验证大模型更新、MinerU 更新、留空保持和明确删除。新配置默认 MinerU；其 Key 缺失只阻止采用 MinerU 的 PDF 上传。
+设置密钥回归需分别验证大模型更新、SoMark 更新、MinerU 更新、留空保持和明确删除。新配置默认 SoMark；其 Key 缺失只阻止采用 SoMark 的 PDF 上传，MinerU 同理。
 
 本文档面向需要在 **Windows 或 macOS 本地从源代码运行、构建 PaperReader 原生应用**，以及维护 GitHub Release 的开发者。Windows 部分的命令行均以 **Git Bash**（Git for Windows 自带）为准。
 
@@ -311,7 +311,7 @@ bash scripts/start_web.sh
 
 脚本会依次处理：
 
-- 缺少 `.env` 时从 `.env.example` 复制一份，并提示填写 `OPENAI_API_KEY` / `MINERU_API_KEY`；
+- 缺少 `.env` 时从 `.env.example` 复制一份，并提示填写 `OPENAI_API_KEY` / `SOMARK_API_KEY`；
 - 选择解释器：当前环境能 `import uvicorn, fastapi` 就直接用，否则依次尝试 `conda activate pt`；
 - 端口按 `8000` → `8004` 取第一个空闲端口；若该端口上已有 PaperReader 在跑，直接打开它而不重复启动；也可用 `PAPERREADER_PORT=8010 bash scripts/start_web.sh` 指定端口；
 - `frontend/dist` 缺失或比 `frontend/src` 旧时，自动执行 `npm --prefix frontend run build`；
@@ -1087,7 +1087,8 @@ cp .env.example .env
 - `OPENAI_API_KEY`
 - `OPENAI_BASE_URL`
 - `OPENAI_MODEL`
-- `MINERU_API_KEY`（在 https://mineru.net/apiManage/docs 申请）
+- `SOMARK_API_KEY`（默认解析器，在 https://somark.cn 的 “API Workbench → APIKey” 获取）
+- `MINERU_API_KEY`（仅 `PDF_PARSER=mineru` 时需要，在 https://mineru.net/apiManage/docs 申请）
 
 ### 可选 / 调优变量
 
@@ -1102,9 +1103,21 @@ cp .env.example .env
 - `VISION_CHECK_ENABLED`（默认 `false`）、`VISION_CHECK_MODE`（`auto` | `manual`）、`VISION_CHECK_MAX_PAGES`（默认 `8`）— Phase D 的部署默认值。默认关闭校验，可在「设置 → 阅读偏好」中开启自动/手动校验。
 - `LAYOUT_DEBUG` — 设为 true 时额外产出 `outputs/<document_id>/layout-debug.pdf`，在原页上标出块类别与实际沿用的图注区域。
 
-### MinerU PDF 解析
+### SoMark PDF 解析（默认）
 
-PDF 解析走 MinerU 精准解析 API（无需本地 OCR / GPU / 大模型下载）。除 API Key 外均可选：
+PDF 解析默认走 SoMark 文档智能解析 API（无需本地 OCR / GPU / 大模型下载），在「设置 → AI 服务 → PDF 解析」中选择，或用 `PDF_PARSER=somark` 指定。除 API Key 外均可选：
+
+- `SOMARK_API_KEY` — SoMark 账号的 API Key（`sk-***`）。
+- `SOMARK_BASE_URL` — 默认 `https://somark.cn/api/v1`（中国大陆），海外用 `https://somark.ai/api/v1`。
+- `SOMARK_POLL_INTERVAL`（默认 `3` 秒）、`SOMARK_TIMEOUT`（默认 `600` 秒）— 异步任务轮询控制。
+
+SoMark 侧限制：单文件 ≤ 200 MB，≤ 300 页，每账号 QPS 4。需允许访问 `somark.cn`（或 `somark.ai`）及其返回的图片资源域名。
+
+解析产物落在 `outputs/<document_id>/somark/`：`somark.md`（Markdown 原文）、`somark.json`（完整 API 响应）、`images/`（下载到本地的图片资源）。
+
+### MinerU PDF 解析（可选备选）
+
+保留 MinerU 作为备选云解析后端，用 `PDF_PARSER=mineru` 指定。除 API Key 外均可选：
 
 - `MINERU_API_KEY` — MinerU 账号的 Bearer token。
 - `MINERU_BASE_URL` — 默认 `https://mineru.net/api/v4`。
@@ -1146,9 +1159,9 @@ python -m compileall backend/app     # 快速语法检查
 
 应用没有账号体系：单个本地操作者直接使用全部功能，没有登录、向导或个人中心。
 
-- 设置（LLM `API Key` / `Base URL` / `Model`、parser 与 MinerU 选项、视觉模型、主题、视觉校验偏好、翻译领域、收藏）
+- 设置（LLM `API Key` / `Base URL` / `Model`、parser 与 SoMark / MinerU 选项、视觉模型、主题、视觉校验偏好、翻译领域、收藏）
   统一存放在 `DATA_DIR/settings.json`，文件权限为 `0600`，写入采用临时文件 + `os.replace` 的原子替换。
-- 读取接口只返回 `api_key_configured` / `mineru_api_key_configured` 布尔值，不会回显密钥明文。
+- 读取接口只返回 `api_key_configured` / `somark_api_key_configured` / `mineru_api_key_configured` 布尔值，不会回显密钥明文。
 - `translation_domain`（`cs` | `medical` | `general`）决定翻译提示词中的领域参数，并对应一套术语库；写入非法值时回落 `general`。
 - 术语库存放在 `DATA_DIR/glossary/<domain>.json`，候选池为同目录的 `<domain>.pending.json`：翻译时抽取到的术语先进入候选池，后台线程按 `GLOSSARY_REFRESH_INTERVAL_MINUTES` 合并进术语库（冲突按票数取多数），也可在「设置 → 翻译设置」中立即更新或删除单条术语。该目录不在 `/data/` 的对外暴露范围内。
 - 文档与批注持久化在本地 SQLite：`documents`、`annotations`。没有 `owner_user_id`，也没有用户/会话表。
@@ -1215,14 +1228,14 @@ docker compose up --build
 
 ### macOS (Apple Silicon)
 
-- PDF 解析经 MinerU 云端完成，无需本地 Torch/MPS 配置。
+- PDF 解析经 SoMark 云端完成，无需本地 Torch/MPS 配置。
 - PDF 内的 HTTP(S) 链接在系统浏览器打开；PaperReader 窗口保留当前论文与阅读位置。
 - WKWebView 阅读器支持 PDF 文本选择/复制、生成的大纲与更快的触控板捏合缩放。
 - 译文排版失败时，先确认宿主机已装中文字体，再查看 `layout-plan.json` 中每块的状态与原因。
 
 ### Linux (CUDA)
 
-- PDF 解析无需 GPU（MinerU 云端）。
+- PDF 解析无需 GPU（SoMark 云端）。
 - LLM 翻译仍使用 `.env` 中配置的 OpenAI 兼容端点。
 
 ### Windows

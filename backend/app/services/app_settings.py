@@ -1,9 +1,9 @@
 """Application settings for a single local operator.
 
-Everything the pipeline needs — LLM endpoint, PDF parser, MinerU options,
-reading preferences — lives in one JSON file under the data directory. The
-file is created with owner-only permissions, so provider keys stay as private
-as the rest of the local data.
+Everything the pipeline needs — LLM endpoint, PDF parser, SoMark and MinerU
+options, reading preferences — lives in one JSON file under the data directory.
+The file is created with owner-only permissions, so provider keys stay as
+private as the rest of the local data.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from app.services.translation_prompts import normalize_domain
 _LOCK = threading.RLock()
 _THEMES = {"light", "dark"}
 _VISION_MODES = {"auto", "manual"}
-_PARSERS = {"local", "mineru"}
+_PARSERS = {"local", "mineru", "somark"}
 
 
 def settings_path() -> Path:
@@ -38,6 +38,8 @@ class AppSettings:
     base_url: str = ""
     model: str = ""
     pdf_parser: str = ""
+    somark_api_key: str = ""
+    somark_base_url: str = ""
     mineru_api_key: str = ""
     mineru_base_url: str = ""
     mineru_model_version: str = ""
@@ -58,7 +60,8 @@ def _defaults() -> AppSettings:
     return AppSettings(
         base_url=settings.openai_base_url,
         model=settings.openai_model,
-        pdf_parser=settings.pdf_parser or "mineru",
+        pdf_parser=settings.pdf_parser or "somark",
+        somark_base_url=settings.somark_base_url,
         mineru_base_url=settings.mineru_base_url,
         mineru_model_version=settings.mineru_model_version,
         mineru_language=settings.mineru_language,
@@ -132,6 +135,9 @@ def update_settings(
     base_url: str | None = None,
     model: str | None = None,
     pdf_parser: str | None = None,
+    somark_api_key: str | None = None,
+    clear_somark_api_key: bool = False,
+    somark_base_url: str | None = None,
     mineru_api_key: str | None = None,
     clear_mineru_api_key: bool = False,
     mineru_base_url: str | None = None,
@@ -153,6 +159,10 @@ def update_settings(
         current.api_key = ""
     elif (api_key or "").strip():
         current.api_key = api_key.strip()
+    if clear_somark_api_key:
+        current.somark_api_key = ""
+    elif (somark_api_key or "").strip():
+        current.somark_api_key = somark_api_key.strip()
     if clear_mineru_api_key:
         current.mineru_api_key = ""
     elif (mineru_api_key or "").strip():
@@ -163,6 +173,8 @@ def update_settings(
         current.model = model.strip()
     if pdf_parser is not None:
         current.pdf_parser = pdf_parser.strip()
+    if somark_base_url is not None:
+        current.somark_base_url = somark_base_url.strip()
     if mineru_base_url is not None:
         current.mineru_base_url = mineru_base_url.strip()
     if mineru_model_version is not None:
@@ -203,6 +215,8 @@ def update_settings(
         current.model = settings.openai_model
     if not current.mineru_base_url:
         current.mineru_base_url = settings.mineru_base_url
+    if not current.somark_base_url:
+        current.somark_base_url = settings.somark_base_url
     if not current.mineru_model_version:
         current.mineru_model_version = settings.mineru_model_version
     if not current.mineru_language:
@@ -213,6 +227,8 @@ def update_settings(
         raise HTTPException(status_code=400, detail="LLM Base URL must start with http:// or https://")
     if not current.mineru_base_url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="MinerU Base URL must start with http:// or https://")
+    if not current.somark_base_url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="SoMark Base URL must start with http:// or https://")
 
     _write(current)
     return current
@@ -224,6 +240,11 @@ def require_provider_settings(*, for_pdf: bool = False) -> AppSettings:
         raise HTTPException(
             status_code=409,
             detail={"code": "config_required", "message": "请先在设置中配置大模型 API Key。"},
+        )
+    if for_pdf and provider.pdf_parser == "somark" and not provider.somark_api_key:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "config_required", "message": "当前选择了 SoMark，请先在设置中配置 SoMark API Key。"},
         )
     if for_pdf and provider.pdf_parser == "mineru" and not provider.mineru_api_key:
         raise HTTPException(
@@ -240,6 +261,8 @@ def serialize_settings(value: AppSettings) -> dict:
         "base_url": value.base_url,
         "model": value.model,
         "pdf_parser": value.pdf_parser,
+        "somark_api_key_configured": bool(value.somark_api_key),
+        "somark_base_url": value.somark_base_url,
         "mineru_api_key_configured": bool(value.mineru_api_key),
         "mineru_base_url": value.mineru_base_url,
         "mineru_model_version": value.mineru_model_version,
