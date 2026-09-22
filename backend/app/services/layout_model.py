@@ -19,6 +19,7 @@ the same space.
 from __future__ import annotations
 
 import re
+from math import hypot
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -220,6 +221,10 @@ def measure_pages(source: str | Path | bytes) -> list[PageFrame]:
                     char = textpage.get_text_range(position, 1)
                     if not char or char in "\r\n\ufffe":
                         continue
+                    # PDFium's synthetic spaces can sit far outside scaled
+                    # text objects. Visual runs recover spaces from glyph gaps.
+                    if char.isspace() and pdfium_c.FPDFText_IsGenerated(textpage.raw, position) == 1:
+                        continue
                     box = textpage.get_charbox(position)
                     # PDFium reports a zero-size box for glyphs it cannot
                     # place. They carry no position, and keeping them corrupts
@@ -234,6 +239,11 @@ def measure_pages(source: str | Path | bytes) -> list[PageFrame]:
                         continue
                     try:
                         size = float(pdfium_c.FPDFText_GetFontSize(textpage.raw, position))
+                        matrix = pdfium_c.FS_MATRIX()
+                        if pdfium_c.FPDFText_GetMatrix(textpage.raw, position, ctypes.byref(matrix)):
+                            # Font size is in text space; glyph boxes and line
+                            # clustering use page points after the text matrix.
+                            size *= hypot(matrix.c, matrix.d)
                     except Exception:
                         size = 0.0
                     chars.append(

@@ -82,6 +82,47 @@ def _page_text(path, index=0) -> str:
         document.close()
 
 
+def test_scaled_text_matrix_preserves_page_font_sizes_and_lines(tmp_path):
+    source = tmp_path / "scaled-text.pdf"
+    canvas = pdf_canvas.Canvas(str(source), pagesize=letter)
+    text = canvas.beginText()
+    text.setFont("Times-Roman", 200)
+    text.setTextTransform(0.05, 0, 0, 0.05, 72, 700)
+    text.textOut("Modern displays render high dynamic range video.")
+    text.setTextTransform(0.05, 0, 0, 0.05, 72, 688)
+    text.textOut("The method keeps the complete abstract on this page.")
+    canvas.drawText(text)
+    canvas.save()
+
+    frame = layout_model.measure_pages(source)[0]
+    assert {round(char.size, 2) for char in frame.chars if char.char.strip()} == {10.0}
+    lines = layout_model._cluster_lines(frame.chars)
+    assert [layout_model._join_chars(line) for line in lines] == [
+        "Modern displays render high dynamic range video.",
+        "The method keeps the complete abstract on this page.",
+    ]
+
+
+def test_scaled_separate_text_objects_do_not_expand_paragraph_boxes(tmp_path):
+    source = tmp_path / "scaled-words.pdf"
+    canvas = pdf_canvas.Canvas(str(source), pagesize=letter)
+    words = ((72, "Modern"), (106, "displays"), (143, "render"), (175, "video."))
+    for x, word in words:
+        text = canvas.beginText()
+        text.setFont("Times-Roman", 200)
+        text.setTextTransform(0.05, 0, 0, 0.05, x, 700)
+        text.textOut(word)
+        canvas.drawText(text)
+    canvas.save()
+
+    frame = layout_model.measure_pages(source)[0]
+    lines = layout_model._cluster_lines(frame.chars)
+    assert [layout_model._join_chars(line) for line in lines] == [
+        "Modern displays render video."
+    ]
+    assert layout_model._line_box(lines[0])[2] < 205
+
+
 def test_rendered_page_keeps_size_and_replaces_only_translated_text(tmp_path):
     source = tmp_path / "source.pdf"
     _source(
