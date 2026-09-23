@@ -1,8 +1,8 @@
 """Application settings for a single local operator.
 
-Everything the pipeline needs — LLM endpoint, PDF parser, SoMark and MinerU
-options, reading preferences — lives in one JSON file under the data directory.
-The file is created with owner-only permissions, so provider keys stay as
+Everything the pipeline needs — the translation endpoint, the vision-check
+model, reading preferences — lives in one JSON file under the data directory.
+The file is created with owner-only permissions, so the API key stays as
 private as the rest of the local data.
 """
 
@@ -25,7 +25,22 @@ from app.services.translation_prompts import normalize_domain
 _LOCK = threading.RLock()
 _THEMES = {"light", "dark"}
 _VISION_MODES = {"auto", "manual"}
-_PARSERS = {"local", "mineru", "somark"}
+
+# Fields removed when SoMark / MinerU parsing was replaced by the
+# PDFMathTranslate-next worker. Dropped from settings.json on startup so the
+# stored file never advertises a backend that no longer exists.
+REMOVED_KEYS = (
+    "pdf_parser",
+    "somark_api_key",
+    "somark_base_url",
+    "mineru_api_key",
+    "mineru_base_url",
+    "mineru_model_version",
+    "mineru_language",
+    "mineru_enable_formula",
+    "mineru_enable_table",
+    "mineru_is_ocr",
+)
 
 
 def settings_path() -> Path:
@@ -37,16 +52,6 @@ class AppSettings:
     api_key: str = ""
     base_url: str = ""
     model: str = ""
-    pdf_parser: str = ""
-    somark_api_key: str = ""
-    somark_base_url: str = ""
-    mineru_api_key: str = ""
-    mineru_base_url: str = ""
-    mineru_model_version: str = ""
-    mineru_language: str = ""
-    mineru_enable_formula: bool = True
-    mineru_enable_table: bool = True
-    mineru_is_ocr: bool = False
     vision_model: str = ""
     theme: str = "light"
     vision_enabled: bool = False
@@ -60,14 +65,6 @@ def _defaults() -> AppSettings:
     return AppSettings(
         base_url=settings.openai_base_url,
         model=settings.openai_model,
-        pdf_parser=settings.pdf_parser or "somark",
-        somark_base_url=settings.somark_base_url,
-        mineru_base_url=settings.mineru_base_url,
-        mineru_model_version=settings.mineru_model_version,
-        mineru_language=settings.mineru_language,
-        mineru_enable_formula=settings.mineru_enable_formula,
-        mineru_enable_table=settings.mineru_enable_table,
-        mineru_is_ocr=settings.mineru_is_ocr,
         vision_model=settings.vision_model,
     )
 
@@ -128,24 +125,26 @@ def load_settings() -> AppSettings:
         return _coerce(_read_raw(settings_path()))
 
 
+def purge_removed_keys() -> bool:
+    """Rewrite settings.json without the retired parser fields.
+
+    Returns whether the stored file changed.
+    """
+    with _LOCK:
+        path = settings_path()
+        raw = _read_raw(path)
+        if not any(key in raw for key in REMOVED_KEYS):
+            return False
+        _write(_coerce(raw))
+        return True
+
+
 def update_settings(
     *,
     api_key: str | None = None,
     clear_api_key: bool = False,
     base_url: str | None = None,
     model: str | None = None,
-    pdf_parser: str | None = None,
-    somark_api_key: str | None = None,
-    clear_somark_api_key: bool = False,
-    somark_base_url: str | None = None,
-    mineru_api_key: str | None = None,
-    clear_mineru_api_key: bool = False,
-    mineru_base_url: str | None = None,
-    mineru_model_version: str | None = None,
-    mineru_language: str | None = None,
-    mineru_enable_formula: bool | None = None,
-    mineru_enable_table: bool | None = None,
-    mineru_is_ocr: bool | None = None,
     vision_model: str | None = None,
     theme: str | None = None,
     vision_enabled: bool | None = None,
@@ -159,34 +158,10 @@ def update_settings(
         current.api_key = ""
     elif (api_key or "").strip():
         current.api_key = api_key.strip()
-    if clear_somark_api_key:
-        current.somark_api_key = ""
-    elif (somark_api_key or "").strip():
-        current.somark_api_key = somark_api_key.strip()
-    if clear_mineru_api_key:
-        current.mineru_api_key = ""
-    elif (mineru_api_key or "").strip():
-        current.mineru_api_key = mineru_api_key.strip()
     if base_url is not None:
         current.base_url = base_url.strip()
     if model is not None:
         current.model = model.strip()
-    if pdf_parser is not None:
-        current.pdf_parser = pdf_parser.strip()
-    if somark_base_url is not None:
-        current.somark_base_url = somark_base_url.strip()
-    if mineru_base_url is not None:
-        current.mineru_base_url = mineru_base_url.strip()
-    if mineru_model_version is not None:
-        current.mineru_model_version = mineru_model_version.strip()
-    if mineru_language is not None:
-        current.mineru_language = mineru_language.strip()
-    if mineru_enable_formula is not None:
-        current.mineru_enable_formula = bool(mineru_enable_formula)
-    if mineru_enable_table is not None:
-        current.mineru_enable_table = bool(mineru_enable_table)
-    if mineru_is_ocr is not None:
-        current.mineru_is_ocr = bool(mineru_is_ocr)
     if vision_model is not None:
         current.vision_model = vision_model.strip()
     if theme is not None:
@@ -207,69 +182,35 @@ def update_settings(
     if current.vision_mode not in _VISION_MODES:
         current.vision_mode = "auto"
     current.translation_domain = normalize_domain(current.translation_domain)
-    if current.pdf_parser not in _PARSERS:
-        current.pdf_parser = "local"
     if not current.base_url:
         current.base_url = settings.openai_base_url
     if not current.model:
         current.model = settings.openai_model
-    if not current.mineru_base_url:
-        current.mineru_base_url = settings.mineru_base_url
-    if not current.somark_base_url:
-        current.somark_base_url = settings.somark_base_url
-    if not current.mineru_model_version:
-        current.mineru_model_version = settings.mineru_model_version
-    if not current.mineru_language:
-        current.mineru_language = settings.mineru_language
     if not current.vision_model:
         current.vision_model = settings.vision_model
     if not current.base_url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="LLM Base URL must start with http:// or https://")
-    if not current.mineru_base_url.startswith(("http://", "https://")):
-        raise HTTPException(status_code=400, detail="MinerU Base URL must start with http:// or https://")
-    if not current.somark_base_url.startswith(("http://", "https://")):
-        raise HTTPException(status_code=400, detail="SoMark Base URL must start with http:// or https://")
 
     _write(current)
     return current
 
 
-def require_provider_settings(*, for_pdf: bool = False) -> AppSettings:
+def require_provider_settings() -> AppSettings:
     provider = load_settings()
     if not provider.api_key:
         raise HTTPException(
             status_code=409,
             detail={"code": "config_required", "message": "请先在设置中配置大模型 API Key。"},
         )
-    if for_pdf and provider.pdf_parser == "somark" and not provider.somark_api_key:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "config_required", "message": "当前选择了 SoMark，请先在设置中配置 SoMark API Key。"},
-        )
-    if for_pdf and provider.pdf_parser == "mineru" and not provider.mineru_api_key:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "config_required", "message": "当前选择了 MinerU，请先在设置中配置 MinerU API Key。"},
-        )
     return provider
 
 
 def serialize_settings(value: AppSettings) -> dict:
-    """Never expose stored keys; report only whether each one is present."""
+    """Never expose the stored key; report only whether it is present."""
     return {
         "api_key_configured": bool(value.api_key),
         "base_url": value.base_url,
         "model": value.model,
-        "pdf_parser": value.pdf_parser,
-        "somark_api_key_configured": bool(value.somark_api_key),
-        "somark_base_url": value.somark_base_url,
-        "mineru_api_key_configured": bool(value.mineru_api_key),
-        "mineru_base_url": value.mineru_base_url,
-        "mineru_model_version": value.mineru_model_version,
-        "mineru_language": value.mineru_language,
-        "mineru_enable_formula": value.mineru_enable_formula,
-        "mineru_enable_table": value.mineru_enable_table,
-        "mineru_is_ocr": value.mineru_is_ocr,
         "vision_model": value.vision_model,
         "theme": value.theme,
         "vision_enabled": value.vision_enabled,

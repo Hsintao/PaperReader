@@ -8,6 +8,7 @@ from app.models.schemas import UploadResponse
 from app.models.store import get_document, mark_document_failed
 from app.services.app_settings import load_settings, require_provider_settings
 from app.services.document_pipeline import create_document_record, process_document
+from app.services.pdf_translation_worker import WorkerUnavailable, require_worker_ready
 
 
 router = APIRouter()
@@ -35,7 +36,14 @@ async def upload(
     suffix = Path(file.filename or "").suffix.lower()
     if suffix != ".pdf":
         raise HTTPException(status_code=400, detail="Only .pdf files are supported")
-    require_provider_settings(for_pdf=True)
+    require_provider_settings()
+    try:
+        require_worker_ready()
+    except WorkerUnavailable as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "worker_unavailable", "message": str(exc)},
+        ) from exc
 
     safe_name = Path(file.filename or "uploaded_file").name
     target_path = settings.upload_dir / f"{uuid.uuid4()}_{safe_name}"

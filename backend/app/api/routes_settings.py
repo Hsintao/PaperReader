@@ -27,18 +27,6 @@ class UpdateProviderSettingsRequest(BaseModel):
     clear_api_key: bool = False
     base_url: str | None = None
     model: str | None = None
-    pdf_parser: str | None = None
-    somark_api_key: str | None = None
-    clear_somark_api_key: bool = False
-    somark_base_url: str | None = None
-    mineru_api_key: str | None = None
-    clear_mineru_api_key: bool = False
-    mineru_base_url: str | None = None
-    mineru_model_version: str | None = None
-    mineru_language: str | None = None
-    mineru_enable_formula: bool | None = None
-    mineru_enable_table: bool | None = None
-    mineru_is_ocr: bool | None = None
     vision_model: str | None = None
 
 
@@ -70,18 +58,6 @@ def put_provider_settings(payload: UpdateProviderSettingsRequest) -> dict:
         clear_api_key=payload.clear_api_key,
         base_url=payload.base_url,
         model=payload.model,
-        pdf_parser=payload.pdf_parser,
-        somark_api_key=payload.somark_api_key,
-        clear_somark_api_key=payload.clear_somark_api_key,
-        somark_base_url=payload.somark_base_url,
-        mineru_api_key=payload.mineru_api_key,
-        clear_mineru_api_key=payload.clear_mineru_api_key,
-        mineru_base_url=payload.mineru_base_url,
-        mineru_model_version=payload.mineru_model_version,
-        mineru_language=payload.mineru_language,
-        mineru_enable_formula=payload.mineru_enable_formula,
-        mineru_enable_table=payload.mineru_enable_table,
-        mineru_is_ocr=payload.mineru_is_ocr,
         vision_model=payload.vision_model,
     )
     return serialize_settings(values)

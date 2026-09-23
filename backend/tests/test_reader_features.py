@@ -100,49 +100,86 @@ def test_notes_export_includes_annotation_and_counterpart(client):
     assert "纳维-斯托克斯方程" in body
 
 
-def test_structure_endpoint_returns_outline_and_figures(client, isolated_storage):
-    record = _done_document("doc-struct", "text", "译文")
+def _structure_manifest() -> dict:
+    return {
+        "schema_version": "paperreader-manifest-v1",
+        "generator": {"worker": "pdfmathtranslate"},
+        "source_pdf": "doc-struct.pdf",
+        "source_sha256": "0" * 64,
+        "mode_label": "PDFMathTranslate-next 2.9.0 · mono",
+        "page_count": 2,
+        "unit": "point",
+        "boxes_normalized": False,
+        "pages": [
+            {
+                "index": 0,
+                "width": 612.0,
+                "height": 792.0,
+                "blocks": [
+                    {"kind": "title", "level": 1, "bbox": [50.0, 700.0, 500.0, 720.0],
+                     "source_text": "1 Introduction", "translated_text": "1 引言"},
+                    {"kind": "paragraph", "bbox": [50.0, 640.0, 500.0, 690.0],
+                     "source_text": "Body text", "translated_text": "正文"},
+                ],
+            },
+            {
+                "index": 1,
+                "width": 612.0,
+                "height": 792.0,
+                "blocks": [
+                    {"kind": "title", "level": 1, "bbox": [50.0, 700.0, 500.0, 720.0],
+                     "source_text": "2 Method", "translated_text": "2 方法"},
+                ],
+            },
+        ],
+        "figures": [{
+            "page_index": 0,
+            "bbox": [50.0, 300.0, 400.0, 500.0],
+            "caption": "Figure 1: Overview",
+            "translated_caption": "图 1 总览",
+        }],
+        "tables": [{
+            "page_index": 1,
+            "bbox": [50.0, 400.0, 500.0, 560.0],
+            "caption": "Table 1: Results",
+            "translated_caption": "表 1 结果",
+        }],
+        "references": [],
+        "logical_objects": [],
+        "glossary": [],
+    }
 
-    mineru_dir = isolated_storage / "outputs" / record.document_id / "mineru"
-    mineru_dir.mkdir(parents=True, exist_ok=True)
-    (mineru_dir / "images").mkdir()
-    (mineru_dir / "images" / "fig1.jpg").write_bytes(b"\xff\xd8fake")
-    content_list = [
-        [
-            {"type": "title", "content": {"title_content": [{"type": "text", "content": "1. Introduction"}], "level": 1}},
-            {"type": "paragraph", "content": {"paragraph_content": [{"type": "text", "content": "Body text"}]}},
-            {
-                "type": "image",
-                "content": {
-                    "image_source": {"path": "images/fig1.jpg"},
-                    "image_caption": [{"type": "text", "content": "Figure 1: Overview"}],
-                },
-            },
-        ],
-        [
-            {"type": "title", "content": {"title_content": [{"type": "text", "content": "2. Method"}], "level": 1}},
-            {
-                "type": "table",
-                "content": {
-                    "image_source": {"path": "images/fig1.jpg"},
-                    "table_caption": [{"type": "text", "content": "Table 1: Results"}],
-                },
-            },
-        ],
-    ]
-    (mineru_dir / "abc_content_list_v2.json").write_text(
-        json.dumps(content_list, ensure_ascii=False), encoding="utf-8"
+
+def test_structure_endpoint_returns_outline_and_figures(client):
+    from app.core.config import settings
+    from pypdf import PdfWriter
+
+    record = _done_document("doc-struct", "text", "译文")
+    output_dir = settings.output_dir / record.document_id
+    extraction = output_dir / "extraction"
+    extraction.mkdir(parents=True, exist_ok=True)
+    (extraction / "manifest.json").write_text(
+        json.dumps(_structure_manifest(), ensure_ascii=False), encoding="utf-8"
     )
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    writer.add_blank_page(width=612, height=792)
+    with (output_dir / "original.pdf").open("wb") as handle:
+        writer.write(handle)
+    record.original_pdf_url = f"/data/outputs/{record.document_id}/original.pdf"
+    save_document(record)
 
     response = client.get("/api/document/doc-struct/structure")
     assert response.status_code == 200, response.text
     structure = response.json()
-    assert [item["title"] for item in structure["outline"]] == ["1. Introduction", "2. Method"]
+    assert [item["title"] for item in structure["outline"]] == ["1 引言", "2 方法"]
     kinds = [figure["kind"] for figure in structure["figures"]]
     assert kinds == ["figure", "table"]
-    assert structure["figures"][0]["page"] == 1
-    assert structure["figures"][0]["url"].startswith("/data/outputs/")
+    assert [figure["page"] for figure in structure["figures"]] == [1, 2]
     assert structure["figures"][0]["caption"] == "Figure 1: Overview"
+    assert structure["figures"][0]["url"].startswith(
+        f"/data/outputs/{record.document_id}/figure-previews/"
+    )
 
 
 def test_library_search_finds_text_and_snippet(client):

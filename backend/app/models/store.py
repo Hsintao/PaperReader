@@ -156,6 +156,13 @@ def annotated_pdf_filename(source_filename: str) -> str:
     return f"{stem[:120]}_原文标注.pdf"
 
 
+def dual_pdf_filename(source_filename: str) -> str:
+    """Return the user-facing bilingual PDF filename for a source document."""
+    stem = Path(source_filename or "document.pdf").stem
+    stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", stem).strip(" .") or "document"
+    return f"{stem[:120]}_双语对照.pdf"
+
+
 def _serialize_items(items: list) -> str:
     return json.dumps([asdict(item) for item in items], ensure_ascii=False)
 
@@ -510,9 +517,9 @@ def purge_document_artifacts(record: DocumentRecord) -> list[str]:
     """Delete everything the pipeline derived for a document.
 
     That is the document's whole output directory (translated and annotated
-    PDFs, layout plan, alignment index, checkpoints, crops and previews) plus
-    the source file uploaded for it. Returns a human-readable line per removed
-    path, so the caller can report what happened.
+    PDFs, the extraction manifest and glossary, the alignment index, crops and
+    previews) plus the source file uploaded for it. Returns a human-readable
+    line per removed path, so the caller can report what happened.
     """
     import shutil
 

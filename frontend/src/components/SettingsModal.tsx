@@ -22,14 +22,6 @@ type Tab = 'providers' | 'translation' | 'reading'
 function providerDraft(settings: UserSettings): ProviderSettingsDraft {
   return {
     api_key: '', base_url: settings.base_url, model: settings.model,
-    pdf_parser: settings.pdf_parser, somark_api_key: '',
-    somark_base_url: settings.somark_base_url, mineru_api_key: '',
-    mineru_base_url: settings.mineru_base_url,
-    mineru_model_version: settings.mineru_model_version,
-    mineru_language: settings.mineru_language,
-    mineru_enable_formula: settings.mineru_enable_formula,
-    mineru_enable_table: settings.mineru_enable_table,
-    mineru_is_ocr: settings.mineru_is_ocr,
     vision_model: settings.vision_model
   }
 }
@@ -105,7 +97,7 @@ export function SettingsModal({ open, settings, onClose, onSettingsChange }: Pro
             <button className={tab === 'reading' ? 'active' : ''} onClick={() => setTab('reading')}><BookOpen size={16} />阅读偏好</button>
           </nav>
           <div className="modal-body profile-body">
-            {tab === 'providers' && <ProviderSettingsForm value={providers} onChange={setProviders} apiKeyConfigured={settings.api_key_configured} somarkKeyConfigured={settings.somark_api_key_configured} mineruKeyConfigured={settings.mineru_api_key_configured} allowClear />}
+            {tab === 'providers' && <ProviderSettingsForm value={providers} onChange={setProviders} apiKeyConfigured={settings.api_key_configured} allowClear />}
             {tab === 'translation' && <TranslationSettingsPanel domain={domain} onDomainChange={setDomain} />}
             {tab === 'reading' && (
               <section className="profile-section borderless">

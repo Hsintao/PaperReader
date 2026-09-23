@@ -6,17 +6,20 @@ PaperReader v2.2.0 Windows 可移植版
 
 1. 解压整个 ZIP，不能只把 PaperReader.exe 单独复制出来。
 2. 双击 PaperReader.exe。首次启动没有注册和登录，直接进入工作台。
-3. 点击左侧栏工具栏最右侧的齿轮按钮打开「设置」，填写大模型 API Key、Base URL、模型，以及 SoMark（默认解析器）的 API Key。配置保存在本机数据目录，只需填写一次。
+3. 点击左侧栏工具栏最右侧的齿轮按钮打开「设置」，填写大模型 API Key、Base URL 与模型名称。配置保存在本机数据目录，只需填写一次。
 4. 上传的论文、翻译结果和批注保存在 %LOCALAPPDATA%\PaperReader\data。
-5. 目前只支持上传 PDF 文件（点击「新解析」选择文件）。处理流程为：PDF → SoMark 云解析（或 MinerU 云解析 / 本地文字层解析）→ 翻译 → 版式合成 → 译文 PDF；译文按原稿坐标排回原页，页幅与页数不变。
-6. 翻译或版式合成失败时，可在进度面板点击“从此处重试”；已完成的云端解析和译块不会重复调用。
+5. 目前只支持上传 PDF 文件（点击「新解析」选择文件）。处理流程为：PDF → PDFMathTranslate-next worker（页面解析 → 翻译 → 版式合成）→ 译文 PDF。译文沿用原稿的页幅与页数，图片、公式与表格线条取自原稿。
+6. 翻译或版式合成失败时，可在进度面板点击“从此处重试”，也可在历史记录中点「重新处理」。worker 一次处理整篇论文，重试会从头重跑。如果上传时提示 worker 不可用，请先按「运行要求」装好翻译运行时。
 
 运行要求
 --------
 
 - Windows 10/11 64 位，并需要 Microsoft WebView2 Runtime（大多数当前 Windows 安装已包含）。
-- 接收者不需要安装 Python 或 Node.js。
-- 生成译文 PDF 需要电脑安装中文字体（Windows 自带 SimSun），不再需要 TeX Live。
+- 接收者不需要安装 Python 或 Node.js。翻译与译文 PDF 由一个独立的 PDFMathTranslate-next 运行时执行，该运行时单独提供：
+  - 打包时准备了 `desktop/worker-runtime` 的话，它会随包发布，启动器自动使用它；
+  - 否则在 `%LOCALAPPDATA%\PaperReader\.config.env` 中把 `PDFMATHTRANSLATE_PYTHON` 指向一个装有 worker 依赖的解释器（依赖见 `desktop/requirements-worker.txt`），或用 `PDFMATHTRANSLATE_WORKER` 指向独立的 worker 可执行文件。
+- 译文 PDF 与原文标注 PDF 自带字体，宿主不需要安装中文字体或 TeX。
+- worker 首次运行时会把版面模型、字体与 tiktoken 词表下载到 `%USERPROFILE%\.cache\babeldoc`；该目录可写且能访问模型来源，是首次翻译的前置条件。需要离线首跑时，把已下载的 `.cache\babeldoc` 一并复制到目标机器即可。
 - 不要分享 %LOCALAPPDATA%\PaperReader 下的隐藏配置或 data 用户数据：其中 settings.json 保存着你的 API Key。
 
 分享方法
@@ -29,6 +32,8 @@ PaperReader v2.2.0 Windows 可移植版
 
 在仓库根目录运行 `powershell -ExecutionPolicy Bypass -File .\desktop\build_portable.ps1`。
 脚本默认从 PATH 查找 npm 和 Python；也可通过 `-NpmPath`、`-PythonPath` 指定路径。
+
+可移植包必须带独立 Python 运行时：使用 python-build-standalone 等 standalone distribution，安装 `desktop/requirements-worker.txt` 后放入 `desktop/worker-runtime`，并在其中提供 `runtime-manifest.json`（`runtime_type` 为 `python-standalone`）。普通 venv 会被打包脚本拒绝；没有该运行时就不会生成可移植发布包。
 
 版本与升级
 ----------

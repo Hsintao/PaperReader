@@ -48,7 +48,7 @@ def test_failed_document_can_queue_retry_once(client, monkeypatch):
     assert client.post("/api/document/failed-doc/retry").status_code == 409
 
 
-def test_reprocess_reuses_the_parse_checkpoint_for_a_completed_document(client, monkeypatch):
+def test_reprocess_starts_from_parse_for_a_completed_document(client, monkeypatch):
     dispatched: list[tuple[str, str]] = []
 
     def fake_run(document_id: str, resume_from: str) -> None:
@@ -63,25 +63,27 @@ def test_reprocess_reuses_the_parse_checkpoint_for_a_completed_document(client, 
     init_stages(record)
     store.save_document(record)
     output_dir = settings.output_dir / "reprocess-doc"
-    output_dir.mkdir()
-    (output_dir / "extraction-checkpoint.json").write_text("{}", encoding="utf-8")
+    (output_dir / "extraction").mkdir(parents=True)
+    (output_dir / "extraction" / "manifest.json").write_text(
+        '{"schema_version": "paperreader-manifest-v1", "pages": []}', encoding="utf-8"
+    )
 
     response = client.post("/api/document/reprocess-doc/reprocess")
     assert response.status_code == 202, response.text
     assert response.json() == {
         "document_id": "reprocess-doc",
         "status": "queued",
-        "resume_from": "clean",
+        "resume_from": "parse",
     }
-    assert dispatched == [("reprocess-doc", "clean")]
+    assert dispatched == [("reprocess-doc", "parse")]
 
     status = client.get("/api/document/reprocess-doc").json()
     assert status["status"] == "queued"
     assert status["failure"] is None
-    assert any("Reprocess 1 queued from stage: clean" in line for line in status["logs"])
+    assert any("Reprocess 1 queued from stage: parse" in line for line in status["logs"])
 
 
-def test_reprocess_without_a_checkpoint_restarts_from_parse(client, monkeypatch):
+def test_reprocess_of_a_failed_document_also_starts_from_parse(client, monkeypatch):
     dispatched: list[tuple[str, str]] = []
 
     from app.api import routes_document
@@ -114,6 +116,36 @@ def test_reprocess_rejects_a_document_whose_source_is_gone(client):
     store.save_document(store.DocumentRecord("vanished-doc", "pdf", source, status="done"))
     source.unlink()
     assert client.post("/api/document/vanished-doc/reprocess").status_code == 409
+
+
+def test_cancel_needs_an_active_worker_and_a_cancelled_document_can_be_reprocessed(
+    client, monkeypatch
+):
+    from app.api import routes_document
+
+    source = settings.upload_dir / "cancelled.pdf"
+    source.write_bytes(b"pdf")
+    store.save_document(store.DocumentRecord("cancelled-doc", "pdf", source, status="processing"))
+
+    # A document whose worker already finished has nothing to cancel.
+    monkeypatch.setattr(routes_document, "cancel_worker", lambda document_id: False)
+    assert client.post("/api/document/cancelled-doc/cancel").status_code == 409
+
+    monkeypatch.setattr(routes_document, "cancel_worker", lambda document_id: True)
+    response = client.post("/api/document/cancelled-doc/cancel")
+    assert response.status_code == 200, response.text
+    assert response.json() == {"document_id": "cancelled-doc", "status": "cancelled"}
+    assert client.get("/api/document/cancelled-doc").json()["status"] == "cancelled"
+
+    # Cancelling twice is not an active run either.
+    assert client.post("/api/document/cancelled-doc/cancel").status_code == 409
+
+    dispatched: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        routes_document, "_run_retry_pipeline", lambda doc_id, resume: dispatched.append((doc_id, resume))
+    )
+    assert client.post("/api/document/cancelled-doc/reprocess").status_code == 202
+    assert dispatched == [("cancelled-doc", "parse")]
 
 
 def test_retry_rejects_non_failed_and_non_retryable_documents(client):

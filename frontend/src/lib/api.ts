@@ -40,19 +40,6 @@ export type FailureItem = {
   retry_count: number
 }
 
-export type LayoutIssueKind =
-  | 'block_original'
-  | 'cell_original'
-  | 'caption_original'
-  | 'page_original'
-
-export type LayoutIssueItem = {
-  kind: LayoutIssueKind | string
-  page: number
-  block_kind: string
-  message: string
-}
-
 export type DocumentStatus = {
   document_id: string
   status: string
@@ -66,7 +53,6 @@ export type DocumentStatus = {
   artifacts: ArtifactItem[]
   references: ReferenceItem[]
   logs: string[]
-  layout_issues: LayoutIssueItem[]
   progress: number
   current_stage?: string | null
   current_stage_label?: string | null
@@ -128,16 +114,6 @@ export type UserSettings = {
   api_key_configured: boolean
   base_url: string
   model: string
-  pdf_parser: 'local' | 'mineru' | 'somark'
-  somark_api_key_configured: boolean
-  somark_base_url: string
-  mineru_api_key_configured: boolean
-  mineru_base_url: string
-  mineru_model_version: string
-  mineru_language: string
-  mineru_enable_formula: boolean
-  mineru_enable_table: boolean
-  mineru_is_ocr: boolean
   vision_model: string
   theme: 'light' | 'dark'
   vision_enabled: boolean
@@ -193,18 +169,6 @@ export type ProviderSettingsDraft = {
   clear_api_key?: boolean
   base_url: string
   model: string
-  pdf_parser: 'local' | 'mineru' | 'somark'
-  somark_api_key: string
-  clear_somark_api_key?: boolean
-  somark_base_url: string
-  mineru_api_key: string
-  clear_mineru_api_key?: boolean
-  mineru_base_url: string
-  mineru_model_version: string
-  mineru_language: string
-  mineru_enable_formula: boolean
-  mineru_enable_table: boolean
-  mineru_is_ocr: boolean
   vision_model: string
 }
 
@@ -315,6 +279,10 @@ export async function retryDocument(documentId: string): Promise<{
   resume_from: string
 }> {
   return apiFetch(`/api/document/${documentId}/retry`, { method: 'POST' })
+}
+
+export async function cancelDocument(documentId: string): Promise<{ document_id: string; status: string }> {
+  return apiFetch(`/api/document/${documentId}/cancel`, { method: 'POST' })
 }
 
 export async function reprocessDocument(documentId: string): Promise<{
@@ -450,6 +418,4 @@ export async function postReviewDecision(
     body: JSON.stringify({ accept, edits })
   })
 }
-
-
 

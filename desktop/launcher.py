@@ -72,6 +72,42 @@ def _migrate_legacy_install(app_root: Path, config_path: Path) -> None:
         shutil.copytree(legacy_data, target_data)
 
 
+def _worker_runtime_root() -> Path:
+    """Where a bundled PDFMathTranslate-next runtime would live.
+
+    The translator's dependencies are far too heavy to freeze into the app, so
+    a packaged build ships them as a separate runtime directory next to the
+    bundle when one was prepared at build time.
+    """
+    root = _bundle_root() / "worker-runtime"
+    if not root.is_dir():
+        root = _executable_root() / "worker-runtime"
+    return root
+
+
+def _worker_python(runtime: Path) -> Path | None:
+    for candidate in (
+        runtime / "bin" / "python3",
+        runtime / "bin" / "python",
+        runtime / "Scripts" / "python.exe",
+        runtime / "python.exe",
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _prepare_worker() -> None:
+    """Point the backend at the worker and at a runtime it can run under."""
+    os.environ.setdefault("PAPERREADER_BUNDLE_ROOT", str(_bundle_root()))
+    if (os.environ.get("PDFMATHTRANSLATE_WORKER") or "").strip():
+        return
+    runtime = _worker_runtime_root()
+    interpreter = _worker_python(runtime) if runtime.is_dir() else None
+    if interpreter is not None:
+        os.environ.setdefault("PDFMATHTRANSLATE_PYTHON", str(interpreter))
+
+
 def _prepare_environment() -> Path:
     _prepare_python_path()
     app_root = _app_root()
@@ -98,6 +134,7 @@ def _prepare_environment() -> Path:
     os.environ.setdefault("PAPERREADER_DESKTOP", "1")
     os.environ.setdefault("CORS_ORIGINS", f"http://{HOST}:{PORT}")
     os.environ.setdefault("PYTHONUTF8", "1")
+    _prepare_worker()
     return app_root
 
 

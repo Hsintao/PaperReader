@@ -10,7 +10,7 @@ type Props = {
   anchorRect: DOMRect
 }
 
-const TEXT_KINDS = new Set(['translated_tex', 'source_tex', 'mineru_output'])
+const TEXT_KINDS = new Set(['manifest', 'glossary'])
 const IMAGE_EXT = /\.(png|jpe?g|gif|svg|webp)$/i
 const PDF_EXT = /\.pdf(\?|$)/i
 

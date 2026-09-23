@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$NpmPath = "",
     [string]$PythonPath = ""
 )
@@ -52,6 +52,37 @@ if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
 $PortableDir = Join-Path $ProjectRoot "dist\PaperReader"
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "desktop\README_zh.md") -Destination (Join-Path $PortableDir "使用说明.txt") -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "desktop\create_shortcut.ps1") -Destination $PortableDir -Force
+
+# The PDF translation worker's dependencies stay out of the frozen app; a
+# prepared runtime is copied beside it so the launcher finds it automatically.
+$WorkerRuntime = Join-Path $ProjectRoot "desktop\worker-runtime"
+if (-not (Test-Path -LiteralPath $WorkerRuntime)) {
+    throw "desktop\worker-runtime is required for a portable release. Prepare a standalone Python runtime first."
+}
+if (Test-Path -LiteralPath (Join-Path $WorkerRuntime "pyvenv.cfg")) {
+    throw "desktop\worker-runtime is a venv, not a portable Python runtime. Use a standalone distribution."
+}
+$WorkerManifest = Join-Path $WorkerRuntime "runtime-manifest.json"
+if (-not (Test-Path -LiteralPath $WorkerManifest)) {
+    throw "desktop\worker-runtime/runtime-manifest.json is missing. The manifest must identify a standalone runtime."
+}
+$WorkerMetadata = Get-Content -LiteralPath $WorkerManifest -Raw | ConvertFrom-Json
+if ($WorkerMetadata.runtime_type -ne "python-standalone") {
+    throw "desktop\worker-runtime/runtime-manifest.json must declare runtime_type=python-standalone."
+}
+$WorkerPython = Join-Path $WorkerRuntime "python.exe"
+if (-not (Test-Path -LiteralPath $WorkerPython)) {
+    $WorkerPython = Join-Path $WorkerRuntime "Scripts\python.exe"
+}
+if (-not (Test-Path -LiteralPath $WorkerPython)) {
+    throw "desktop\worker-runtime does not contain python.exe."
+}
+& $WorkerPython -c "import pdf2zh_next, babeldoc"
+if ($LASTEXITCODE -ne 0) { throw "The standalone worker runtime cannot import pdf2zh_next and babeldoc." }
+$Target = Join-Path $PortableDir "worker-runtime"
+if (Test-Path -LiteralPath $Target) { Remove-Item -LiteralPath $Target -Recurse -Force }
+Copy-Item -LiteralPath $WorkerRuntime -Destination $Target -Recurse -Force
+Write-Host "Bundled standalone worker runtime"
 
 $ReleaseDir = Join-Path $ProjectRoot "release"
 New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null

@@ -145,9 +145,9 @@ def set_stage_progress(
 
     The default progress only moves when a whole stage transitions to ``done``,
     which leaves the bar pinned near 0% during long stages (e.g. a large PDF
-    uploading to MinerU for ~40s). Callers inside a stage body pass a ``fraction``
-    in [0, 1] to reflect sub-stage progress so the bar keeps moving and the label
-    can explain what is happening.
+    being translated for several minutes). Callers inside a stage body pass a
+    ``fraction`` in [0, 1] to reflect sub-stage progress so the bar keeps moving
+    and the label can explain what is happening.
     """
     entry = next((s for s in record.stages if s.key == stage_key), None)
     if entry is None:

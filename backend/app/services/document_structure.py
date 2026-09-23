@@ -1,30 +1,22 @@
 """Backend-generated document outline and figure gallery.
 
-Structure comes from the PDF's extracted layout blocks; every figure and
-table gets a preview cropped from the original or translated PDF.
+Structure comes from the worker's manifest: titles become the outline, figures
+and tables become gallery entries with a preview cropped from the page. The
+source side crops the exact box the manifest reports; the translated side has no
+structure of ours, so its caption is located in the translated PDF's text layer.
 """
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
 from app.core.config import settings
 from app.models.store import DocumentRecord
-from app.services.alignment_service import _content_list_path
+from app.services.document_manifest import DocumentManifest, Figure, outline_of
 
 _FIGURE_LIMIT = 200
-
-
-def _caption_text(parts) -> str:
-    texts: list[str] = []
-    for part in parts or []:
-        value = str(part.get("content") or "") if isinstance(part, dict) else str(part)
-        value = value.strip()
-        if value and value not in texts:
-            texts.append(value)
-    return " ".join(texts)
+_CROP_MARGIN = 4
 
 
 def _url_for(path: Path) -> str | None:
@@ -35,57 +27,46 @@ def _url_for(path: Path) -> str | None:
     return "/data/" + relative.as_posix()
 
 
-def _figure_entry(block: dict, page_number: int, base_dir: Path) -> dict | None:
-    content = block.get("content") or {}
-    rel_path = str((content.get("image_source") or {}).get("path") or "")
-    if not rel_path:
+def _manifest_for(record: DocumentRecord) -> DocumentManifest | None:
+    path = settings.output_dir / record.document_id / "extraction" / "manifest.json"
+    if not path.is_file():
         return None
-    url = _url_for((base_dir / rel_path).resolve())
-    if not url:
+    from app.services.document_manifest import load_document_manifest
+
+    try:
+        return load_document_manifest(path)
+    except Exception:  # noqa: BLE001 - a broken manifest is a missing one
         return None
-    return {
-        "kind": "table" if block.get("type") == "table" else "figure",
-        "caption": _caption_text(content.get("table_caption") or content.get("image_caption")),
-        "page": page_number,
-        "url": url,
-    }
 
 
-def _structure_from_blocks(pages, base_dir: Path) -> dict:
-    outline: list[dict] = []
-    stack: list[tuple[int, dict]] = []
-    figures: list[dict] = []
-    for page_index, blocks in enumerate(pages):
-        if not isinstance(blocks, list):
-            continue
-        for block in blocks:
-            if not isinstance(block, dict):
-                continue
-            block_type = block.get("type")
-            content = block.get("content") or {}
-            if block_type == "title":
-                title = _caption_text(content.get("title_content"))
-                if not title:
-                    continue
-                try:
-                    level = max(1, int(content.get("level") or 1))
-                except (TypeError, ValueError):
-                    level = 1
-                item = {"title": title, "page_index": page_index, "items": []}
-                while stack and stack[-1][0] >= level:
-                    stack.pop()
-                if stack:
-                    stack[-1][1]["items"].append(item)
-                else:
-                    outline.append(item)
-                stack.append((level, item))
-            elif block_type in ("image", "chart", "table"):
-                if len(figures) >= _FIGURE_LIMIT:
-                    continue
-                entry = _figure_entry(block, page_index + 1, base_dir)
-                if entry:
-                    figures.append(entry)
-    return {"outline": outline, "figures": figures}
+def _gallery(manifest: DocumentManifest) -> list[Figure]:
+    """Figures and tables in reading order, capped for the gallery."""
+    entries: list[Figure] = []
+    for page in manifest.pages:
+        for figure in (*manifest.figures, *manifest.tables):
+            if figure.page_index == page.index:
+                entries.append(figure)
+        if len(entries) >= _FIGURE_LIMIT:
+            break
+    return entries[:_FIGURE_LIMIT]
+
+
+def _crop_from_bbox(
+    bbox: tuple[float, float, float, float], page_size: tuple[float, float]
+) -> tuple[float, float, float, float]:
+    """Turn a manifest box into pypdfium2's crop box, with a little margin.
+
+    Both are in PDF user space, but a crop box is expressed as the distance
+    from each page edge: (left, bottom, right, top).
+    """
+    width, height = page_size
+    x0, y0, x1, y1 = bbox
+    return (
+        max(0.0, x0 - _CROP_MARGIN),
+        max(0.0, y0 - _CROP_MARGIN),
+        max(0.0, width - x1 - _CROP_MARGIN),
+        max(0.0, height - y1 - _CROP_MARGIN),
+    )
 
 
 def _artwork_crop(page, textpage, start: int, length: int, kind: str) -> tuple | None:
@@ -191,17 +172,73 @@ def _float_crop(page, item: dict, anchors: list[tuple[float, float]]) -> tuple |
         textpage.close()
 
 
-def _with_pdf_previews(record: DocumentRecord, figures: list[dict], side: str) -> list[dict]:
-    """Locate captions in each PDF independently; cache thumbnails by mtime."""
+def _render_crop(pdf, page_index: int, crop, preview: Path, source_mtime: float) -> None:
+    if preview.exists() and preview.stat().st_mtime >= source_mtime:
+        return
+    page = pdf[page_index]
+    try:
+        bitmap = page.render(scale=0.8, crop=crop or (0, 0, 0, 0))
+        try:
+            bitmap.to_pil().save(preview)
+        finally:
+            bitmap.close()
+    finally:
+        page.close()
+
+
+def _original_previews(
+    record: DocumentRecord, figures: list[Figure]
+) -> list[dict]:
+    """Crop each figure from the source page using the manifest's own box."""
+    import pypdfium2 as pdfium
+
+    url = record.original_pdf_url
+    path = settings.data_dir / url.removeprefix("/data/") if url and url.startswith("/data/") else None
+    preview_dir = settings.output_dir / record.document_id / "figure-previews"
+    result: list[dict] = []
+    pdf = pdfium.PdfDocument(str(path)) if path and path.is_file() else None
+    try:
+        for index, figure in enumerate(figures):
+            item = figure.as_dict()
+            page_index = figure.page_index
+            if pdf is None or not (0 <= page_index < len(pdf)):
+                result.append(item)
+                continue
+            page = pdf[page_index]
+            try:
+                size = page.get_size()
+            finally:
+                page.close()
+            preview_dir.mkdir(parents=True, exist_ok=True)
+            preview = preview_dir / f"original-crop-{index + 1}.png"
+            if figure.bbox:
+                _render_crop(
+                    pdf,
+                    page_index,
+                    _crop_from_bbox(figure.bbox, size),
+                    preview,
+                    path.stat().st_mtime,
+                )
+            if preview.exists():
+                item["url"] = _url_for(preview) or ""
+            result.append(item)
+    finally:
+        if pdf is not None:
+            pdf.close()
+    return result
+
+
+def _translated_previews(record: DocumentRecord, figures: list[dict]) -> list[dict]:
+    """Locate each caption in the translated PDF and crop the artwork beside it."""
     import pypdfium2 as pdfium
     from pypdf import PdfReader
 
-    url = record.original_pdf_url if side == "original" else record.translated_pdf_url
+    url = record.translated_pdf_url
     if not url or not url.startswith("/data/"):
-        return figures if side == "original" else []
+        return []
     path = settings.data_dir / url.removeprefix("/data/")
     if not path.is_file():
-        return figures if side == "original" else []
+        return []
     reader = PdfReader(path)
     pages = [page.extract_text() or "" for page in reader.pages]
     anchors: dict[tuple[int, str], list[tuple[float, float]]] = {}
@@ -212,57 +249,48 @@ def _with_pdf_previews(record: DocumentRecord, figures: list[dict], side: str) -
                 (float(destination['/Left']), float(destination['/Top']))
             )
     preview_dir = settings.output_dir / record.document_id / "figure-previews"
-    result = []
+    result: list[dict] = []
     pdf = pdfium.PdfDocument(str(path))
     try:
         for figure_index, figure in enumerate(figures):
             item = dict(figure)
-            label = item.get("label") or ""
-            if not label:
-                match = re.match(r"(Figure|Fig\.?|Table|图|表)\s*(\d+)", item["caption"], re.I)
-                if match:
-                    label = f"{item['kind'].title()} {match.group(2)}"
+            item.pop("url", None)
+            caption = str(item.get("caption") or "")
+            match = re.match(r"(Figure|Fig\.?|Table|图|表)\s*(\d+)", caption, re.I)
+            label = f"{item['kind'].title()} {match.group(2)}" if match else ""
             number = re.search(r"\d+", label)
             page_index = None
             if number:
                 names = r"(?:Figure|Fig\.?|图)" if item["kind"] == "figure" else r"(?:Table|表)"
-                # Extraction can merge subfigure labels onto the caption line
-                # ("…bFigure 2:…"), so accept a mid-line label only when no
-                # page anchors the caption at a line start.
                 patterns = (re.compile(rf"^\s*({names}\s*{number.group()}\s*[.:：．][^\n]*)", re.I | re.M),
                             re.compile(rf"({names}\s*{number.group()}\s*[.:：．][^\n]*)", re.I))
                 for pattern in patterns:
                     for index, text in enumerate(pages):
-                        match = pattern.search(text)
-                        if match:
+                        found = pattern.search(text)
+                        if found:
                             page_index = index
-                            item["locate_text"] = match.group(1).strip()
-                            if side == "translated" or len(item["caption"]) <= len(label):
+                            item["locate_text"] = found.group(1).strip()
+                            if len(item.get("caption") or "") <= len(label):
                                 item["caption"] = item["locate_text"]
                             break
                     if page_index is not None:
                         break
-            if page_index is None and side == "original" and item.get("page"):
-                page_index = item["page"] - 1
-            if page_index is not None:
-                item["page"] = page_index + 1
-                preview_dir.mkdir(parents=True, exist_ok=True)
-                preview = preview_dir / f"{side}-crop-{figure_index + 1}.png"
-                if not preview.exists() or preview.stat().st_mtime < path.stat().st_mtime:
-                    page = pdf[page_index]
-                    try:
-                        crop = _float_crop(page, item, anchors.get((page_index, item['kind']), []))
-                        bitmap = page.render(scale=0.8, crop=crop or (0, 0, 0, 0))
-                        try:
-                            bitmap.to_pil().save(preview)
-                        finally:
-                            bitmap.close()
-                    finally:
-                        page.close()
-                if not item["url"] or side == "translated":
-                    item["url"] = _url_for(preview) or ""
-            elif side == "translated":
+            if page_index is None or not (0 <= page_index < len(pdf)):
                 item["page"] = None
+                result.append(item)
+                continue
+            item["page"] = page_index + 1
+            preview_dir.mkdir(parents=True, exist_ok=True)
+            preview = preview_dir / f"translated-crop-{figure_index + 1}.png"
+            _render_crop(
+                pdf,
+                page_index,
+                _float_crop(pdf[page_index], item, anchors.get((page_index, item["kind"]), [])),
+                preview,
+                path.stat().st_mtime,
+            )
+            if preview.exists():
+                item["url"] = _url_for(preview) or ""
             result.append(item)
     finally:
         pdf.close()
@@ -270,46 +298,17 @@ def _with_pdf_previews(record: DocumentRecord, figures: list[dict], side: str) -
 
 
 def build_document_structure(record: DocumentRecord) -> dict:
-    content_path = _content_list_path(record)
-    if content_path:
-        try:
-            pages = json.loads(content_path.read_text(encoding="utf-8"))
-            structure = _structure_from_blocks(pages, content_path.parent)
-        except Exception:
-            pass
-        else:
-            if structure["outline"] or structure["figures"]:
-                return _with_previews(record, structure)
-    checkpoint = settings.output_dir / record.document_id / "extraction-checkpoint.json"
-    if checkpoint.is_file():
-        try:
-            payload = json.loads(checkpoint.read_text(encoding="utf-8"))
-            pages = payload.get("content_blocks")
-            if pages:
-                # Block image paths are relative to the parser's extraction
-                # directory, which the checkpoint records through images_dir.
-                images_dir = payload.get("images_dir")
-                base_dir = Path(images_dir).parent if images_dir else checkpoint.parent
-                structure = _structure_from_blocks(pages, base_dir)
-                if structure["outline"] or structure["figures"]:
-                    return _with_previews(record, structure)
-        except Exception:
-            pass
-    return {"outline": [], "figures": []}
-
-
-def _with_previews(record: DocumentRecord, structure: dict) -> dict:
-    """Attach page previews without letting a rendering failure drop the outline."""
+    manifest = _manifest_for(record)
+    if manifest is None or not manifest.pages:
+        return {"outline": [], "figures": []}
+    figures = _gallery(manifest)
+    structure = {"outline": outline_of(manifest), "figures": []}
     try:
-        structure["figures"] = _with_pdf_previews(record, structure["figures"], "original")
-    except Exception:
-        structure["figures"] = [
-            {**figure, "url": figure.get("url") or ""} for figure in structure["figures"]
-        ]
+        structure["figures"] = _original_previews(record, figures)
+    except Exception:  # noqa: BLE001 - the outline survives a failed crop
+        structure["figures"] = [figure.as_dict() for figure in figures]
     try:
-        structure["translated_figures"] = _with_pdf_previews(
-            record, structure["figures"], "translated"
-        )
-    except Exception:
+        structure["translated_figures"] = _translated_previews(record, structure["figures"])
+    except Exception:  # noqa: BLE001 - the source gallery survives
         structure["translated_figures"] = []
     return structure

@@ -1,5 +1,11 @@
 # SoMark PDF 解析接入执行计划
 
+> **历史计划，已作废**：本文记录 2026-09-21 的 SoMark 解析接入方案。该方案随后被整体回退——
+> SoMark、MinerU 与本地解析器全部移除，解析、翻译与译文排版统一交给
+> PDFMathTranslate-next worker。当前方案见
+> [2026-09-22-pdf-parser-pdfmathtranslate-migration.md](2026-09-22-pdf-parser-pdfmathtranslate-migration.md)，
+> 当前实现见 [../../DEVELOPMENT.md](../../DEVELOPMENT.md) 第 19 节。正文保留原样，不再代表当前设计。
+>
 > 生成日期:2026-09-21。本文档是给执行者的完整实施说明,目标仓库为 PaperReader
 > (FastAPI 后端 `backend/app` + React/Vite 前端 `frontend/src`)。
 > 已完成的调研结论全部写明,执行者无需重新调研,按清单逐项实施即可。

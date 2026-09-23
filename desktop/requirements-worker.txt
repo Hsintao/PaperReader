@@ -1,0 +1,20 @@
+# Dependencies of the PDF translation worker (PDFMathTranslate-next).
+#
+# They are deliberately kept out of the backend's environment: the worker runs
+# as its own process and pulls in ONNX, OpenCV, scikit-image, HuggingFace Hub
+# and a font/model cache. Install them into a dedicated runtime:
+#
+# For development, a venv is fine. A release must use a standalone Python
+# distribution (for example python-build-standalone) unpacked at
+# desktop/worker-runtime, with the dependencies installed into that runtime.
+# The release scripts reject pyvenv.cfg and require runtime-manifest.json.
+#
+# Build scripts copy the validated standalone runtime into the bundle; the
+# launcher then finds it automatically. See
+# desktop/README_macos_zh.md and desktop/README_zh.md.
+#
+# Python 3.10 or newer, below 3.14. On macOS, scipy older than 1.16 fails to
+# load on recent releases, which is why the runtime should use Python 3.11+.
+pdf2zh-next==2.9.0
+babeldoc==0.6.2
+scipy>=1.16.0

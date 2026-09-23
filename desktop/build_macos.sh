@@ -70,6 +70,38 @@ if (( ${#MISSING_LIBS[@]} )); then
   echo "::error title=missing runtime libraries::${MISSING_LIBS[*]} were not copied into Contents/Frameworks"
   exit 1
 fi
+# The PDF translation worker's dependencies are kept out of the app bundle: a
+# prepared runtime is copied in whole so the launcher can find it at
+# Contents/Resources/worker-runtime. Copied before signing so the signature
+# covers it.
+WORKER_RUNTIME="$PROJECT_ROOT/desktop/worker-runtime"
+if [[ ! -d "$WORKER_RUNTIME" ]]; then
+  echo "::error title=no worker runtime::desktop/worker-runtime is required for a portable release"
+  exit 1
+fi
+if [[ -e "$WORKER_RUNTIME/pyvenv.cfg" ]]; then
+  echo "::error title=non-portable worker runtime::desktop/worker-runtime is a venv; use a standalone Python distribution"
+  exit 1
+fi
+if [[ ! -f "$WORKER_RUNTIME/runtime-manifest.json" ]] || ! grep -q '"runtime_type"[[:space:]]*:[[:space:]]*"python-standalone"' "$WORKER_RUNTIME/runtime-manifest.json"; then
+  echo "::error title=invalid worker runtime::runtime-manifest.json must declare runtime_type=python-standalone"
+  exit 1
+fi
+WORKER_PYTHON="$WORKER_RUNTIME/bin/python3"
+if [[ ! -x "$WORKER_PYTHON" ]]; then
+  WORKER_PYTHON="$WORKER_RUNTIME/bin/python"
+fi
+if [[ ! -x "$WORKER_PYTHON" ]]; then
+  echo "::error title=invalid worker runtime::no standalone Python interpreter found"
+  exit 1
+fi
+if ! "$WORKER_PYTHON" -c 'import pdf2zh_next, babeldoc'; then
+  echo "::error title=invalid worker runtime::the standalone runtime cannot import pdf2zh_next and babeldoc"
+  exit 1
+fi
+rm -rf "$PROJECT_ROOT/dist/PaperReader.app/Contents/Resources/worker-runtime"
+cp -R "$WORKER_RUNTIME" "$PROJECT_ROOT/dist/PaperReader.app/Contents/Resources/worker-runtime"
+echo "Bundled standalone worker runtime: $(du -sh "$PROJECT_ROOT/dist/PaperReader.app/Contents/Resources/worker-runtime" | cut -f1)"
 codesign --force --deep --sign - "$PROJECT_ROOT/dist/PaperReader.app"
 
 mkdir -p "$PROJECT_ROOT/release"

@@ -1,5 +1,24 @@
 # Upgrading PaperReader
 
+## Upgrading from v2.2.0 to the PDFMathTranslate-next worker
+
+Parsing, translation and translated-PDF layout now all happen in one separate worker process built on PDFMathTranslate-next `2.9.0` and BabelDOC `0.6.2`. The backend starts that process, follows the JSON events it writes and reads the manifest it publishes; it never imports the translator, and the translator's dependencies (ONNX, OpenCV, scikit-image, HuggingFace Hub, model and font caches) are not installed alongside the backend.
+
+What to do when upgrading:
+
+1. **Update the environment.** The LLM endpoint variables (`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`) keep their meaning. Add `PDFMATHTRANSLATE_PYTHON`, pointing at an interpreter that has the worker's dependencies, or `PDFMATHTRANSLATE_WORKER` for a standalone worker executable (the job file path is appended to it). `PDF_PARSER`, `SOMARK_*`, `MINERU_*`, `LAYOUT_DEBUG` and the in-house translator's tuning knobs (`TRANSLATE_CONCURRENCY`, `TRANSLATE_MAX_RETRIES`, `TRANSLATE_BATCH_MAX_CHARS`, `TRANSLATE_SEGMENT_MAX_CHARS`, `LLM_RATE_LIMIT_RPS`) are no longer read; the parser keys are also dropped from `settings.json` on the first start.
+2. **Provide a worker runtime.** The backend does not ship the translator:
+
+   ```bash
+   python3.13 -m venv worker-runtime
+   worker-runtime/bin/pip install -r desktop/requirements-worker.txt
+   ```
+
+   For a packaged build, prepare that runtime at `desktop/worker-runtime` before running `desktop/build_macos.sh` / `desktop/build_portable.ps1`; the launcher then finds it inside the bundle. Without one, uploads fail immediately with `409 {"code": "worker_unavailable"}`.
+3. **Remove the leftovers of the old pipeline.** `python scripts/cleanup_legacy_artifacts.py` deletes what earlier versions left inside `DATA_DIR/outputs` — the per-parser parse directories, the extraction and translation checkpoints, the layout plan and the layout debug PDF — and resets the affected documents so the reader offers 重新处理 (reprocess).
+4. **Re-upload or reprocess the documents.** Old translated PDFs, parse caches and checkpoints are not inputs to the new pipeline: a document translated by an earlier version keeps its old PDF until it is reprocessed (`POST /api/document/{id}/reprocess`, or the 重新处理 button in the reader) or uploaded again. One worker pass covers the whole document, so a retry or a reprocess always starts from parsing rather than resuming.
+5. **Check your integrations.** `PUT /api/settings/me/providers` now accepts only `api_key`, `clear_api_key`, `base_url`, `model` and `vision_model`, and `GET /api/settings/me` only returns `api_key_configured`, `base_url`, `model`, `vision_model`, `theme`, `vision_enabled`, `vision_mode`, `show_annotated_pdf`, `translation_domain` and `favorites`. Upload no longer takes a parser choice. Documents now carry `translated_pdf`, `annotated_pdf`, `original_pdf`, `source_pdf`, `manifest`, `glossary` and `alignment_index` artifacts under `outputs/<id>/`, and no host Chinese font is needed any more — the fonts ship with the app.
+
 ## Upgrading from v2.1.12 to v2.2.0
 
 Keep the existing `DATA_DIR`, database, and provider settings. No manual database migration is required; the LaTeX-only columns (`translated_tex_path`, `last_compile_warning`, `latex_recovery_json`) simply stop being read and written.
@@ -150,11 +169,11 @@ Release versions are `2.1.0`; the Git tag is `v2.1`.
 
 Stop the backend and optional worker. Copy the entire existing data directory and `.env` somewhere safe. `DATA_DIR` is resolved relative to the repository root, not the backend working directory. The historical default without a `.env` was `../data`; an existing `.env` can point elsewhere. Preserve the actual directory, including `uploads`, `outputs`, `paperreader.db` (if present), and `chat_sessions.json` (if present).
 
-Keep the same `DATA_DIR`, `SQLITE_DB_NAME`, and `AUTH_SECRET_KEY` when upgrading an authenticated `feat_fix` installation. The database schema and encrypted settings format are unchanged. Changing the secret makes stored API keys unreadable. Source and generated TeX paths can be absolute, so keep the original data location when reusing an existing SQLite database. Do not merely copy that database to a different OS or folder and expect its absolute paths to be rewritten.
+Keep the same `DATA_DIR`, `SQLITE_DB_NAME`, and `AUTH_SECRET_KEY` when upgrading an authenticated `feat_fix` installation. The database schema and encrypted settings format are unchanged. Changing the secret makes stored API keys unreadable. Stored source and generated file paths can be absolute, so keep the original data location when reusing an existing SQLite database. Do not merely copy that database to a different OS or folder and expect its absolute paths to be rewritten.
 
 ## Source / web installation
 
-Use Python 3.11 (3.12 is also checked in CI), Node.js 20, and the existing TeX Live / XeLaTeX / latexmk installation. After switching to v2.0:
+Use Python 3.11 (3.12 is also checked in CI) and Node.js 20. No TeX installation is involved: the current release translates through the PDFMathTranslate-next worker described in the first section, while the paragraphs below preserve what earlier releases required. After switching to v2.0:
 
 ```sh
 conda activate pt
@@ -163,9 +182,7 @@ npm --prefix frontend ci
 npm --prefix frontend run build
 ```
 
-Keep your existing `.env`; add desired new options from `.env.example` instead of overwriting credentials or paths. An old configuration with `MINERU_API_KEY` and no `PDF_PARSER` retains MinerU parsing. New installations use `PDF_PARSER=mineru`. Set `PDF_PARSER=local` to explicitly use local extraction.
-
-Since the SoMark parser was added, the built-in default is `PDF_PARSER=somark`. An installation that sets neither `PDF_PARSER` nor a saved parser choice now needs `SOMARK_API_KEY`; keep `PDF_PARSER=mineru` (or `local`) to stay on the previous backend. A saved `settings.json` that already names a parser keeps it.
+Keep your existing `.env`; add desired new options from `.env.example` instead of overwriting credentials or paths. The parser settings recorded here belong to earlier releases: an old configuration with `MINERU_API_KEY` and no `PDF_PARSER` used MinerU, new installations at the time used `PDF_PARSER=mineru`, `PDF_PARSER=local` selected local extraction, and the added SoMark parser became the built-in default. A saved `settings.json` that names a parser used to keep it. None of these keys or values is read now, and a parser choice no longer exists.
 
 `make backend` / `make frontend` remain supported. A built frontend is also served by FastAPI at port 8000. Production builds use same-origin API and file URLs by default, including `127.0.0.1` in the Windows app. For a separately hosted UI, set `VITE_BACKEND_URL` at frontend build time and configure `CORS_ORIGINS` on the backend. Keep the UI and API on the same origin.
 
@@ -181,7 +198,7 @@ The `legacy_import` helper that indexed old `outputs/<document UUID>/original.pd
 
 Download `PaperReader-v2.0.0-Windows-x64.zip` and its `.sha256` file from the v2.0 release. Compare the hash with `Get-FileHash -Algorithm SHA256`. Extract the **whole** ZIP to a writable folder and run `PaperReader.exe`; Python and Node.js are bundled/not needed on the recipient's computer.
 
-Windows 10/11 x64 is the target. Microsoft Edge supplies the app window; otherwise the default browser opens. TeX Live with `latexmk` and `xelatex` remains an external requirement for translated PDF generation. Cloud translation/online retrieval requires connectivity and your own provider credentials. The EXE is unsigned and the release does not claim an Authenticode signature.
+Windows 10/11 x64 is the target. Microsoft Edge supplies the app window; otherwise the default browser opens. That release required TeX Live with `latexmk` and `xelatex` for translated PDF generation; the current release translates through the PDFMathTranslate-next worker runtime described at the top of this document. Cloud translation/online retrieval requires connectivity and your own provider credentials. The EXE is unsigned and the release does not claim an Authenticode signature.
 
 For upgrades between portable builds, keep the application/data location stable and preserve `config.env` and `data/`. Extract into a separate staging directory, then replace only application files after closing PaperReader. Do not overwrite your configuration with the new sample. Each recipient must use their own local data and credentials.
 
@@ -193,4 +210,4 @@ Stop v2.0, switch to `v1.0` or `release/v1.0`, and restore the matching pre-upgr
 
 CI runs backend regression checks on Linux, macOS, and Windows with Python 3.11, plus Linux with Python 3.12. The Windows job builds a fresh frontend and executable, extracts the ZIP to a path containing spaces/Chinese characters, then checks HTML/JS, PDF-worker MIME, cookies, upload/read, account isolation, settings, chat persistence, login/logout and process restart. It publishes only after those jobs succeed.
 
-The private `homework7.mmd` regression is skipped when unavailable. External MinerU/LLM calls, human review of real-paper translation quality, the interactive Edge taskbar icon and Windows 10 specifically are not exercised by the headless packaged smoke test. Existing unit tests cover translation splitting/retry, layout conversion and failed-PDF compilation safety.
+The private `homework7.mmd` regression is skipped when unavailable. External LLM calls, the PDFMathTranslate-next worker (it needs a translation API key), human review of real-paper translation quality, the interactive Edge taskbar icon and Windows 10 specifically are not exercised by the headless packaged smoke test. Existing unit tests cover the worker process boundary and its event mapping, manifest parsing, document structure, alignment, glossary handling, provider settings and upload guards.

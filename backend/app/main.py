@@ -16,6 +16,7 @@ from app.api.routes_settings import router as settings_router
 from app.api.routes_upload import router as upload_router
 from app.core.config import settings
 from app.core.database import init_database
+from app.services.app_settings import purge_removed_keys
 from app.services.glossary_service import start_refresh_scheduler
 
 
@@ -36,6 +37,7 @@ app.add_middleware(
 )
 
 init_database()
+purge_removed_keys()
 start_refresh_scheduler()
 
 app.include_router(settings_router, prefix="/api", tags=["settings"])

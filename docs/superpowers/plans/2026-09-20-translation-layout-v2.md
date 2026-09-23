@@ -1,5 +1,11 @@
 # Translation Layout V2 Implementation Plan
 
+> **Historical.** This plan describes PaperReader's own translated-PDF renderer
+> (`layout_model` / `layout_fit` / `layout_render`), which has been replaced by
+> the PDFMathTranslate-next worker. See
+> `2026-09-22-pdf-parser-pdfmathtranslate-migration.md` and `docs/DEVELOPMENT.md`
+> §19 for the current design. Kept as the record of how that renderer worked.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `subagent-driven-development` (recommended) or `executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 将当前定位式 PDF 翻译链路升级为固定中文模板、图表注可翻译、公式不丢失、严格一页对应一页并带结构化回退诊断的 Translation Layout V2。

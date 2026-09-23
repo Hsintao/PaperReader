@@ -70,8 +70,27 @@ open_url() {
 
 if [ ! -f "$ROOT/.env" ]; then
   cp "$ROOT/.env.example" "$ROOT/.env"
-  echo "created .env from .env.example — fill in OPENAI_API_KEY / SOMARK_API_KEY"
-  echo "or set them in the in-app Settings before uploading a paper."
+  echo "created .env from .env.example — fill in OPENAI_API_KEY and point"
+  echo "PDFMATHTRANSLATE_PYTHON at a runtime with the worker dependencies"
+  echo "(desktop/requirements-worker.txt), or set them from the app's Settings."
+fi
+
+# --- worker runtime ---------------------------------------------------------
+
+# PDFMathTranslate-next runs in its own interpreter, never in the backend's, and
+# the backend only reports a missing runtime as a failed document. Say it here
+# instead, where the operator can still act on it.
+if [ -z "${PDFMATHTRANSLATE_WORKER:-}" ] &&
+  ! grep -qE '^[[:space:]]*PDFMATHTRANSLATE_WORKER=[^[:space:]]' "$ROOT/.env" 2>/dev/null; then
+  WORKER_PYTHON="$(cd "$ROOT/backend" && "$PYTHON" -c '
+from app.core.config import settings
+print(settings.pdfmathtranslate_python)
+' 2>/dev/null)"
+  if [ -n "$WORKER_PYTHON" ] && ! "$WORKER_PYTHON" -c 'import pdf2zh_next, babeldoc' >/dev/null 2>&1; then
+    echo "warning: $WORKER_PYTHON cannot import pdf2zh_next/babeldoc, so uploads will fail."
+    echo "         Set PDFMATHTRANSLATE_PYTHON in .env to a runtime built from"
+    echo "         desktop/requirements-worker.txt."
+  fi
 fi
 
 # --- port -------------------------------------------------------------------

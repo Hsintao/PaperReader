@@ -1,9 +1,16 @@
-import hashlib
-import json
+"""Document pipeline: upload → PDFMathTranslate-next worker → reader artifacts.
+
+The translation itself happens in the worker process (see
+:mod:`app.services.pdf_translation_worker`). This module owns everything around
+it: document state, stage reporting, artifact registration, the reader's
+structures (outline, figures, references, bilingual alignment, annotated PDF)
+and reading progress.
+"""
+
+import csv
 import re
 import shutil
 import uuid
-from collections import Counter
 from pathlib import Path
 
 from app.core.config import settings
@@ -11,231 +18,43 @@ from app.models.store import (
     ArtifactEntry,
     DocumentRecord,
     FailureEntry,
-    ReferenceEntry,
     annotated_pdf_filename,
+    dual_pdf_filename,
     save_document,
     set_document_metadata,
     translated_pdf_filename,
 )
-from app.services.annotation_render import ANNOTATION_REVISION, render_annotated_pdf
-from app.services.cjk_fonts import require_cjk_font
-from app.services.layout_fit import (
-    MIN_BODY_SIZE,
-    MIN_TITLE_SIZE,
-    NOTHING_TO_TRANSLATE,
-    TITLE_LEADING_RATIO,
-    TITLE_SIZE_BONUS,
-    TextMeasurer,
-    TypographyProfile,
-    plan_document,
-)
-from app.services.layout_model import (
-    PageFrame,
-    align_blocks_to_text_layer,
-    attach_inline_formula_boxes,
-    attach_known_regions,
-    measure_pages,
-    merge_known_regions,
-    pages_from_middle,
-    synthesize_unclaimed_paragraphs,
-)
-from app.services.layout_render import prepare_formula_crops, render_document
-from app.services.mineru_layout import (
-    Image as IRImage,
-    ListBlock as IRListBlock,
-    Paragraph as IRParagraph,
-    TextRun as IRTextRun,
-    Title as IRTitle,
-    _block_slots,
-    blocks_to_ir,
-    collect_translatable_strings,
-    merge_continuation_groups,
-    plan_continuation_groups,
-    split_continuation_groups,
-)
 from app.services.alignment_service import save_exact_alignment
-from app.services.mineru_service import (
-    MinerUConfig,
-    MinerUResult,
-    extract_structured_from_pdf,
-    extract_structured_from_pdf_local,
-    extract_text_from_pdf_text_layer,
+from app.services.annotation_render import ANNOTATION_REVISION, render_annotated_pdf
+from app.services.app_settings import AppSettings
+from app.services.document_ir import Block, Title
+from app.services.document_manifest import (
+    DocumentManifest,
+    PageGeometry,
+    load_document_manifest,
 )
-from app.services.somark_service import SoMarkConfig, extract_structured_from_pdf_somark
+from app.services.glossary_service import glossary_terms_for_prompt, record_candidate_terms
+from app.services.pdf_extraction import PdfTranslationResult
+from app.services.pdf_translation_worker import WorkerCancelled, WorkerError, run_worker
 from app.services.stage_tracker import (
     init_stages,
     prepare_stages_for_retry,
     set_stage_progress,
     with_stage,
 )
-from app.services.translate_service import (
-    extract_document_terms,
-    translate_concise,
-    translate_ir,
-)
-from app.services.glossary_service import (
-    glossary_terms_for_prompt,
-    record_candidate_terms,
-)
-from app.services.translation_prompts import (
-    DOMAINS,
-    format_glossary_context,
-    merge_glossary_terms,
-    normalize_domain,
-)
+from app.services.translation_prompts import DOMAINS, normalize_domain
 from app.services.vision_check_service import run_vision_check_on_markdown
-from app.services.app_settings import AppSettings
 
-_REFERENCE_SPLIT_PATTERN = re.compile(r"(?im)^\s*(references|bibliography)\s*$")
-_REFERENCE_ITEM_PATTERN = re.compile(r"^\s*(\[\d+\]|\d+\.|\d+\))\s+(.+)")
-_NOUGAT_MISSING_PAGE_PATTERN = re.compile(r"^\s*\[MISSING_PAGE[^\]]*\]\s*$", re.MULTILINE)
 _TITLE_H1_PATTERN = re.compile(r"(?m)^#\s+(.+)$")
+_NOUGAT_MISSING_PAGE_PATTERN = re.compile(r"^\s*\[MISSING_PAGE[^\]]*\]\s*$", re.MULTILINE)
+
+MANIFEST_KIND = "manifest"
+GLOSSARY_KIND = "glossary"
 
 
-def _normalize_for_alignment(text: str) -> tuple[str, list[int]]:
-    normalized_chars: list[str] = []
-    index_map: list[int] = []
-    previous_was_space = True
-
-    for idx, char in enumerate(text):
-        if char.isalnum():
-            normalized_chars.append(char.lower())
-            index_map.append(idx)
-            previous_was_space = False
-            continue
-
-        if char.isspace() and not previous_was_space and normalized_chars:
-            normalized_chars.append(" ")
-            index_map.append(idx)
-            previous_was_space = True
-
-    if normalized_chars and normalized_chars[-1] == " ":
-        normalized_chars.pop()
-        index_map.pop()
-
-    return "".join(normalized_chars), index_map
-
-
-def _recover_missing_leading_text(primary_text: str, fallback_text: str) -> tuple[str, bool]:
-    if not primary_text.strip() or not fallback_text.strip():
-        return primary_text, False
-
-    normalized_primary, primary_map = _normalize_for_alignment(primary_text)
-    normalized_fallback, fallback_map = _normalize_for_alignment(fallback_text)
-    anchor_len = min(80, len(normalized_primary) // 2, len(normalized_fallback) // 2)
-    anchor_len = max(anchor_len, 24)
-    min_leading_chars = max(24, anchor_len // 2)
-    if len(normalized_primary) < anchor_len or len(normalized_fallback) < anchor_len:
-        return primary_text, False
-
-    search_limit = min(len(normalized_primary) - anchor_len, 1200)
-    for primary_offset in range(0, search_limit + 1, 60):
-        anchor = normalized_primary[primary_offset : primary_offset + anchor_len].strip()
-        if len(anchor) < anchor_len // 2:
-            continue
-
-        fallback_offset = normalized_fallback.find(anchor)
-        if fallback_offset == -1:
-            continue
-        if fallback_offset < min_leading_chars:
-            return primary_text, False
-
-        raw_primary_start = primary_map[primary_offset]
-        raw_fallback_end = fallback_map[fallback_offset]
-        leading_prefix = fallback_text[:raw_fallback_end].strip()
-        if len(leading_prefix) < min_leading_chars:
-            return primary_text, False
-
-        merged = f"{leading_prefix}\n\n{primary_text[raw_primary_start:].lstrip()}"
-        return merged.strip(), True
-
-    return primary_text, False
-
-
-def _clean_nougat_text_with_metadata(text: str, leading_fallback_text: str = "") -> tuple[str, int, bool]:
-    """Strip extraction artifacts that would corrupt downstream stages.
-
-    Removes missing-page markers, recovers a leading section the primary text
-    lost (matched against the PDF's embedded text layer), and collapses
-    blank-line runs.
-    """
-    missing_page_count = len(_NOUGAT_MISSING_PAGE_PATTERN.findall(text))
-    cleaned = _NOUGAT_MISSING_PAGE_PATTERN.sub("", text)
-    cleaned, recovered_leading = _recover_missing_leading_text(cleaned, leading_fallback_text)
-    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
-    return cleaned.strip(), missing_page_count, recovered_leading
-
-
-def _derive_display_title(source_filename: str, extracted_text: str) -> tuple[str, bool]:
-    matched = _TITLE_H1_PATTERN.search(extracted_text)
-    if matched:
-        return matched.group(1).strip(), False
-    return Path(source_filename).stem.strip(), True
-
-
-def _enrich_metadata(record: DocumentRecord, display_title: str) -> None:
-    """Best-effort Semantic Scholar lookup for title/authors/year/venue.
-
-    Failure or a lookup miss leaves the document untouched; the pipeline
-    never depends on this succeeding.
-    """
-    if record.metadata:
-        return
-    try:
-        from app.services.paper_metadata import fetch_paper_metadata
-
-        metadata = fetch_paper_metadata(display_title)
-    except Exception:
-        metadata = {}
-    if not metadata:
-        return
-    record.metadata = metadata
-    set_document_metadata(record.document_id, metadata)
-    record.logs.append(f"Metadata enriched: {str(metadata.get('title', ''))[:80]}")
-
-
-def _ir_to_translated_markdown(ir_blocks: list) -> str:
-    """Render a (translated) IR list back into a lightweight Markdown string
-    so it can be used by chat / preview surfaces that expect plain text."""
-    parts: list[str] = []
-    for block in ir_blocks:
-        if isinstance(block, IRTitle):
-            hashes = "#" * max(1, min(block.level, 6))
-            parts.append(f"{hashes} {block.text}")
-        elif isinstance(block, IRParagraph):
-            text_runs: list[str] = []
-            for run in block.runs:
-                if isinstance(run, IRTextRun):
-                    text_runs.append(run.text)
-                else:
-                    latex = getattr(run, "latex", "")
-                    if latex:
-                        text_runs.append(f"${latex}$")
-            joined = "".join(text_runs).strip()
-            if joined:
-                parts.append(joined)
-        elif isinstance(block, IRListBlock):
-            for item in block.items:
-                item_parts: list[str] = []
-                for run in item:
-                    if isinstance(run, IRTextRun):
-                        item_parts.append(run.text)
-                    else:
-                        latex = getattr(run, "latex", "")
-                        if latex:
-                            item_parts.append(f"${latex}$")
-                joined = "".join(item_parts).strip()
-                if joined:
-                    parts.append(joined)
-        elif isinstance(block, IRImage):
-            parts.append(f"![]({block.rel_path})")
-        else:
-            latex = getattr(block, "latex", "")
-            if latex:
-                parts.append(f"$$\n{latex}\n$$")
-    return "\n\n".join(parts).strip()
-
-
+# ---------------------------------------------------------------------------
+# Artifact helpers
+# ---------------------------------------------------------------------------
 
 
 def _to_data_url(path: Path) -> str | None:
@@ -266,6 +85,12 @@ def _append_artifact(
     )
 
 
+def _drop_artifacts(record: DocumentRecord, *kinds: str) -> None:
+    record.artifacts = [
+        artifact for artifact in record.artifacts if artifact.kind not in kinds
+    ]
+
+
 def _publish_translated_pdf(
     record: DocumentRecord, compiled_pdf: Path, output_dir: Path
 ) -> Path:
@@ -281,10 +106,23 @@ def _publish_translated_pdf(
     return output
 
 
+def _publish_dual_pdf(
+    record: DocumentRecord, dual_pdf: Path, output_dir: Path
+) -> None:
+    """Publish the bilingual PDF a dual-mode run produced alongside the mono one."""
+    name = dual_pdf_filename(record.source_filename)
+    output = output_dir / name
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if dual_pdf.resolve() != output.resolve():
+        shutil.copyfile(dual_pdf, output)
+        dual_pdf.unlink(missing_ok=True)
+    _append_artifact(record, name, "dual_pdf", output)
+
+
 def _publish_annotated_pdf(
     record: DocumentRecord,
-    ir_blocks: list,
-    frames: list[PageFrame],
+    blocks: list[Block],
+    pages: list[PageGeometry],
     output_dir: Path,
 ) -> None:
     """Box every parsed region on the source pages and publish the result.
@@ -296,8 +134,8 @@ def _publish_annotated_pdf(
     try:
         drawn = render_annotated_pdf(
             source_pdf=record.source_path,
-            frames=frames,
-            blocks=ir_blocks,
+            pages=pages,
+            blocks=blocks,
             output_pdf=target,
         )
     except Exception as exc:  # noqa: BLE001 - never block the pipeline on this
@@ -310,30 +148,14 @@ def _publish_annotated_pdf(
 
 
 def build_annotated_pdf(record: DocumentRecord) -> str | None:
-    """Rebuild the annotated source PDF from the document's parse cache.
-
-    Documents parsed before annotation existed have no such artifact; their
-    extraction checkpoint still holds the parsed blocks, so the file can be
-    produced without re-running the parser. An existing file is rebuilt as
-    well, so a document annotated by an older revision picks up the current
-    categories and caption boxes.
-    """
+    """Rebuild the annotated source PDF from the document's manifest."""
     if not record.source_path.is_file():
         return None
+    manifest = _load_manifest(record)
+    if manifest is None or not manifest.blocks:
+        return None
     output_dir = settings.output_dir / record.document_id
-    checkpoint = _load_extraction_checkpoint(
-        output_dir / "extraction-checkpoint.json", record.source_path
-    )
-    if checkpoint is None:
-        return None
-    ir_blocks, frames, _notes = _build_ir_and_frames(checkpoint, record.source_path)
-    if not ir_blocks:
-        return None
-    # Geometry the renderer translates: corrected regions plus paragraphs
-    # recovered from the source text layer where the parser dropped them.
-    align_blocks_to_text_layer(frames, ir_blocks)
-    synthesize_unclaimed_paragraphs(frames, ir_blocks)
-    _publish_annotated_pdf(record, ir_blocks, frames, output_dir)
+    _publish_annotated_pdf(record, manifest.blocks, manifest.pages, output_dir)
     save_document(record)
     artifact = next(
         (item for item in record.artifacts if item.kind == "annotated_pdf"), None
@@ -341,645 +163,179 @@ def build_annotated_pdf(record: DocumentRecord) -> str | None:
     return artifact.url if artifact else None
 
 
-def _extract_references_from_text(text: str) -> list[ReferenceEntry]:
-    lines = text.splitlines()
-    start = None
-    for idx, line in enumerate(lines):
-        if _REFERENCE_SPLIT_PATTERN.match(line.strip()):
-            start = idx + 1
-            break
-    if start is None:
-        return []
-
-    refs: list[ReferenceEntry] = []
-    current: list[str] = []
-    ref_idx = 0
-
-    for raw in lines[start:]:
-        line = raw.strip()
-        if not line:
-            if current:
-                ref_idx += 1
-                refs.append(ReferenceEntry(index=ref_idx, text=" ".join(current).strip()))
-                current = []
-            continue
-
-        matched = _REFERENCE_ITEM_PATTERN.match(line)
-        if matched:
-            if current:
-                ref_idx += 1
-                refs.append(ReferenceEntry(index=ref_idx, text=" ".join(current).strip()))
-            current = [matched.group(2).strip()]
-        elif current:
-            current.append(line)
-        elif len(line) > 20:
-            current = [line]
-
-    if current:
-        ref_idx += 1
-        refs.append(ReferenceEntry(index=ref_idx, text=" ".join(current).strip()))
-
-    return refs
-
-
-_EXTRACTION_CHECKPOINT_VERSION = "pdf-extraction-v3"
-
-
-def _source_digest(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for block in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def _save_extraction_checkpoint(
-    path: Path, source_path: Path, result: MinerUResult
-) -> None:
-    payload = {
-        "version": _EXTRACTION_CHECKPOINT_VERSION,
-        "source_sha256": _source_digest(source_path),
-        "markdown": result.markdown,
-        "mode_label": result.mode_label,
-        "extracted_files": [str(item) for item in result.extracted_files],
-        "content_blocks": result.content_blocks,
-        "layout_payload": result.layout_payload,
-        "boxes_normalized": result.boxes_normalized,
-        "images_dir": str(result.images_dir) if result.images_dir else None,
-        "two_column": result.two_column,
-    }
-    temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    temporary.replace(path)
-
-
-def _load_extraction_checkpoint(path: Path, source_path: Path) -> MinerUResult | None:
+def _load_manifest(record: DocumentRecord) -> DocumentManifest | None:
+    path = settings.output_dir / record.document_id / "extraction" / "manifest.json"
     if not path.is_file():
         return None
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            return None
-        if payload.get("version") != _EXTRACTION_CHECKPOINT_VERSION:
-            return None
-        if payload.get("source_sha256") != _source_digest(source_path):
-            return None
-        return MinerUResult(
-            markdown=str(payload.get("markdown") or ""),
-            mode_label=str(payload.get("mode_label") or "checkpoint"),
-            extracted_files=[Path(item) for item in payload.get("extracted_files") or []],
-            content_blocks=payload.get("content_blocks"),
-            layout_payload=payload.get("layout_payload"),
-            boxes_normalized=bool(payload.get("boxes_normalized", True)),
-            images_dir=Path(payload["images_dir"]) if payload.get("images_dir") else None,
-            two_column=bool(payload.get("two_column")),
-        )
-    except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError):
+        return load_document_manifest(path)
+    except Exception as exc:  # noqa: BLE001 - a broken manifest is a missing one
+        record.logs.append(f"Manifest unreadable: {exc}")
         return None
 
 
-def _build_ir_and_frames(
-    mineru_result: MinerUResult, source_path: Path
-) -> tuple[list, list[PageFrame], list[str]]:
-    """Materialise the translation IR and the measured page frames."""
-    frames = measure_pages(source_path)
-    notes: list[str] = []
-    if mineru_result.layout_payload:
-        blocks, parser_frames = pages_from_middle(mineru_result.layout_payload)
-        merge_known_regions(frames, parser_frames)
-        return blocks, frames, notes
-    if mineru_result.content_blocks is not None:
-        sizes = [(frame.width, frame.height) for frame in frames]
-        blocks = blocks_to_ir(
-            mineru_result.content_blocks,
-            sizes,
-            normalized_boxes=mineru_result.boxes_normalized,
-            frames=frames,
-        )
-        attach_known_regions(
-            frames,
-            mineru_result.content_blocks,
-            normalized_boxes=mineru_result.boxes_normalized,
-        )
-        # The VLM backend reports inline formulas without boxes in the content
-        # list; its model output carries them.
-        model_payload = _model_geometry(mineru_result)
-        if model_payload is not None:
-            notes.extend(attach_inline_formula_boxes(blocks, model_payload, frames))
-        return blocks, frames, notes
-    return [], frames, notes
+# ---------------------------------------------------------------------------
+# Document metadata
+# ---------------------------------------------------------------------------
 
 
-def _model_geometry(mineru_result: MinerUResult):
-    """Load MinerU's `*_model.json` when the parse produced one."""
-    candidates = [
-        path
-        for path in mineru_result.extracted_files
-        if path.name.endswith("_model.json")
-    ]
-    if not candidates and mineru_result.images_dir is not None:
-        root = mineru_result.images_dir.parent
-        if root.is_dir():
-            candidates = sorted(root.glob("*_model.json"))
-    for path in candidates:
-        if not path.is_file():
-            continue
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
-        except (OSError, ValueError):
-            continue
-        if isinstance(payload, (list, dict)):
-            return payload
-    return None
+def _clean_extracted_text(text: str) -> str:
+    cleaned = _NOUGAT_MISSING_PAGE_PATTERN.sub("", text or "")
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
 
-LAYOUT_PLAN_VERSION = "layout-plan-v2"
+def _display_title(manifest: DocumentManifest, source_filename: str) -> str:
+    for block in manifest.blocks:
+        if isinstance(block, Title):
+            text = (block.source_text or block.text).strip()
+            if text:
+                return text
+    matched = _TITLE_H1_PATTERN.search(manifest.markdown("source"))
+    if matched:
+        return matched.group(1).strip()
+    return Path(source_filename).stem.strip()
 
 
-def _round_rect(rect) -> list[float]:
-    return [round(float(value), 1) for value in rect]
+def _enrich_metadata(record: DocumentRecord, display_title: str) -> None:
+    """Best-effort Semantic Scholar lookup for title/authors/year/venue.
 
-
-def _save_layout_plan(path: Path, plans: list, *, source: dict | None = None) -> None:
-    """Write the versioned layout plan the reader uses for diagnostics.
-
-    Version 2 records the typography template, the column model, the same-column
-    flow chains, every formula fallback, the caption plans and the per-page and
-    per-cell status, so any fallback in the translated PDF can be located here.
+    Failure or a lookup miss leaves the document untouched; the pipeline never
+    depends on this succeeding.
     """
-    payload = {
-        "version": LAYOUT_PLAN_VERSION,
-        "source": source or {},
-        "typography": {
-            "body_single": TypographyProfile.BODY_SINGLE.size,
-            "body_double": TypographyProfile.BODY_DOUBLE.size,
-            "title_bonus": TITLE_SIZE_BONUS,
-            "title_min": MIN_TITLE_SIZE,
-            "title_leading": TITLE_LEADING_RATIO,
-            "caption": TypographyProfile.CAPTION.size,
-            "table_cell": TypographyProfile.TABLE_CELL.size,
-            "footnote": TypographyProfile.FOOTNOTE.size,
-            "min_body": MIN_BODY_SIZE,
-        },
-        "pages": [
-            {
-                "index": plan.index,
-                "status": plan.status,
-                "reason": plan.reason,
-                "body_size": round(plan.body_size, 2),
-                "leading": round(plan.leading, 2),
-                "columns": {
-                    "kind": (plan.columns.kind if plan.columns else "single"),
-                    "rects": [
-                        _round_rect(rect)
-                        for rect in (plan.columns.columns if plan.columns else [])
-                    ],
-                },
-                "flow_chains": [
-                    {
-                        "column": _round_rect(chain.column_rect),
-                        "items": [item.block_plan_index for item in chain.items],
-                        "obstacles": [_round_rect(rect) for rect in chain.obstacles],
-                    }
-                    for chain in _page_chains(plan)
-                ],
-                "blocks": [
-                    {
-                        "kind": block.kind,
-                        "status": block.status,
-                        "reason": block.reason,
-                        "size": round(block.size, 2),
-                        "baseline_size": round(block.baseline_size, 2),
-                        "leading": round(block.leading, 2),
-                        "source_rect": _round_rect(block.source_rect),
-                        "target": _round_rect(block.target),
-                        "formula_fallback": block.formula_fallback,
-                    }
-                    for block in plan.blocks
-                ],
-                "captions": [
-                    {
-                        "owner_kind": caption.owner_kind,
-                        "status": caption.status,
-                        "reason": caption.reason,
-                        "size": round(caption.size, 2),
-                        "source_rect": _round_rect(caption.source_rect),
-                        "target": _round_rect(caption.target),
-                    }
-                    for caption in plan.captions
-                ],
-                "cells": [
-                    {
-                        "status": cell.status,
-                        "reason": cell.reason,
-                        "size": round(cell.size, 2),
-                        "source_rect": _round_rect(cell.source_rect),
-                    }
-                    for cell in plan.cells
-                ],
-            }
-            for plan in plans
-        ],
-    }
-    temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    temporary.replace(path)
-
-
-def _page_chains(plan) -> list:
-    """The same-column chains the page was solved along."""
-    from app.services.layout_fit import build_flow_chains
-    from app.services.layout_model import PageColumns, PageFrame
-
-    frame = PageFrame(index=plan.index, width=plan.width, height=plan.height)
-    columns = plan.columns or PageColumns(kind="single", columns=[frame.rect])
-    return build_flow_chains(frame, plan, columns)
-
-
-_REFIT_MAX_BLOCKS = 30
-
-
-def _plain_text_block(block) -> bool:
-    """Titles and pure-prose paragraphs can be re-translated wholesale.
-
-    Blocks with inline formulas keep their first translation: compressing the
-    whole paragraph into one run would detach the formula from its position.
-    """
-    if isinstance(block, IRTitle):
-        return bool(block.text.strip())
-    if isinstance(block, IRParagraph):
-        return bool(block.runs) and all(
-            isinstance(run, IRTextRun) for run in block.runs
-        )
-    return False
-
-
-def _replace_block_text(block, text: str) -> None:
-    if isinstance(block, IRTitle):
-        block.text = text
+    # `record.metadata` also carries pipeline bookkeeping, so it is the paper
+    # fields that decide whether a lookup already happened.
+    if record.metadata.get("title") or record.metadata.get("authors"):
         return
-    first = True
-    for run in block.runs:
-        if isinstance(run, IRTextRun):
-            run.text = text if first else ""
-            first = False
-
-
-def refit_with_concise_translations(
-    plans: list, *, translate_fn, max_blocks: int = _REFIT_MAX_BLOCKS
-) -> int:
-    """Re-translate the blocks of a page that fell back whole with a brevity budget.
-
-    The page solver reports a page as ``original`` when its body text cannot fit
-    even at the 6pt floor. A shorter translation of that page's prose usually
-    lands inside the page on the second planning pass. Returns how many blocks
-    received a new translation.
-    """
-    candidates: list = []
-    for plan in plans:
-        if plan.status == "original" and "fit" in (plan.reason or ""):
-            for block_plan in plan.blocks:
-                if (
-                    block_plan.status == "translated"
-                    and block_plan.block is not None
-                    and _plain_text_block(block_plan.block)
-                ):
-                    candidates.append(block_plan)
-        # A cell the renderer had to keep in English is retried on its own: it
-        # never moves other content, so its page stays usable either way.
-        for cell_plan in plan.cells:
-            if cell_plan.status == "original" and "fit" in cell_plan.reason:
-                candidates.append(cell_plan)
-    retried = 0
-    for candidate in candidates[:max_blocks]:
-        try:
-            concise = translate_fn(candidate.source_text)
-        except Exception:
-            continue
-        if not concise or not concise.strip():
-            continue
-        block = getattr(candidate, "block", None)
-        if isinstance(block, (IRTitle, IRParagraph)):
-            _replace_block_text(block, concise.strip())
-        elif getattr(candidate, "cell", None) is not None:
-            candidate.cell.translated = concise.strip()
-        else:
-            continue
-        retried += 1
-    return retried
-
-
-def _record_layout_issue(
-    record: DocumentRecord,
-    *,
-    kind: str,
-    page: int,
-    block_kind: str,
-    message: str,
-) -> None:
-    """Append one structured layout issue, de-duplicated by kind/page/block."""
-    issues = record.metadata.setdefault("layout_issues", [])
-    if not isinstance(issues, list):
-        issues = []
-        record.metadata["layout_issues"] = issues
-    entry = {
-        "kind": kind,
-        "page": max(1, int(page)),
-        "block_kind": block_kind,
-        "message": message,
-    }
-    for existing in issues:
-        if not isinstance(existing, dict):
-            continue
-        if (
-            existing.get("kind") == entry["kind"]
-            and existing.get("page") == entry["page"]
-            and existing.get("block_kind") == entry["block_kind"]
-            and existing.get("message") == entry["message"]
-        ):
-            return
-    issues.append(entry)
-
-
-def _page_of_logical_segment(ir_blocks: list, logical_index: int) -> int:
-    """One-based page holding the `logical_index`-th translatable string."""
-    if logical_index < 0:
-        return 1
-    cursor = 0
-    for block in ir_blocks:
-        for _source, _target, _attribute in _block_slots(block):
-            if cursor == logical_index:
-                return max(1, int(getattr(block, "page_index", 0)) + 1)
-            cursor += 1
-    return 1
-
-
-def _log_fallback_summary(record: DocumentRecord, plans: list) -> None:
-    """Persist why blocks or cells were not translated, for tuning decisions."""
-    counts: Counter = Counter()
-    for plan in plans:
-        for block in plan.blocks:
-            if block.status != "translated":
-                counts[f"{block.status}: {block.reason or 'unspecified'}"] += 1
-        for cell in plan.cells:
-            if cell.status != "translated":
-                counts[f"cell {cell.status}: {cell.reason or 'unspecified'}"] += 1
-    for reason, count in counts.most_common():
-        record.logs.append(f"Layout fallback: {count} × {reason}")
-
-
-def _render_translated_pdf(
-    record: DocumentRecord,
-    ir_blocks: list,
-    frames: list[PageFrame],
-    output_dir: Path,
-    *,
-    override_api_key: str | None = None,
-    override_base_url: str | None = None,
-    override_model: str | None = None,
-    translation_context: str = "",
-    translation_domain: str = "",
-) -> Path:
-    """Lay out every translated block on its source page and write the PDF."""
-    crops = prepare_formula_crops(
-        record.source_path, frames, ir_blocks, output_dir / "formula-crops"
-    )
     try:
-        measurer = TextMeasurer(
-            require_cjk_font(), crops.paths, crops.aspects, crops.crop
-        )
-        plans = plan_document(frames, ir_blocks, measurer=measurer)
-        refit = refit_with_concise_translations(
-            plans,
-            translate_fn=lambda source: translate_concise(
-                source,
-                override_api_key=override_api_key,
-                override_base_url=override_base_url,
-                override_model=override_model,
-                translation_context=translation_context,
-                domain=translation_domain,
-            ),
-        )
-        if refit:
-            record.logs.append(
-                f"Layout: re-translated {refit} block(s) with a brevity budget "
-                "after they did not fit their boxes"
-            )
-            plans = plan_document(frames, ir_blocks, measurer=measurer)
-            record.translated_text = _ir_to_translated_markdown(ir_blocks)
-        plan_path = output_dir / "layout-plan.json"
-        _save_layout_plan(
-            plan_path,
-            plans,
-            source={
-                "document_id": record.document_id,
-                "source_filename": record.source_filename,
-                "page_count": len(frames),
-            },
-        )
-        _append_artifact(record, plan_path.name, "layout_plan", plan_path)
-        debug_pdf = output_dir / "layout-debug.pdf" if settings.layout_debug else None
-        report = render_document(
-            source_pdf=record.source_path,
-            plans=plans,
-            frames=frames,
-            blocks=ir_blocks,
-            output_pdf=output_dir / "rendered.pdf",
-            crops=crops,
-            debug_pdf=debug_pdf,
-        )
-    finally:
-        crops.close()
-    _log_fallback_summary(record, plans)
-    for note in report.notes:
-        record.logs.append(f"Layout: {note}")
-    _record_planning_issues(record, plans, report)
-    produced = len(report.pages) - len(report.failed)
-    record.logs.append(
-        f"Layout: {produced}/{len(report.pages)} page(s) translated on the source page"
-    )
-    if debug_pdf is not None and debug_pdf.is_file():
-        _append_artifact(record, debug_pdf.name, "layout_debug", debug_pdf)
-    return output_dir / "rendered.pdf"
+        from app.services.paper_metadata import fetch_paper_metadata
+
+        metadata = fetch_paper_metadata(display_title)
+    except Exception:
+        metadata = {}
+    if not metadata:
+        return
+    record.metadata.update(metadata)
+    set_document_metadata(record.document_id, record.metadata)
+    record.logs.append(f"Metadata enriched: {str(metadata.get('title', ''))[:80]}")
 
 
-def _record_planning_issues(record: DocumentRecord, plans: list, report) -> None:
-    """Turn the plan's fallbacks into the structured issues the reader shows."""
-    failed_pages = {page.index: page.reason for page in report.failed}
-    for plan in plans:
-        # "nothing to translate" is a property of the document, not a fallback:
-        # the page never had anything to replace.
-        if plan.status == "original" and plan.reason != NOTHING_TO_TRANSLATE:
-            _record_layout_issue(
-                record,
-                kind="page_original",
-                page=plan.index + 1,
-                block_kind="page",
-                message=(
-                    failed_pages.get(plan.index)
-                    or plan.reason
-                    or "page kept its source layout"
-                ),
-            )
-        for block in plan.blocks:
-            if block.status == "translated":
-                continue
-            _record_layout_issue(
-                record,
-                kind="block_original",
-                page=plan.index + 1,
-                block_kind=block.kind,
-                message=block.reason or "block kept its source text",
-            )
-        for caption in plan.captions:
-            if caption.status == "translated":
-                continue
-            _record_layout_issue(
-                record,
-                kind="caption_original",
-                page=plan.index + 1,
-                block_kind=f"{caption.owner_kind}_caption",
-                message=caption.reason or "caption kept its source text",
-            )
-        for cell in plan.cells:
-            if cell.status == "translated":
-                continue
-            _record_layout_issue(
-                record,
-                kind="cell_original",
-                page=plan.index + 1,
-                block_kind="table_cell",
-                message=cell.reason or "cell kept its source text",
-            )
+# ---------------------------------------------------------------------------
+# Glossary
+# ---------------------------------------------------------------------------
 
 
-def _translate_and_render(
-    record: DocumentRecord,
-    mineru_result: MinerUResult,
-    output_dir: Path,
-    *,
-    display_title: str,
-    override_api_key: str | None,
-    override_base_url: str | None,
-    override_model: str | None,
-    translation_domain: str = "",
-) -> None:
-    """Translate the structured blocks and lay the result out on the source pages."""
-    ir_blocks, frames, geometry_notes = _build_ir_and_frames(
-        mineru_result, record.source_path
-    )
-    for note in geometry_notes:
-        record.logs.append(f"Layout geometry: {note}")
-    if not ir_blocks:
-        raise RuntimeError(
-            "No structured layout could be extracted from this PDF, so no "
-            "positioned translation can be produced."
-        )
-    domain = normalize_domain(translation_domain)
-    record.metadata["translation_domain"] = domain
-    document_terms = extract_document_terms(
-        display_title,
-        record.extracted_text,
-        override_api_key=override_api_key,
-        override_base_url=override_base_url,
-        override_model=override_model,
-    )
-    translation_context = format_glossary_context(
-        display_title,
-        merge_glossary_terms(glossary_terms_for_prompt(domain), document_terms),
-    )
-    with with_stage(record, "translate"):
-        record.logs.append(f"Translation domain: {DOMAINS[domain].label}")
-        record.logs.append(f"Parsed {len(ir_blocks)} structured block(s)")
-        # A paragraph the parser reported as several adjacent regions is
-        # translated once and distributed back over those regions. The text
-        # layer first corrects where each block is actually drawn, which also
-        # splits paragraphs the parser stored as a single (mis-sized) region.
-        groups, align_notes = align_blocks_to_text_layer(frames, ir_blocks)
-        for note in align_notes:
-            record.logs.append(f"Layout geometry: {note}")
-        for note in synthesize_unclaimed_paragraphs(frames, ir_blocks):
-            record.logs.append(f"Layout geometry: {note}")
-        if groups:
-            merge_continuation_groups(groups)
-        extra_groups = plan_continuation_groups(ir_blocks, frames)
-        if extra_groups:
-            merge_continuation_groups(extra_groups)
-            groups.extend(extra_groups)
-        if groups:
-            record.logs.append(
-                f"Merged {len(groups)} paragraph(s) that span several regions"
-            )
-        # Annotate the geometry the renderer will actually translate, including
-        # paragraphs recovered from the source text layer after the parser
-        # dropped them.
-        _publish_annotated_pdf(record, ir_blocks, frames, output_dir)
-        source_segments = collect_translatable_strings(ir_blocks)
-        notes, translation_issues = translate_ir(
-            ir_blocks,
-            override_api_key=override_api_key,
-            override_base_url=override_base_url,
-            override_model=override_model,
-            checkpoint_path=output_dir / "translation-checkpoint.json",
-            progress_callback=lambda done, total: set_stage_progress(
-                record,
-                "translate",
-                done / max(1, total),
-                f"翻译 {done}/{total} 个片段",
-            ),
-            translation_context=translation_context,
-            domain=domain,
-            checkpoint_namespace=f"ir:{domain}",
-        )
-        for note in notes:
-            record.logs.append(f"Translation: {note}")
-        for issue in translation_issues:
-            _record_layout_issue(
-                record,
-                kind="block_original",
-                page=_page_of_logical_segment(ir_blocks, issue.get("logical_index", -1)),
-                block_kind="text_block",
-                message=f"翻译失败，保留原文：{str(issue.get('reason') or '')}",
-            )
-        record_candidate_terms(domain, document_terms, record.document_id)
-        translated_segments = collect_translatable_strings(ir_blocks)
-        alignment_path = save_exact_alignment(record, source_segments, translated_segments)
-        if alignment_path:
-            _append_artifact(record, alignment_path.name, "alignment_index", alignment_path)
-            record.logs.append(
-                f"Saved {len(source_segments)} exact bilingual alignment segments"
-            )
-        for note in split_continuation_groups(groups):
-            record.logs.append(f"Translation: {note}")
-        record.translated_text = _ir_to_translated_markdown(ir_blocks)
-        save_document(record)
+def _write_domain_glossary(domain: str, work_dir: Path) -> Path | None:
+    """Render the operator's domain glossary in the worker's CSV format.
 
-    with with_stage(record, "render"):
-        rendered = _render_translated_pdf(
-            record,
-            ir_blocks,
-            frames,
-            output_dir,
-            override_api_key=override_api_key,
-            override_base_url=override_base_url,
-            override_model=override_model,
-            translation_context=translation_context,
-            translation_domain=domain,
-        )
-        _publish_translated_pdf(record, rendered, output_dir)
-
-
-def cached_resume_stage(record: DocumentRecord) -> str:
-    """Earliest stage a reprocess can start from while reusing cached work.
-
-    A completed parse checkpoint makes the extraction (the slowest stage) free,
-    so reprocessing starts at ``clean``. The translation checkpoint is applied
-    inside the translate stage regardless, so cached segments are reused either
-    way. An unusable checkpoint simply falls back to a full parse in
-    :func:`process_document`.
+    The terms the operator curated are what the translator should honour, so
+    they travel with the job instead of being applied after the fact.
     """
-    checkpoint = settings.output_dir / record.document_id / "extraction-checkpoint.json"
-    return "clean" if checkpoint.is_file() else "parse"
+    terms = glossary_terms_for_prompt(domain)
+    if not terms:
+        return None
+    work_dir.mkdir(parents=True, exist_ok=True)
+    target = work_dir / f"domain-{domain}.csv"
+    with target.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["source", "target"])
+        for source, translated in terms:
+            writer.writerow([source, translated])
+    return target
+
+
+def _absorb_worker_glossary(record: DocumentRecord, manifest: DocumentManifest, domain: str) -> int:
+    """Fold the translator's extracted terms into the domain's pending pool."""
+    pairs = [
+        (entry.get("source", ""), entry.get("target", ""))
+        for entry in manifest.glossary
+        if entry.get("source") and entry.get("target")
+    ]
+    if not pairs:
+        return 0
+    record_candidate_terms(domain, pairs, record.document_id)
+    return len(pairs)
+
+
+# ---------------------------------------------------------------------------
+# Stage reporting across the worker's own stages
+# ---------------------------------------------------------------------------
+
+
+class _StageSwitcher:
+    """Open one pipeline stage at a time, closing the previous one first.
+
+    The worker reports its own stages (parse, translate, render) while it runs,
+    so the pipeline follows them instead of holding a single stage open for the
+    whole translation.
+    """
+
+    def __init__(self, record: DocumentRecord) -> None:
+        self._record = record
+        self._cm = None
+
+    def switch(self, key: str) -> None:
+        if self._cm is not None:
+            self._cm.__exit__(None, None, None)
+        self._cm = with_stage(self._record, key)
+        self._cm.__enter__()
+
+    def close(self) -> None:
+        if self._cm is not None:
+            self._cm.__exit__(None, None, None)
+            self._cm = None
+
+    def fail(self) -> None:
+        if self._cm is not None:
+            self._cm.__exit__(RuntimeError, RuntimeError("stage failed"), None)
+            self._cm = None
+
+
+def _event_reporter(record: DocumentRecord, switcher: _StageSwitcher):
+    """Map worker events onto the document's stage list."""
+    state = {"stage": "", "fraction": -1.0}
+
+    def report(event: dict) -> None:
+        kind = str(event.get("type") or "")
+        if kind == "stage_summary":
+            return
+        # The worker names the BabelDOC stage it is in through ``stage`` and the
+        # pipeline stage that belongs to through ``group``.
+        group = str(event.get("group") or "")
+        stage = _stage_key(group or str(event.get("stage") or ""))
+        if stage != state["stage"]:
+            state["stage"] = stage
+            state["fraction"] = -1.0
+            switcher.switch(stage)
+        if kind == "progress_start":
+            return
+        if kind in {"progress_update", "progress_end"}:
+            fraction = float(event.get("progress") or 0.0)
+            # The worker reports every 0.1s; a write per event would serialize
+            # the pipeline on SQLite.
+            if kind == "progress_end" or fraction - state["fraction"] >= 0.01:
+                state["fraction"] = fraction
+                set_stage_progress(record, stage, fraction, _stage_label(stage, event))
+
+    return report
+
+
+def _stage_key(group: str) -> str:
+    return group if group in {"parse", "translate", "render"} else "parse"
+
+
+def _stage_label(group: str, event: dict) -> str:
+    name = str(event.get("stage") or "")
+    label = {"parse": "解析", "translate": "翻译", "render": "排版"}.get(group, "处理")
+    total = int(event.get("total") or 0)
+    current = int(event.get("current") or 0)
+    if total:
+        return f"{label} {name} {current}/{total}".strip()
+    return f"{label} {name}".strip()
+
+
+# ---------------------------------------------------------------------------
+# Pipeline
+# ---------------------------------------------------------------------------
 
 
 def create_document_record(source_path: Path, source_type: str = "pdf") -> DocumentRecord:
@@ -994,6 +350,22 @@ def create_document_record(source_path: Path, source_type: str = "pdf") -> Docum
     return save_document(record)
 
 
+def _register_source_artifacts(record: DocumentRecord, output_dir: Path) -> None:
+    original_out = output_dir / "original.pdf"
+    shutil.copyfile(record.source_path, original_out)
+    record.original_pdf_url = f"/data/outputs/{record.document_id}/original.pdf"
+    _append_artifact(record, "original.pdf", "original_pdf", original_out)
+    _append_artifact(record, record.source_path.name, "source_pdf", record.source_path)
+
+
+def _register_extraction_artifacts(
+    record: DocumentRecord, result: PdfTranslationResult
+) -> None:
+    _append_artifact(record, result.manifest_path.name, MANIFEST_KIND, result.manifest_path)
+    if result.glossary_path is not None:
+        _append_artifact(record, result.glossary_path.name, GLOSSARY_KIND, result.glossary_path)
+
+
 def process_document(
     record: DocumentRecord,
     override_api_key: str | None = None,
@@ -1006,46 +378,18 @@ def process_document(
         override_api_key = provider_settings.api_key
         override_base_url = provider_settings.base_url
         override_model = provider_settings.model
-    parser = provider_settings.pdf_parser if provider_settings else settings.pdf_parser
-    mineru_config = (
-        MinerUConfig(
-            api_key=provider_settings.mineru_api_key,
-            base_url=provider_settings.mineru_base_url,
-            model_version=provider_settings.mineru_model_version,
-            language=provider_settings.mineru_language,
-            enable_formula=provider_settings.mineru_enable_formula,
-            enable_table=provider_settings.mineru_enable_table,
-            is_ocr=provider_settings.mineru_is_ocr,
-            poll_interval=settings.mineru_poll_interval,
-            timeout=settings.mineru_timeout,
-        )
-        if provider_settings
-        else None
-    )
-    somark_config = (
-        SoMarkConfig(
-            api_key=provider_settings.somark_api_key,
-            base_url=provider_settings.somark_base_url,
-            poll_interval=settings.somark_poll_interval,
-            timeout=settings.somark_timeout,
-        )
-        if provider_settings
-        else None
-    )
     vision_model = provider_settings.vision_model if provider_settings else settings.vision_model
     translation_domain = normalize_domain(
         provider_settings.translation_domain if provider_settings else None
     )
     record.status = "processing"
-    # Each run reports the layout fallbacks of the run it is producing.
-    record.metadata["layout_issues"] = []
     record.logs.append(
         f"Retry processing started from {resume_from}" if resume_from else "Processing started"
     )
-    if not record.stages:
-        init_stages(record, vision_check_enabled=record.vision_check_enabled)
-    elif resume_from:
-        prepare_stages_for_retry(record, resume_from)
+    # The worker translates the whole document in one go, so a retry always
+    # starts over: there is no partial parse or translation to reuse.
+    if record.stages and resume_from:
+        prepare_stages_for_retry(record, "parse")
     else:
         init_stages(record, vision_check_enabled=record.vision_check_enabled)
     save_document(record)
@@ -1057,194 +401,44 @@ def process_document(
     output_dir = settings.output_dir / record.document_id
     output_dir.mkdir(parents=True, exist_ok=True)
     record.logs.append(f"Output dir: {output_dir}")
-    resumed_extraction: MinerUResult | None = None
+    work_dir = settings.pdfmathtranslate_working_dir / record.document_id
 
+    switcher = _StageSwitcher(record)
     try:
         if not resume_from:
             with with_stage(record, "upload"):
                 pass
+        _drop_artifacts(record, MANIFEST_KIND, GLOSSARY_KIND, "annotated_pdf", "dual_pdf")
 
-        if resume_from == "render":
-            mineru_checkpoint = _load_extraction_checkpoint(
-                output_dir / "extraction-checkpoint.json", record.source_path
+        glossary_csv = _write_domain_glossary(translation_domain, work_dir)
+        try:
+            products = run_worker(
+                document_id=record.document_id,
+                input_pdf=record.source_path,
+                output_dir=output_dir,
+                work_dir=work_dir,
+                api_key=override_api_key or "",
+                base_url=override_base_url or settings.openai_base_url,
+                model=override_model or settings.openai_model,
+                glossary_path=glossary_csv,
+                on_event=_event_reporter(record, switcher),
             )
-            if mineru_checkpoint is not None:
-                display_title, _ = _derive_display_title(
-                    record.source_filename, record.extracted_text
-                )
-                _translate_and_render(
-                    record,
-                    mineru_checkpoint,
-                    output_dir,
-                    display_title=display_title,
-                    override_api_key=override_api_key,
-                    override_base_url=override_base_url,
-                    override_model=override_model,
-                    translation_domain=translation_domain,
-                )
-                record.status = "done"
-                record.failure = None
-                record.logs.append("Processing done")
-                return save_document(record)
-            record.logs.append("Extraction checkpoint missing; falling back to parse")
-            resume_from = "parse"
-
-        if resume_from == "translate":
-            mineru_checkpoint = _load_extraction_checkpoint(
-                output_dir / "extraction-checkpoint.json", record.source_path
-            )
-            if mineru_checkpoint is not None and record.extracted_text:
-                display_title, _ = _derive_display_title(
-                    record.source_filename, record.extracted_text
-                )
-                _translate_and_render(
-                    record,
-                    mineru_checkpoint,
-                    output_dir,
-                    display_title=display_title,
-                    override_api_key=override_api_key,
-                    override_base_url=override_base_url,
-                    override_model=override_model,
-                    translation_domain=translation_domain,
-                )
-                record.status = "done"
-                record.failure = None
-                record.logs.append("Processing done")
-                return save_document(record)
-            if mineru_checkpoint is not None:
-                resumed_extraction = mineru_checkpoint
-                resume_from = "clean"
-                record.logs.append("Extracted-text state missing; rebuilding it from checkpoint")
-            else:
-                record.logs.append("Extraction checkpoint missing or invalid; falling back to parse")
-
-        if resume_from == "clean" and resumed_extraction is None:
-            resumed_extraction = _load_extraction_checkpoint(
-                output_dir / "extraction-checkpoint.json", record.source_path
-            )
-            if resumed_extraction is not None:
-                record.logs.append("Reusing completed extraction checkpoint")
-            else:
-                record.logs.append("Extraction checkpoint missing or invalid; falling back to parse")
-
-        if resumed_extraction is not None:
-            mineru_result = resumed_extraction
-            extract_dir = (
-                mineru_result.images_dir.parent
-                if mineru_result.images_dir is not None
-                else output_dir
-            )
-        else:
-            with with_stage(record, "parse"):
-                record.logs.append("Handling source PDF")
-                original_out = output_dir / "original.pdf"
-                shutil.copyfile(record.source_path, original_out)
-                record.original_pdf_url = f"/data/outputs/{record.document_id}/original.pdf"
-                _append_artifact(record, "original.pdf", "original_pdf", original_out)
-                _append_artifact(record, record.source_path.name, "source_pdf", record.source_path)
-
-                if parser == "somark":
-                    extract_dir = output_dir / "somark"
-                    record.logs.append("Submitting PDF to SoMark")
-                    try:
-                        mineru_result = extract_structured_from_pdf_somark(
-                            str(record.source_path),
-                            extract_dir,
-                            log_sink=record.logs,
-                            progress_cb=lambda frac, label: set_stage_progress(
-                                record, "parse", frac, label
-                            ),
-                            config=somark_config,
-                        )
-                    except Exception as somark_exc:
-                        # Mirror the MinerU branch: keep the document usable for
-                        # text-layer PDFs instead of failing the whole task.
-                        record.logs.append(
-                            f"SoMark unavailable ({somark_exc}); falling back to local PDF parsing"
-                        )
-                        extract_dir = output_dir / "local"
-                        try:
-                            mineru_result = extract_structured_from_pdf_local(
-                                str(record.source_path), extract_dir, log_sink=record.logs
-                            )
-                        except Exception as local_exc:
-                            raise RuntimeError(
-                                f"SoMark parsing failed: {somark_exc}; local fallback also failed: {local_exc}"
-                            ) from local_exc
-                elif parser == "mineru":
-                    extract_dir = output_dir / "mineru"
-                    record.logs.append("Submitting PDF to MinerU")
-                    try:
-                        mineru_result = extract_structured_from_pdf(
-                            str(record.source_path),
-                            extract_dir,
-                            log_sink=record.logs,
-                            progress_cb=lambda frac, label: set_stage_progress(
-                                record, "parse", frac, label
-                            ),
-                            config=mineru_config,
-                        )
-                    except Exception as mineru_exc:
-                        # MinerU's result CDN can fail after cloud parsing has
-                        # completed. Keep the website usable for text-layer PDFs
-                        # by falling back locally instead of failing the task.
-                        record.logs.append(
-                            f"MinerU unavailable ({mineru_exc}); falling back to local PDF parsing"
-                        )
-                        extract_dir = output_dir / "local"
-                        try:
-                            mineru_result = extract_structured_from_pdf_local(
-                                str(record.source_path), extract_dir, log_sink=record.logs
-                            )
-                        except Exception as local_exc:
-                            raise RuntimeError(
-                                f"MinerU parsing failed: {mineru_exc}; local fallback also failed: {local_exc}"
-                            ) from local_exc
-                else:
-                    extract_dir = output_dir
-                    record.logs.append("Extracting PDF locally (text layer + images)")
-                    mineru_result = extract_structured_from_pdf_local(
-                        str(record.source_path), extract_dir, log_sink=record.logs
-                    )
-
-            _save_extraction_checkpoint(
-                output_dir / "extraction-checkpoint.json", record.source_path, mineru_result
-            )
+        except Exception:
+            switcher.fail()
+            raise
+        switcher.close()
+        result = PdfTranslationResult.from_worker(record.source_path, products)
+        record.translated_pdf_url = None
+        _publish_translated_pdf(record, result.translated_pdf, output_dir)
+        if result.dual_pdf is not None:
+            _publish_dual_pdf(record, result.dual_pdf, output_dir)
+        _register_source_artifacts(record, output_dir)
+        _register_extraction_artifacts(record, result)
+        record.logs.append(f"Extraction model: {result.mode_label}")
+        record.logs.append(f"Extraction dir: {result.extraction_dir}")
 
         with with_stage(record, "clean"):
-            extracted_text = mineru_result.markdown
-            device_or_mode = mineru_result.mode_label
-            nougat_files = mineru_result.extracted_files
-            fallback_text = extract_text_from_pdf_text_layer(str(record.source_path), max_pages=3)
-            record.extracted_text, missing_page_count, recovered_leading = _clean_nougat_text_with_metadata(
-                extracted_text,
-                leading_fallback_text=fallback_text,
-            )
-            if not record.extracted_text:
-                raise RuntimeError(
-                    "No readable text could be extracted from this PDF. "
-                    "It may be a scanned / image-only PDF with no embedded text layer "
-                    "(the local parser has no OCR; switch to the SoMark or MinerU cloud parser for OCR)."
-                )
-            if missing_page_count:
-                record.logs.append(
-                    f"MinerU warning: {missing_page_count} missing-page marker(s) stripped; content may be incomplete"
-                )
-            if recovered_leading:
-                record.logs.append("Recovered leading PDF content from embedded text layer")
-            record.logs.append("MinerU output cleaned")
-            record.logs.append(f"Extraction model: {device_or_mode}")
-            record.logs.append(f"Extraction dir: {extract_dir}")
-            for generated in nougat_files:
-                _append_artifact(record, generated.name, "mineru_output", generated)
-
-            display_title, used_title_fallback = _derive_display_title(record.source_filename, record.extracted_text)
-            if used_title_fallback:
-                record.logs.append("Title fallback applied from source filename")
-
-            record.references = _extract_references_from_text(record.extracted_text)
-            record.logs.append(f"References extracted: {len(record.references)}")
-            _enrich_metadata(record, display_title)
+            _build_reader_state(record, result.manifest(), translation_domain, output_dir)
 
         if record.vision_check_enabled:
             with with_stage(record, "vision_check"):
@@ -1261,30 +455,92 @@ def process_document(
                 except Exception as exc:
                     record.logs.append(f"Vision check skipped: {exc}")
 
-        _translate_and_render(
-            record,
-            mineru_result,
-            output_dir,
-            display_title=display_title,
-            override_api_key=override_api_key,
-            override_base_url=override_base_url,
-            override_model=override_model,
-            translation_domain=translation_domain,
-        )
-
         record.status = "done"
         record.failure = None
         record.logs.append("Processing done")
-    except Exception as exc:
-        record.status = "failed"
-        failure_stage = record.current_stage or resume_from or "upload"
-        chunk_match = re.search(r"chunk\s+(\d+)", str(exc), re.IGNORECASE)
-        record.failure = FailureEntry(
-            stage=failure_stage,
-            message=str(exc),
-            retryable=record.source_path.is_file(),
-            chunk=int(chunk_match.group(1)) if chunk_match else None,
-            retry_count=record.retry_count,
-        )
-        record.logs.append(f"Error: {exc}")
+    except WorkerCancelled as exc:
+        switcher.fail()
+        _cancel(record, str(exc))
+    except WorkerError as exc:
+        switcher.fail()
+        _fail(record, exc.stage, str(exc), resume_from)
+    except Exception as exc:  # noqa: BLE001 - every failure becomes document state
+        switcher.fail()
+        stage = record.current_stage or resume_from or "upload"
+        _fail(record, stage, str(exc), resume_from)
     return save_document(record)
+
+
+def _fail(
+    record: DocumentRecord, stage: str, message: str, resume_from: str | None
+) -> None:
+    chunk_match = re.search(r"chunk\s+(\d+)", message, re.IGNORECASE)
+    record.status = "failed"
+    record.failure = FailureEntry(
+        stage=stage or resume_from or "upload",
+        message=message,
+        retryable=record.source_path.is_file(),
+        chunk=int(chunk_match.group(1)) if chunk_match else None,
+        retry_count=record.retry_count,
+    )
+    record.logs.append(f"Error: {message}")
+
+
+def _cancel(record: DocumentRecord, message: str) -> None:
+    record.status = "cancelled"
+    record.failure = None
+    record.current_stage = None
+    record.current_stage_label = None
+    record.logs.append(f"Cancelled: {message}")
+
+
+def _build_reader_state(
+    record: DocumentRecord,
+    manifest: DocumentManifest,
+    domain: str,
+    output_dir: Path,
+) -> None:
+    """Turn the manifest into everything the reader reads."""
+    record.logs.append(
+        f"Parsed {len(manifest.blocks)} block(s) across {manifest.page_count} page(s)"
+    )
+    if not manifest.blocks:
+        raise RuntimeError(
+            "The translator returned an empty structure, so no readable document "
+            "could be built."
+        )
+    source_markdown = _clean_extracted_text(manifest.markdown("source"))
+    if not source_markdown:
+        raise RuntimeError(
+            "No readable text could be extracted from this PDF. It may be an "
+            "image-only PDF the translator could not read."
+        )
+    record.extracted_text = source_markdown
+    record.translated_text = _clean_extracted_text(manifest.markdown("translated"))
+    record.logs.append(f"Translation domain: {DOMAINS[domain].label}")
+
+    display_title = _display_title(manifest, record.source_filename)
+    if display_title == Path(record.source_filename).stem.strip():
+        record.logs.append("Title fallback applied from source filename")
+
+    record.references = manifest.references
+    record.logs.append(f"References extracted: {len(record.references)}")
+    _enrich_metadata(record, display_title)
+
+    terms = _absorb_worker_glossary(record, manifest, domain)
+    if terms:
+        record.logs.append(f"Glossary: {terms} term(s) learned from this translation")
+
+    pairs = manifest.alignment_pairs()
+    if pairs:
+        sources = [source for source, _ in pairs]
+        translated = [text for _, text in pairs]
+        alignment_path = save_exact_alignment(record, sources, translated)
+        if alignment_path:
+            _append_artifact(record, alignment_path.name, "alignment_index", alignment_path)
+            record.logs.append(
+                f"Saved {len(pairs)} exact bilingual alignment segments"
+            )
+
+    _publish_annotated_pdf(record, manifest.blocks, manifest.pages, output_dir)
+    save_document(record)

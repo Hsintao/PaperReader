@@ -15,7 +15,7 @@ npm.cmd --prefix frontend run build
 
 浏览器回归路径：在已显示文字的页首次执行对照高亮；跳转到未渲染的远端页；点击批注查看备注；打开图表浮层，分别点击 Figure、Table 及同页多个 Table；切换论文并确认列表更新。文字高亮在 `onRenderTextLayerSuccess` 后绘制。图表结构接口返回原文 `figures` 与译文 `translated_figures`，预览位于 `outputs/<document_id>/figure-previews/`，译文 PDF 更新后刷新。缩略图按标题旁的矢量插图、嵌入图片与表格横线裁剪。
 
-设置密钥回归需分别验证大模型更新、SoMark 更新、MinerU 更新、留空保持和明确删除。新配置默认 SoMark；其 Key 缺失只阻止采用 SoMark 的 PDF 上传，MinerU 同理。
+设置密钥回归需验证大模型更新、留空保持和明确删除三项。未配置大模型 Key 时上传返回 `config_required`，找不到 worker 解释器时上传返回 `worker_unavailable`；两种情况下前端都会直接打开「设置」。
 
 本文档面向需要在 **Windows 或 macOS 本地从源代码运行、构建 PaperReader 原生应用**，以及维护 GitHub Release 的开发者。Windows 部分的命令行均以 **Git Bash**（Git for Windows 自带）为准。
 
@@ -44,7 +44,7 @@ PaperReader 当前桌面端不是 Electron/Tauri，而是以下组合：
 - Node.js **20**
 - npm
 - Xcode Command Line Tools
-- 可选：中文字体（macOS 自带 Songti SC，Linux 需要 fonts-noto-cjk；只有生成译文 PDF 时需要）
+- 翻译需要一份 PDFMathTranslate-next 运行时（PyPI 包 `pdf2zh-next` + `babeldoc`）：见 `desktop/requirements-worker.txt`，Windows 构建环境一节同样适用
 
 > `desktop/build_macos.sh` 与 `desktop/setup_macos.py` 共用同一个 `python`：脚本从该解释器推导 bundle 内的版本目录（`Resources/lib/python<major>.<minor>`），并把 conda 的运行时库补拷进 `Contents/Frameworks`。因此构建前务必确认 `python -V` 就是你要用来打包的那个环境，并且必须是 arm64；x86_64 Python 仍然不要用于正式包。
 >
@@ -74,11 +74,14 @@ v20.x.x
 xcode-select --install
 ```
 
-译文 PDF 由 PDF 级排版直接生成，不需要 TeX；它需要一个中文衬线字体：
+译文 PDF 由 worker 生成并自带嵌入字体；原文标注 PDF 由后端绘制，使用内置的 Noto Serif/Sans SC（`backend/app/assets/fonts`）。两者都不需要 TeX，也不需要宿主机安装中文字体。翻译在独立的 worker 进程里进行，它的依赖装在单独的运行时中：
 
 ```bash
-ls -l /System/Library/Fonts/Supplemental/Songti.ttc
+python3.13 -m venv worker-runtime
+worker-runtime/bin/pip install -r desktop/requirements-worker.txt
 ```
+
+`desktop/launcher.py` 按 `PDFMATHTRANSLATE_WORKER` → `PDFMATHTRANSLATE_PYTHON` → bundle 内的 `worker-runtime` → `python3` 依次解析运行 worker 的解释器；开发时把 `.env` 里的 `PDFMATHTRANSLATE_PYTHON` 指向上面这个环境即可。写成 `worker-runtime/bin/python3` 这样的相对路径时按仓库根目录解析，只有裸名字（如 `python3`）才按 `PATH` 查找。
 
 ### Windows（Git Bash）构建环境
 
@@ -88,7 +91,7 @@ ls -l /System/Library/Fonts/Supplemental/Songti.ttc
 - Node.js **20**
 - npm
 - Microsoft WebView2 Runtime（大多数 Windows 10/11 已内置）
-- 可选：中文字体（Windows 自带 SimSun；只有生成译文 PDF 时需要）
+- 翻译需要一份 PDFMathTranslate-next 运行时（PyPI 包 `pdf2zh-next` + `babeldoc`），见 `desktop/requirements-worker.txt`
 
 > `desktop/build_portable.ps1` 使用 PyInstaller 按 Python 3.11 / x64 构建，与 CI 的 Windows job 一致。Windows 本地构建的完整步骤见下文「在 Windows 上本地构建可移植版（Git Bash）」一节。
 
@@ -202,10 +205,18 @@ python desktop/launcher.py
 启动器会：
 
 1. 准备 PaperReader 的本地配置和数据目录；
-2. 在 `127.0.0.1:8000` 启动内嵌 FastAPI/Uvicorn 服务；
-3. 使用 pywebview 创建原生 macOS 窗口；
-4. 通过 WKWebView 显示 `frontend/dist` 中的前端；
-5. 关闭窗口后停止内嵌后端。
+2. 解析翻译 worker 的解释器（`PDFMATHTRANSLATE_WORKER` → `PDFMATHTRANSLATE_PYTHON` → 仓库根目录或 bundle 内的 `worker-runtime` → `python3`）；
+3. 在 `127.0.0.1:8000` 启动内嵌 FastAPI/Uvicorn 服务；
+4. 使用 pywebview 创建原生 macOS 窗口；
+5. 通过 WKWebView 显示 `frontend/dist` 中的前端；
+6. 关闭窗口后停止内嵌后端。
+
+翻译要能跑通，仓库根目录需要有一个 `worker-runtime/`（或在其 `.config.env` 中指定 `PDFMATHTRANSLATE_PYTHON`）：
+
+```bash
+python3.13 -m venv worker-runtime
+worker-runtime/bin/pip install -r desktop/requirements-worker.txt
+```
 
 应用数据默认位于：
 
@@ -257,7 +268,7 @@ npm --prefix frontend ci
 python -m pip install -r requirements.txt
 ```
 
-根据需要填写 `.env` 中的开发配置。
+根据需要填写 `.env` 中的开发配置，其中 `PDFMATHTRANSLATE_PYTHON` 要指向装有 worker 依赖的解释器（第 1 节 / 19.3 节），否则上传会返回 `worker_unavailable`。
 
 > Windows Git Bash 通常没有 `make`，直接使用下方各自的等价命令即可；`cp .env.example .env` 在 Git Bash 中同样可用。
 
@@ -311,7 +322,8 @@ bash scripts/start_web.sh
 
 脚本会依次处理：
 
-- 缺少 `.env` 时从 `.env.example` 复制一份，并提示填写 `OPENAI_API_KEY` / `SOMARK_API_KEY`；
+- 缺少 `.env` 时从 `.env.example` 复制一份，并提示填写 `OPENAI_API_KEY` 以及把 `PDFMATHTRANSLATE_PYTHON` 指向装有 worker 依赖的解释器；
+- 没有配置 `PDFMATHTRANSLATE_WORKER` 时，用 `PDFMATHTRANSLATE_PYTHON` 指向的解释器试导入 `pdf2zh_next`/`babeldoc`，失败就打印警告（否则只会在上传后表现为文档失败）；
 - 选择解释器：当前环境能 `import uvicorn, fastapi` 就直接用，否则依次尝试 `conda activate pt`；
 - 端口按 `8000` → `8004` 取第一个空闲端口；若该端口上已有 PaperReader 在跑，直接打开它而不重复启动；也可用 `PAPERREADER_PORT=8010 bash scripts/start_web.sh` 指定端口；
 - `frontend/dist` 缺失或比 `frontend/src` 旧时，自动执行 `npm --prefix frontend run build`；
@@ -351,9 +363,10 @@ chmod +x desktop/build_macos.sh
 3. 生成 `.icns`
 4. 使用 `py2app` 构建原生 `.app`
 5. 补入运行时 Python 包/动态库
-6. 对 `.app` 执行 ad-hoc `codesign`
-7. 使用 `hdiutil` 制作压缩 DMG
-8. 生成 SHA-256 文件
+6. 若存在 `desktop/worker-runtime`，把它复制到 `Contents/Resources/worker-runtime`（在签名之前，否则签名失效）
+7. 对 `.app` 执行 ad-hoc `codesign`
+8. 使用 `hdiutil` 制作压缩 DMG
+9. 生成 SHA-256 文件
 
 应用版本来自：
 
@@ -401,10 +414,18 @@ python desktop/launcher.py
 启动器会：
 
 1. 准备 PaperReader 的本地配置和数据目录；
-2. 在 `127.0.0.1:8000` 启动内嵌 FastAPI/Uvicorn 服务；
-3. 使用 pywebview 创建原生 Windows 窗口（WebView2 / EdgeChromium）；
-4. 显示 `frontend/dist` 中的前端；
-5. 关闭窗口后停止内嵌后端。
+2. 解析翻译 worker 的解释器（`PDFMATHTRANSLATE_WORKER` → `PDFMATHTRANSLATE_PYTHON` → `worker-runtime` → `python3`）；
+3. 在 `127.0.0.1:8000` 启动内嵌 FastAPI/Uvicorn 服务；
+4. 使用 pywebview 创建原生 Windows 窗口（WebView2 / EdgeChromium）；
+5. 显示 `frontend/dist` 中的前端；
+6. 关闭窗口后停止内嵌后端。
+
+翻译要能跑通，仓库根目录需要有一个 `worker-runtime/`（或在其 `.config.env` 中指定 `PDFMATHTRANSLATE_PYTHON`）：
+
+```bash
+python -m venv worker-runtime
+worker-runtime/Scripts/pip install -r desktop/requirements-worker.txt
+```
 
 应用数据默认位于：
 
@@ -460,9 +481,10 @@ powershell -ExecutionPolicy Bypass -File ./desktop/build_portable.ps1 \
 
 1. `npm ci`
 2. `npm run build`
-3. 使用 PyInstaller（`desktop/PaperReader.spec`）打包 `PaperReader.exe`
-4. 把 `desktop/README_zh.md` 复制为包内 `使用说明.txt`，并放入 `create_shortcut.ps1`
-5. 压缩为 ZIP 并生成 SHA-256 文件
+3. 使用 PyInstaller（`desktop/PaperReader.spec`）打包 `PaperReader.exe`，并打入 `workers/` 包
+4. 若存在 `desktop\worker-runtime`，把它复制到可移植目录下的 `worker-runtime`
+5. 把 `desktop/README_zh.md` 复制为包内 `使用说明.txt`，并放入 `create_shortcut.ps1`
+6. 压缩为 ZIP 并生成 SHA-256 文件
 
 应用版本同样来自 `frontend/package.json -> version`。例如版本为 `2.1.2` 时，主要输出为：
 
@@ -552,7 +574,7 @@ python -m pytest backend/tests -q
 ### 9.4 Python 语法检查
 
 ```bash
-python -m compileall -q backend/app desktop/launcher.py
+python -m compileall -q backend/app workers desktop/launcher.py
 ```
 
 ### 9.5 前端生产构建
@@ -885,14 +907,15 @@ taskkill //PID <PID> //F
 
 ## 可以打开 APP，但不能生成译文 PDF
 
-译文排版需要一个带常用汉字的衬线字体：
+译文由 worker 生成，先确认它的解释器能导入翻译器（`workers` 包本身不导入 `pdf2zh_next`，依赖是惰性加载的）：
 
 ```bash
-ls -l /System/Library/Fonts/Supplemental/Songti.ttc
+python -c "import pdf2zh_next, babeldoc"
 ```
 
-没有装中文字体时，日志里会出现 "No Chinese font with the required coverage was found"，
-安装 Songti SC（macOS）/ SimSun（Windows）/ fonts-noto-cjk（Linux）后重试即可。
+把上面的 `python` 换成 `PDFMATHTRANSLATE_PYTHON` 指向的解释器，或 bundle 内的 `worker-runtime/bin/python3`（Windows 为 `worker-runtime\Scripts\python.exe`）。报 `ModuleNotFoundError` 就说明该运行时没装 worker 依赖：按 `desktop/requirements-worker.txt` 重建，并让 `PDFMATHTRANSLATE_PYTHON` 指向它；打包版本再确认 `worker-runtime` 目录在 bundle 内（启动日志会打印 `worker interpreter not found`）。上传时返回 `worker_unavailable` 说明解释器本身就找不到——`require_worker_ready()` 只校验可执行文件，不校验依赖。worker 失败时的 stderr 尾部会写进文档日志，进度面板的失败信息里能看到原文。字体已随应用内置，不需要在宿主机安装中文字体。
+
+macOS 上若导入时报 `scipy.sparse.linalg._propack._spropack` 的 `dlopen` 失败（`zero-fill section type`），是该运行时里的 scipy 太旧：换成 Python 3.11+ 的环境并按 `desktop/requirements-worker.txt` 重装（其中已固定 `scipy>=1.16`）。`bash scripts/start_web.sh` 启动时会用 `PDFMATHTRANSLATE_PYTHON` 指向的解释器试导入 `pdf2zh_next`/`babeldoc`，不通过会直接给出警告。
 
 ## 用户下载 DMG 后提示无法验证开发者
 
@@ -918,6 +941,8 @@ ls -l /System/Library/Fonts/Supplemental/Songti.ttc
 ```bash
 rm -rf build dist frontend/dist
 ```
+
+`desktop/worker-runtime` 是自备的翻译运行时（体积数百 MB），既不是构建产物也不随 `rm -rf dist` 清掉；需要重装时删掉它再按第 1 节重建。
 
 如果 `release/` 中没有需要保留的本地包，也可以额外删除：
 
@@ -953,6 +978,10 @@ conda activate paperreader-dev
 python -m pip install -r desktop/requirements-build.txt
 npm --prefix frontend ci
 npm --prefix frontend run build
+
+python3.13 -m venv worker-runtime
+worker-runtime/bin/pip install -r desktop/requirements-worker.txt
+
 python desktop/launcher.py
 ```
 
@@ -976,6 +1005,10 @@ source .venv/Scripts/activate
 python -m pip install -r desktop/requirements-build.txt
 npm --prefix frontend ci
 npm --prefix frontend run build
+
+python -m venv worker-runtime
+worker-runtime/Scripts/pip install -r desktop/requirements-worker.txt
+
 python desktop/launcher.py
 ```
 
@@ -984,6 +1017,10 @@ python desktop/launcher.py
 ```bash
 source .venv/Scripts/activate
 python -m pip install -r desktop/requirements-build.txt
+
+python -m venv desktop/worker-runtime
+desktop/worker-runtime/Scripts/pip install -r desktop/requirements-worker.txt
+
 powershell -ExecutionPolicy Bypass -File ./desktop/build_portable.ps1
 ./dist/PaperReader/PaperReader.exe
 ```
@@ -1023,17 +1060,19 @@ git push origin v2.1.2
 ```text
 PaperReader/
 ├── backend/
-│   └── app/
-│       ├── api/            # routes_*.py：settings / upload / document / annotations / discovery / review / data
-│       ├── core/           # config.py、database.py、local_config.py
-│       ├── models/         # schemas.py、store.py
-│       ├── services/       # document_pipeline、translate_service、alignment_service、llm_client、
-│       │                   # mineru_service、mineru_layout、pdf_ops、layout_model、layout_fit、layout_render、
-│       │                   # cjk_fonts、vision_check_service、document_structure、app_settings、
-│       │                   # paper_metadata、stage_tracker
-│       ├── workers/        # tasks.py（Celery）
-│       └── main.py
-├── desktop/                # 桌面端启动器与打包脚本（见第 1–18 节）
+│   ├── app/
+│   │   ├── api/            # routes_*.py：settings / upload / document / annotations / discovery / review / data
+│   │   ├── assets/fonts/   # 标注 PDF 使用的内置中文字体
+│   │   ├── core/           # config.py、database.py、local_config.py
+│   │   ├── models/         # schemas.py、store.py
+│   │   ├── services/       # document_pipeline、pdf_translation_worker（worker 进程边界）、document_manifest（manifest → IR）、
+│   │   │                   # document_ir、document_structure、alignment_service、annotation_render、cjk_fonts、
+│   │   │                   # pdf_ops、pdf_extraction、app_settings、glossary_service、paper_metadata、
+│   │   │                   # translation_prompts、vision_check_service、stage_tracker
+│   │   ├── workers/        # tasks.py（Celery）
+│   │   └── main.py
+│   └── tests/              # pytest
+├── desktop/                # 桌面端启动器、打包脚本与 worker 运行时依赖（见第 1–18 节）
 ├── frontend/
 │   ├── src/
 │   │   ├── components/     # ReaderPage 使用的 UI 组件
@@ -1045,10 +1084,12 @@ PaperReader/
 │   ├── index.html
 │   ├── package.json
 │   └── vite.config.ts
+├── workers/
+│   └── pdfmathtranslate/   # 独立进程：__main__.py、runner、job、events、manifest
 ├── data/                   # 运行时数据（uploads / outputs / paperreader.db），不要提交
 ├── docs/                   # 用户说明书、开发者文档、release notes
 ├── infra/                  # Dockerfile.backend
-├── scripts/                # setup_*.sh / .ps1、smoke_release.py、benchmark_llm_rate.py
+├── scripts/                # setup_*.sh / .ps1、smoke_release.py、cleanup_legacy_artifacts.py
 ├── .env.example
 ├── docker-compose.yml
 ├── Makefile
@@ -1073,6 +1114,8 @@ PaperReader/
 - pypdf==4.3.1
 - pypdfium2==4.30.0
 - Pillow==10.4.0
+- reportlab==4.2.5
+- matplotlib==3.10.5
 
 ## 19.3 环境变量
 
@@ -1087,46 +1130,46 @@ cp .env.example .env
 - `OPENAI_API_KEY`
 - `OPENAI_BASE_URL`
 - `OPENAI_MODEL`
-- `SOMARK_API_KEY`（默认解析器，在 https://somark.cn 的 “API Workbench → APIKey” 获取）
-- `MINERU_API_KEY`（仅 `PDF_PARSER=mineru` 时需要，在 https://mineru.net/apiManage/docs 申请）
+- `PDFMATHTRANSLATE_PYTHON` — 运行 worker 的解释器；它自己的环境里必须装有 `desktop/requirements-worker.txt` 的依赖（`pdf2zh-next`、`babeldoc`）。也可以改用 `PDFMATHTRANSLATE_WORKER` 指定独立的 worker 可执行文件，该命令按原样执行，作业文件路径追加在末尾。
 
 ### 可选 / 调优变量
 
 - `SQLITE_DB_NAME`（默认 `paperreader.db`）— `DATA_DIR` 下的本地持久化数据库文件。
-- `TRANSLATE_CONCURRENCY`（默认 `16`）— 并行翻译的 chunk 数。DeepSeek `deepseek-flash` 的并发限制为账号级 2500，翻译批次的单次请求耗时通常在数十秒量级，因此默认值远低于上限；仅当服务商并发很低时才需要下调。
-- `TRANSLATE_MAX_RETRIES`（默认 `5`）— 单次 LLM 调用的重试预算；使用带抖动的指数退避，并遵守 `Retry-After`。
-- `LLM_RATE_LIMIT_RPS`（默认 `4`）— 所有 worker 线程共享的 LLM 全局限速（每秒请求数，令牌桶）。设为 `0` 关闭。建议低于服务商/密钥公布的 RPM 以避免 429。注意：该限速按单个 uvicorn 进程生效；若扩展为 N 个 worker，实际限速为 `N × LLM_RATE_LIMIT_RPS`。
-- `TRANSLATE_BATCH_MAX_CHARS`（默认 `6000`）— 每个 IR 批量请求拼接字符数上限。调大可摊薄往返延迟，但单次请求体更大。
-- `TRANSLATE_SEGMENT_MAX_CHARS`（默认 `2000`）— 单个散文本段落的硬上限。超长 MinerU 段落会被拆分再重组，避免模型输出上限截断后半段。
 - `GLOSSARY_REFRESH_INTERVAL_MINUTES`（默认 `30`）— 分领域术语库把候选术语合并进正式术语库的间隔（分钟）。由后台线程执行，设置接口读取术语库时也会补齐一次错过的间隔。翻译领域本身是本地设置（`settings.json` 的 `translation_domain`），不是环境变量。
 - `VISION_MODEL`（默认 `deepseek-flash`）— Phase D 视觉校验使用的多模态模型，必须与 `OPENAI_BASE_URL` 同一 OpenAI 兼容端点且支持视觉（如 `deepseek-flash`、`GLM-4.5V`、`GLM-4.6V`、`Qwen3-VL-30B-A3B-Instruct`、`Qwen3-VL-235B-A22B-Instruct`）。
 - `VISION_CHECK_ENABLED`（默认 `false`）、`VISION_CHECK_MODE`（`auto` | `manual`）、`VISION_CHECK_MAX_PAGES`（默认 `8`）— Phase D 的部署默认值。默认关闭校验，可在「设置 → 阅读偏好」中开启自动/手动校验。
-- `LAYOUT_DEBUG` — 设为 true 时额外产出 `outputs/<document_id>/layout-debug.pdf`，在原页上标出块类别与实际沿用的图注区域。
 
-### SoMark PDF 解析（默认）
+### PDFMathTranslate-next worker
 
-PDF 解析默认走 SoMark 文档智能解析 API（无需本地 OCR / GPU / 大模型下载），在「设置 → AI 服务 → PDF 解析」中选择，或用 `PDF_PARSER=somark` 指定。除 API Key 外均可选：
+翻译、页面解析与译文排版都由 `workers/pdfmathtranslate` 这个独立进程完成。它固定使用 PDFMathTranslate-next `2.9.0` 与 BabelDOC `0.6.2`；ONNX、OpenCV、scikit-image、HuggingFace Hub 以及模型与字体缓存只装在 worker 自己的运行时里，不写进 `requirements.txt`，后端也不导入任何翻译器模块。
 
-- `SOMARK_API_KEY` — SoMark 账号的 API Key（`sk-***`）。
-- `SOMARK_BASE_URL` — 默认 `https://somark.cn/api/v1`（中国大陆），海外用 `https://somark.ai/api/v1`。
-- `SOMARK_POLL_INTERVAL`（默认 `3` 秒）、`SOMARK_TIMEOUT`（默认 `600` 秒）— 异步任务轮询控制。
+后端把作业写成 JSON 文件，再以 `PDFMATHTRANSLATE_PYTHON -m workers.pdfmathtranslate <job.json>` 启动，工作目录和 `PYTHONPATH` 都指向仓库（或桌面 bundle）根目录，这样 `workers` 包可直接导入。桌面版由 `desktop/launcher.py` 按 `PDFMATHTRANSLATE_WORKER` → `PDFMATHTRANSLATE_PYTHON` → bundle 内 `worker-runtime` → `python3` 解析解释器。
 
-SoMark 侧限制：单文件 ≤ 200 MB，≤ 300 页，每账号 QPS 4。需允许访问 `somark.cn`（或 `somark.ai`）及其返回的图片资源域名。
+| 变量 | 含义 |
+| --- | --- |
+| `PDFMATHTRANSLATE_PYTHON` | 运行 worker 的解释器（默认 `python3`） |
+| `PDFMATHTRANSLATE_WORKER` | 独立的 worker 可执行文件；设置后按原样执行，作业路径追加在末尾 |
+| `PDFMATHTRANSLATE_VERSION` | 仅作记录：manifest 中登记的 PDFMathTranslate-next 版本（默认 `2.9.0`） |
+| `PDFMATHTRANSLATE_TIMEOUT` | 单篇文档的处理预算，默认 `3600` 秒；超时后进程被强杀，文档按 `translate` 阶段失败 |
+| `PDFMATHTRANSLATE_WORKING_DIR` | 临时目录根，默认 `<DATA_DIR>/worker`；每篇文档一个子目录，作业结束时清空 |
+| `PDFMATHTRANSLATE_DEBUG`（默认 `false`） | 把翻译器自己的布局输出保留到 `outputs/<id>/extraction/debug`，单篇可达数百 MB；manifest 无论开关都会产出 |
+| `PDFMATHTRANSLATE_OUTPUT_MODE` | `mono`（译文单语，默认）或 `dual`（双语）；非法值回落 `mono` |
+| `PDFMATHTRANSLATE_QPS` | 同时翻译的段落数（默认 `4`，即库的默认值）。一篇论文的耗时几乎全在 `Translate Paragraphs` 阶段，与并发数成反比；提高前先确认供应商的并发/速率限制 |
 
-解析产物落在 `outputs/<document_id>/somark/`：`somark.md`（Markdown 原文）、`somark.json`（完整 API 响应）、`images/`（下载到本地的图片资源）。
+作业文件由 `app/services/pdf_translation_worker.py` 生成：`job_id`、`input_pdf`、`output_dir`、`work_dir`、`translation`（`api_key` / `base_url` / `model`）、`options`（`output` / `no_watermark` / `debug`）、`qps`，以及可选 `glossary`（领域术语表的 CSV 路径）。作业文件写在临时工作目录中，API key 只出现在这里，不写日志。
 
-### MinerU PDF 解析（可选备选）
+事件协议：worker 在 stdout 上逐行写 JSON，每行一个带 `type` 的事件；日志走 stderr，保证 stdout 可解析。
 
-保留 MinerU 作为备选云解析后端，用 `PDF_PARSER=mineru` 指定。除 API Key 外均可选：
+- `stage_summary` — 即将执行的阶段清单（名称、归并后的 PaperReader 阶段、权重）；
+- `progress_start` / `progress_update` / `progress_end` — 单阶段进度（`stage`、`group`、`progress`、`overall`、`current`、`total`）；
+- `finish` — 成功，携带 `translated_pdf`、`dual_pdf`（dual 模式下的双语 PDF，否则为空）、`manifest_path`、`extraction_dir`、`debug_dir`、`glossary_path`、`mode_label`、`page_count`；
+- `error` — 失败，携带 `message` 与 `stage`。
 
-- `MINERU_API_KEY` — MinerU 账号的 Bearer token。
-- `MINERU_BASE_URL` — 默认 `https://mineru.net/api/v4`。
-- `MINERU_MODEL_VERSION` — `vlm`（推荐）、`pipeline` 或 `MinerU-HTML`。
-- `MINERU_LANGUAGE` — 英文论文 `en`，中文 `ch` 等。
-- `MINERU_ENABLE_FORMULA`、`MINERU_ENABLE_TABLE`、`MINERU_IS_OCR` — 功能开关。
-- `MINERU_POLL_INTERVAL`（秒）、`MINERU_TIMEOUT`（秒）— 轮询控制。
+`group` 字段把 BabelDOC 的阶段名归并成 `parse` / `translate` / `render` 三档，`document_pipeline._event_reporter` 据此切换进度面板的当前阶段并写入进度。非零退出、超时、`error` 事件、缺少译文 PDF 或缺少 manifest 都会转成 `WorkerError`，其 `stage` 决定文档记录的失败阶段。上传接口在启动流水线前用 `require_worker_ready()` 校验解释器是否可执行，不通过则返回 409 `worker_unavailable`。
 
-MinerU 侧限制：文件 ≤ 200 MB，≤ 200 页，每账号每天 1000 高优先级页。需允许访问 `mineru.net` 及其返回的 OSS/CDN 域名。
+manifest 契约：worker 把 BabelDOC 的调试布局（`paragraph_finder.json`、`add_debug_information.json`、`il_translated.json`）转换成 `extraction/manifest.json`，schema 为 `paperreader-manifest-v1`，并用 `boxes_normalized: false` 声明坐标是 PDF 用户空间的点（原点在页面左下角）。内容包括：每页的 `width` / `height` 与按阅读顺序排列的区块；区块的 `kind`（`title` / `paragraph` / `list` / `formula` / `figure` / `table`）、`bbox`、`layout_label`、`source_text`、`translated_text`、`protected_spans`（URL、引用、行内公式、数字）、`fragment_id` / `logical_id` / `fragments`，图/表的 `captions` 与 `caption_bbox`，表格的 `table_html` 与单元格；顶层的 `figures`、`tables`、`references`、`logical_objects`（逻辑对象 id → 片段 id 列表，按阅读顺序）与 `glossary`（翻译器抽取的术语）。每个区块是一个物理片段，`logical_id` 指向它所属的上游布局区域；BabelDOC 的布局区域编号逐页从 1 开始，因此逻辑对象 id 带页码前缀（如 `p0-l7`），跨页重号不会被合并。`app/services/document_manifest.py` 是唯一读取方，由它生成 IR、页面几何、目录、图表、参考文献与对齐对；下游不读 BabelDOC 的内部 JSON。
+
+产物布局：`outputs/<document_id>/` 下是译文 PDF `<源文件名>_Chinese_ver.pdf`、dual 模式下的 `<源文件名>_双语对照.pdf`、`original.pdf`、`<源文件名>_原文标注.pdf`、`alignment.json`，以及 `extraction/manifest.json`、`extraction/glossary.csv`（术语表非空时才有）和可选的 `extraction/debug/`。
 
 ## 19.4 本地运行
 
@@ -1153,17 +1196,18 @@ pytest                               # 运行后端测试
 python -m compileall backend/app     # 快速语法检查
 ```
 
-> 上传与解析在请求链路中是同步执行的；处理较大 PDF 时前端会持续轮询 `GET /api/document/{id}` 直至 `status` 变为 `done` 或 `failed`。
+> 上传接口立即返回，流水线在 `BackgroundTasks` 里执行；前端持续轮询 `GET /api/document/{id}` 直至 `status` 变为 `done` 或 `failed`。
 
 ## 19.5 本机设置
 
 应用没有账号体系：单个本地操作者直接使用全部功能，没有登录、向导或个人中心。
 
-- 设置（LLM `API Key` / `Base URL` / `Model`、parser 与 SoMark / MinerU 选项、视觉模型、主题、视觉校验偏好、翻译领域、收藏）
+- 设置（LLM `API Key` / `Base URL` / `Model`、视觉模型、主题、视觉校验偏好、翻译领域、收藏）
   统一存放在 `DATA_DIR/settings.json`，文件权限为 `0600`，写入采用临时文件 + `os.replace` 的原子替换。
-- 读取接口只返回 `api_key_configured` / `somark_api_key_configured` / `mineru_api_key_configured` 布尔值，不会回显密钥明文。
+- 读取接口只返回 `api_key_configured` 布尔值加上 `base_url` / `model` / `vision_model` / `theme` / `vision_enabled` / `vision_mode` / `show_annotated_pdf` / `translation_domain` / `favorites`，不会回显密钥明文。
+- 启动时 `app_settings.purge_removed_keys()` 会从 `settings.json` 中删掉早期版本遗留的解析器配置键（常量 `REMOVED_KEYS`）。
 - `translation_domain`（`cs` | `medical` | `general`）决定翻译提示词中的领域参数，并对应一套术语库；写入非法值时回落 `general`。
-- 术语库存放在 `DATA_DIR/glossary/<domain>.json`，候选池为同目录的 `<domain>.pending.json`：翻译时抽取到的术语先进入候选池，后台线程按 `GLOSSARY_REFRESH_INTERVAL_MINUTES` 合并进术语库（冲突按票数取多数），也可在「设置 → 翻译设置」中立即更新或删除单条术语。该目录不在 `/data/` 的对外暴露范围内。
+- 术语库存放在 `DATA_DIR/glossary/<domain>.json`，候选池为同目录的 `<domain>.pending.json`：作业开始时把术语库写成 CSV 交给 worker，翻译器抽取到的术语随 manifest 回来并进入候选池，后台线程按 `GLOSSARY_REFRESH_INTERVAL_MINUTES` 合并进术语库（冲突按票数取多数），也可在「设置 → 翻译设置」中立即更新或删除单条术语。该目录不在 `/data/` 的对外暴露范围内。
 - 文档与批注持久化在本地 SQLite：`documents`、`annotations`。没有 `owner_user_id`，也没有用户/会话表。
 - 前端首次进入时若未配置 API Key，会在工作台空白页给出「开始前需要配置 AI 服务」的入口，点击打开「设置」弹窗。
 
@@ -1191,13 +1235,14 @@ docker compose up --build
   - `POST /api/glossary/{domain}/refresh` — 立即合并候选池
   - `DELETE /api/glossary/{domain}/terms` — 删除一条术语（请求体 `{"en": "..."}`）
 - **上传**
-  - `POST /api/upload`（multipart，仅接受 `.pdf`；表单字段 `vision_check_enabled`、`vision_check_mode`）
+  - `POST /api/upload`（multipart，仅接受 `.pdf`；表单字段 `vision_check_enabled`、`vision_check_mode`）— 缺少大模型 Key 返回 409 `config_required`，找不到可用的 worker 解释器返回 409 `worker_unavailable`
 - **文档**
   - `GET /api/documents` — 列出本机文档摘要
   - `GET /api/document/{document_id}`
   - `PATCH /api/document/{document_id}`
   - `DELETE /api/document/{document_id}` — 软删除一条历史记录
-  - `POST /api/document/{document_id}/retry` — 重新排队失败文档，从最近校验点续跑
+  - `POST /api/document/{document_id}/retry` — 重新排队失败的文档
+  - `POST /api/document/{document_id}/reprocess` — 从头重跑一篇已完成或失败的文档
   - `POST /api/document/{document_id}/locate-counterpart` — 双语对应定位，返回 `highlight_text` 用于片段级高亮
   - `GET|POST /api/document/{document_id}/annotations`、`DELETE /api/document/{document_id}/annotations/{id}` — 持久化批注
   - `GET /api/document/{document_id}/notes.md` — 导出双语 Markdown 阅读笔记
@@ -1208,7 +1253,7 @@ docker compose up --build
 - **视觉校验（Phase D）**
   - `GET /api/document/{document_id}/review`
   - `POST /api/document/{document_id}/review` — 接受 / 拒绝视觉模型提出的修订
-- **译文 PDF** — 由 `render` 阶段直接合成：每个译文块钉回原稿坐标，图片/公式/图注/表格线条沿用原稿；同时产出 `layout-plan.json`（逐块坐标、字号与状态）与可选的 `layout-debug.pdf`
+- **译文 PDF** — 由 worker 产出：解析、翻译与排版在同一个进程里完成，译文排回原稿页面并沿用原稿的图片、公式与表格线条；`translated_pdf` artifact 指向 `outputs/<id>/<源文件名>_Chinese_ver.pdf`
 - **产物访问**
   - `GET|HEAD /data/{file_path}` — 产物与上传源文件下载；仅 `uploads/` 与 `outputs/` 下的文件可访问，
     数据库与 `settings.json` 不对外暴露
@@ -1217,36 +1262,35 @@ docker compose up --build
 
 - `source_filename`
 - `updated_at`、`last_opened_at`
-- `artifacts`（上传与生成的文件）
+- `artifacts`（上传与生成的文件：`source_pdf` / `original_pdf` / `translated_pdf` / `annotated_pdf` / `alignment_index` / `manifest` / `glossary`）
 - `references`（提取的参考文献条目，用于预览）
 - `progress`、`current_stage`、`current_stage_label`、`eta_seconds`、`stages`（Phase A）
 - `pending_reviews` — `manual` 模式下等待人工决策的视觉模型修订提案（Phase D）
-- `failure.stage` — 失败阶段，取值为 `upload` / `parse` / `clean` / `vision_check` / `translate` / `render`；重试从该阶段继续，`render` 重试复用解析与翻译检查点，不重新翻译
+- `failure.stage` — 失败阶段，取值为 `upload` / `parse` / `clean` / `vision_check` / `translate` / `render`；重试与重新处理都从 `parse` 重跑（worker 一次处理整篇文档，没有可复用的半成品）
 - 以及既有的 `status`、`original_pdf_url`、`translated_pdf_url`、`logs`
 
 ## 19.8 平台说明
 
 ### macOS (Apple Silicon)
 
-- PDF 解析经 SoMark 云端完成，无需本地 Torch/MPS 配置。
+- 翻译与页面解析在本机 worker 进程内完成，不需要 GPU、Torch 或 MPS，也不需要云解析服务。
 - PDF 内的 HTTP(S) 链接在系统浏览器打开；PaperReader 窗口保留当前论文与阅读位置。
 - WKWebView 阅读器支持 PDF 文本选择/复制、生成的大纲与更快的触控板捏合缩放。
-- 译文排版失败时，先确认宿主机已装中文字体，再查看 `layout-plan.json` 中每块的状态与原因。
+- worker 启动失败（例如 `worker interpreter not found`）时，文档会直接进入 `failed`，不会停在处理中。
 
-### Linux (CUDA)
+### Linux
 
-- PDF 解析无需 GPU（SoMark 云端）。
+- worker 只用 CPU；GPU 不是必需条件。
 - LLM 翻译仍使用 `.env` 中配置的 OpenAI 兼容端点。
 
 ### Windows
 
 - 使用 `scripts/setup_windows.ps1`。
-- 安装中文字体（macOS：Songti SC；Windows：SimSun；Linux：fonts-noto-cjk）。
+- worker 运行时（`desktop/requirements-worker.txt`）需要单独准备；字体已随应用内置。
 
 ## 19.9 当前实现边界
 
-- 上传处理仍在请求链路中同步执行（尚未引入后台任务交接）；文档内的翻译 chunk 通过线程池并发。
+- 上传接口立即返回，流水线在 `BackgroundTasks` 里执行；翻译与排版的并发由 worker 内部管理，后端只转述它的进度事件。
 - 文档与批注持久化在 SQLite，设置存放在 `settings.json`；应用面向单个本地操作者，不是加固的互联网级多租户服务。
 - 参考文献提取是启发式的（基于章节/行模式），不是完整的引文解析器。
 - 前端支持设置弹窗、面板开关、拖拽产物预览与视觉校验人工复核。
-- 译文排版先逐块拟合，再做全页字号/行距收口；合成后逐页校验原稿文字的移除与保留，失败的块回退为原稿内容，失败的页整页回退为原稿页。

@@ -11,7 +11,6 @@ from app.models.schemas import (
     DocumentStatusResponse,
     DocumentSummary,
     FailureItem,
-    LayoutIssueItem,
     LocateCounterpartRequest,
     LocateCounterpartResponse,
     RenameDocumentRequest,
@@ -36,11 +35,8 @@ from app.models.store import (
 from app.services.alignment_service import load_alignment_entries, locate_in_alignment, proportional_highlight
 from app.services.annotation_render import ANNOTATION_REVISION
 from app.services.app_settings import load_settings
-from app.services.document_pipeline import (
-    build_annotated_pdf,
-    cached_resume_stage,
-    process_document,
-)
+from app.services.document_pipeline import build_annotated_pdf, process_document
+from app.services.pdf_translation_worker import cancel_worker
 
 
 router = APIRouter()
@@ -72,23 +68,8 @@ def _annotated_pdf_url(record) -> str | None:
     )
 
 
-def _layout_issues(record) -> list[LayoutIssueItem]:
-    """Validate the stored layout issues, tolerating older documents."""
-    stored = record.metadata.get("layout_issues")
-    if not isinstance(stored, list):
-        return []
-    issues: list[LayoutIssueItem] = []
-    for item in stored:
-        if not isinstance(item, dict):
-            continue
-        try:
-            issues.append(LayoutIssueItem(**item))
-        except TypeError:
-            continue
-    return issues
-
-
-def _alignment_blocks(text: str) -> list[str]:    return [
+def _alignment_blocks(text: str) -> list[str]:
+    return [
         " ".join(part.split())
         for part in re.split(r"\n\s*\n+", text or "")
         if len(part.strip()) >= 12 and not part.lstrip().startswith("![](")
@@ -159,7 +140,6 @@ def get_document(
         ],
         references=[ReferenceItem(index=item.index, text=item.text) for item in record.references],
         logs=record.logs,
-        layout_issues=_layout_issues(record),
         progress=record.progress,
         current_stage=record.current_stage,
         current_stage_label=record.current_stage_label,
@@ -192,6 +172,22 @@ def get_document(
     )
 
 
+@router.post("/document/{document_id}/cancel")
+def cancel_document(document_id: str) -> dict:
+    record = require_document(document_id)
+    if record.status not in {"queued", "processing"}:
+        raise HTTPException(status_code=409, detail="Document is not being processed")
+    if not cancel_worker(document_id):
+        raise HTTPException(status_code=409, detail="Document worker is not active")
+    record.status = "cancelled"
+    record.failure = None
+    record.current_stage = None
+    record.current_stage_label = None
+    record.logs.append("Cancellation requested")
+    save_document(record)
+    return {"document_id": document_id, "status": "cancelled"}
+
+
 @router.post(
     "/document/{document_id}/retry",
     response_model=RetryDocumentResponse,
@@ -219,10 +215,13 @@ def reprocess_document(
     document_id: str,
     background_tasks: BackgroundTasks,
 ) -> RetryDocumentResponse:
-    """Re-run a document from its cached stages, whatever its current status."""
+    """Re-run a document from scratch.
+
+    A translated PDF is produced in one worker pass, so there is no partially
+    reusable work to resume from: a reprocess always starts at the parse stage.
+    """
     record = require_document(document_id)
-    resume_from = cached_resume_stage(record)
-    record, resume_from = queue_document_reprocess(document_id, resume_from)
+    record, resume_from = queue_document_reprocess(document_id, "parse")
     background_tasks.add_task(_run_retry_pipeline, record.document_id, resume_from)
     return RetryDocumentResponse(
         document_id=record.document_id,

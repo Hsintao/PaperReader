@@ -12,6 +12,7 @@ import { Sidebar } from '../components/Sidebar'
 import type { ArtifactItem, DocumentStatus, DocumentSummary } from '../lib/api'
 import {
   annotatedPdfName,
+  cancelDocument,
   createAnnotation,
   deleteAnnotation,
   deleteDocument,
@@ -56,6 +57,7 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
   const [favorites, setFavorites] = useState<string[]>(settings.favorites)
   const [notice, setNotice] = useState<string | null>(null)
   const [retrying, setRetrying] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
   const [pollRevision, setPollRevision] = useState(0)
   const [annotations, setAnnotations] = useState<AnnotationItem[]>([])
   const [structureOutline, setStructureOutline] = useState<OutlineItem[] | null>(null)
@@ -151,7 +153,7 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
               : s
           )
         )
-        if (data.status === 'done' || data.status === 'failed') {
+        if (data.status === 'done' || data.status === 'failed' || data.status === 'cancelled') {
           if (pollTimerRef.current) {
             window.clearInterval(pollTimerRef.current)
             pollTimerRef.current = null
@@ -216,6 +218,20 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
       setRetrying(false)
     }
   }, [activeId, retrying])
+
+  const handleCancel = useCallback(async () => {
+    if (!activeId || cancelling) return
+    setCancelling(true)
+    try {
+      const cancelled = await cancelDocument(activeId)
+      setDocCache((cache) => cache[activeId] ? { ...cache, [activeId]: { ...cache[activeId], status: cancelled.status } } : cache)
+      setSummaries((items) => items.map((item) => item.document_id === activeId ? { ...item, status: cancelled.status } : item))
+    } catch (error: any) {
+      setNotice(`取消失败：${error?.message ?? String(error)}`)
+    } finally {
+      setCancelling(false)
+    }
+  }, [activeId, cancelling])
 
   const handleReprocess = useCallback(async (documentId: string) => {
     try {
@@ -304,12 +320,6 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
     void downloadNotes(activeId).catch((e: any) => setNotice(`导出笔记失败：${e?.message ?? String(e)}`))
   }, [activeId])
 
-  const handleOpenLayoutIssue = useCallback((page: number) => {
-    // Point both panes at the page the issue belongs to.
-    originalPaneRef.current?.goToPage(page)
-    translatedPaneRef.current?.goToPage(page)
-  }, [])
-
   const handleProgressChange = useCallback((page: number, ratio: number) => {
     if (!activeId) return
     void updateReadingProgress(activeId, page, ratio).catch(() => {})
@@ -381,7 +391,7 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
       setActiveId(result.document_id)
       await refreshSummaries()
     } catch (e: any) {
-      if (e?.code === 'config_required') setSettingsOpen(true)
+      if (e?.code === 'config_required' || e?.code === 'worker_unavailable') setSettingsOpen(true)
       setNotice(`上传失败：${e?.message ?? String(e)}`)
     } finally {
       setUploading(false)
@@ -485,7 +495,6 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
           uploading={uploading}
           artifacts={artifacts}
           logs={logs}
-          layoutIssues={activeDoc?.layout_issues ?? []}
           theme={theme}
           visionEnabled={visionEnabled}
           visionMode={visionMode}
@@ -506,7 +515,6 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
             void persistPreferences({ theme: next })
           }}
           onRefreshStatus={refreshActive}
-          onOpenLayoutIssue={handleOpenLayoutIssue}
           onSearchLocate={(hit) => {
             if (hit.document_id !== activeId) setActiveId(hit.document_id)
             setPendingLocate({ text: hit.snippet, side: hit.side })
@@ -533,6 +541,8 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
             failure={activeDoc.failure}
             retrying={retrying}
             onRetry={handleRetry}
+            cancelling={cancelling}
+            onCancel={handleCancel}
           />
         )}
         {!activeId ? (

@@ -29,11 +29,25 @@ def font_data_files() -> list[tuple[str, list[str]]]:
     return [("app/assets/fonts", sorted(str(path) for path in fonts.iterdir() if path.is_file()))]
 
 
+def worker_data_files() -> list[tuple[str, list[str]]]:
+    """Ship the PDF translation worker package next to the bundled frontend.
+
+    The launcher starts it as `python -m workers.pdfmathtranslate` from the
+    bundle root, so both the package and its parent keep their own names under
+    Resources.
+    """
+    workers = ROOT / "workers"
+    return [
+        ("workers", [str(workers / "__init__.py")]),
+        ("workers/pdfmathtranslate", sorted(str(path) for path in (workers / "pdfmathtranslate").glob("*.py"))),
+    ]
+
+
 setup(
     name="PaperReader",
     version=VERSION,
     app=[str(ROOT / "desktop" / "launcher.py")],
-    data_files=frontend_data_files() + font_data_files(),
+    data_files=frontend_data_files() + font_data_files() + worker_data_files(),
     options={
         "py2app": {
             "argv_emulation": False,

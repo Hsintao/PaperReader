@@ -1,9 +1,9 @@
 """Persistent, structure-preserving alignment between source and translation.
 
-The translation pipeline translates structured IR strings in-place and keeps
-their order.  Capturing those strings before and after translation gives us an
-exact bilingual index.  Older documents are upgraded lazily from their saved
-MinerU structure and the already persisted translated Markdown.
+The manifest pairs every block's source text with its translation, so the
+bilingual locator reads exact pairs rather than reconstructing them. The pairs
+are persisted as ``alignment.json`` when a document finishes, which is what the
+"locate counterpart" endpoint searches.
 """
 
 from __future__ import annotations
@@ -16,15 +16,6 @@ from pathlib import Path
 
 from app.core.config import settings
 from app.models.store import DocumentRecord
-from app.services.mineru_layout import (
-    Image,
-    InlineMath,
-    ListBlock,
-    Paragraph,
-    TextRun,
-    Title,
-    blocks_to_ir,
-)
 
 
 _ALIGNMENT_FILENAME = "alignment.json"
@@ -38,56 +29,12 @@ def _normalize(text: str) -> str:
 def _plain_target(text: str) -> str:
     value = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", text or "")
     value = re.sub(r"\$\$.*?\$\$|\$[^$]*\$", " ", value, flags=re.DOTALL)
+    value = re.sub(r"<[^>]{1,40}>", " ", value)
     value = re.sub(r"\\(?:label|ref|cite)\{[^{}]*\}", " ", value)
     value = re.sub(r"\\[a-zA-Z]+\*?", "", value)
     value = value.replace("\\_", "_").replace("\\%", "%").replace("\\&", "&")
     value = re.sub(r"[#*_`{}]+", " ", value)
     return " ".join(value.split()).strip()
-
-
-def _text_from_runs(runs: list) -> str:
-    parts: list[str] = []
-    for run in runs:
-        if isinstance(run, TextRun):
-            parts.append(run.text)
-        elif isinstance(run, InlineMath) and run.latex:
-            parts.append(f"${run.latex}$")
-    return "".join(parts).strip()
-
-
-def ir_to_markdown_blocks(ir: list) -> list[str]:
-    """Render the same visible block sequence used by translated_text."""
-    blocks: list[str] = []
-    for block in ir:
-        if isinstance(block, Title):
-            hashes = "#" * max(1, min(block.level, 6))
-            blocks.append(f"{hashes} {block.text}")
-        elif isinstance(block, Paragraph):
-            text = _text_from_runs(block.runs)
-            if text:
-                blocks.append(text)
-        elif isinstance(block, ListBlock):
-            for item in block.items:
-                text = _text_from_runs(item)
-                if text:
-                    blocks.append(text)
-        elif isinstance(block, Image):
-            # translated_text stores the image path, but images cannot be
-            # selected from the PDF text layer, so they do not enter the map.
-            continue
-        else:
-            latex = getattr(block, "latex", "")
-            if latex:
-                blocks.append(f"$$\n{latex}\n$$")
-    return blocks
-
-
-def split_markdown_blocks(text: str) -> list[str]:
-    return [
-        " ".join(part.split())
-        for part in re.split(r"\n\s*\n+", text or "")
-        if len(part.strip()) >= 2 and not part.lstrip().startswith("![](")
-    ]
 
 
 def save_alignment_entries(record: DocumentRecord, entries: list[dict]) -> Path:
@@ -136,59 +83,10 @@ def _read_alignment(path: Path) -> list[dict]:
     return []
 
 
-def _content_list_path(record: DocumentRecord) -> Path | None:
-    for artifact in reversed(record.artifacts):
-        if "content_list_v2" in artifact.name:
-            candidate = Path(artifact.path)
-            if candidate.is_file():
-                return candidate
-    mineru_dir = settings.output_dir / record.document_id / "mineru"
-    candidates = sorted(mineru_dir.glob("*_content_list_v2.json")) if mineru_dir.is_dir() else []
-    return candidates[-1] if candidates else None
-
-
-def _rebuild_legacy_alignment(record: DocumentRecord) -> list[dict]:
-    content_path = _content_list_path(record)
-    if not content_path or not record.translated_text.strip():
-        return []
-    try:
-        content = json.loads(content_path.read_text(encoding="utf-8"))
-        ir = blocks_to_ir(content)
-        source_blocks = ir_to_markdown_blocks(ir)
-    except Exception:
-        return []
-    translated_blocks = split_markdown_blocks(record.translated_text)
-    if not source_blocks or len(source_blocks) != len(translated_blocks):
-        return []
-    total = max(1, len(source_blocks) - 1)
-    return [
-        {
-            "index": index,
-            "position": index / total,
-            "original": source,
-            "translated": translated,
-            "kind": "structured_block",
-        }
-        for index, (source, translated) in enumerate(zip(source_blocks, translated_blocks))
-        if source.strip() and translated.strip()
-    ]
-
-
 def load_alignment_entries(record: DocumentRecord) -> tuple[list[dict], str]:
     path = settings.output_dir / record.document_id / _ALIGNMENT_FILENAME
     entries = _read_alignment(path) if path.is_file() else []
-    if entries and not (
-        all(item.get("kind") == "structured_block" for item in entries)
-        and _content_list_path(record)
-    ):
-        return entries, "exact_index"
-    rebuilt = _rebuild_legacy_alignment(record)
-    if rebuilt:
-        save_alignment_entries(record, rebuilt)
-        return rebuilt, "reconstructed_structure"
-    if entries:
-        return entries, "reconstructed_structure"
-    return [], "legacy_ratio"
+    return (entries, "exact_index") if entries else ([], "legacy_ratio")
 
 
 def _entry_score(candidate: str, needle: str) -> float:

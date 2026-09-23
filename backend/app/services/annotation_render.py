@@ -20,12 +20,8 @@ from reportlab.pdfgen import canvas as pdf_canvas
 
 from app.services import pdf_ops
 from app.services.cjk_fonts import require_cjk_font
-from app.services.layout_model import (
-    PageFrame,
-    caption_rect,
-    document_lines,
-)
-from app.services.mineru_layout import (
+from app.services.document_manifest import PageGeometry
+from app.services.document_ir import (
     Author,
     Block,
     DisplayMath,
@@ -152,7 +148,7 @@ def _rect_inside(outer: Rect, inner: Rect, slack: float = 1.0) -> bool:
 def render_annotated_pdf(
     *,
     source_pdf: Path,
-    frames: list[PageFrame],
+    pages: list[PageGeometry],
     blocks: list[Block],
     output_pdf: Path,
 ) -> int:
@@ -178,9 +174,9 @@ def render_annotated_pdf(
         if not page_blocks:
             writer.add_page(source_page)
             continue
-        frame = frames[index] if index < len(frames) else None
-        width = float(frame.width) if frame is not None else float(source_page.mediabox.width)
-        height = float(frame.height) if frame is not None else float(source_page.mediabox.height)
+        geometry = pages[index] if index < len(pages) else None
+        width = float(geometry.width) if geometry is not None else float(source_page.mediabox.width)
+        height = float(geometry.height) if geometry is not None else float(source_page.mediabox.height)
         buffer = io.BytesIO()
         canvas = pdf_canvas.Canvas(buffer, pagesize=(width, height))
         canvas.setFont(fonts.regular, _LABEL_SIZE)
@@ -190,26 +186,20 @@ def render_annotated_pdf(
             )
             _draw_region(canvas, fonts.regular, block.bbox, label, color, height)
             drawn += 1
-        if frame is not None:
-            page_lines: list[list] | None = None
-            for block in page_blocks:
-                if isinstance(block, Image):
-                    kind = "figure"
-                elif isinstance(block, Table):
-                    kind = "table"
-                else:
-                    continue
-                if page_lines is None:
-                    page_lines = [line for _page, line in document_lines([frame])]
-                rect = caption_rect(block, frame, page_lines)
-                if rect is None:
-                    continue
-                if block.bbox and _rect_inside(block.bbox, rect):
-                    continue
-                _draw_region(
-                    canvas, fonts.regular, rect, CAPTION_LABELS[kind], CAPTION_COLOR, height
-                )
-                drawn += 1
+            # A caption is boxed on its own when it sits outside the artwork's
+            # own box; the manifest reports where the caption actually is.
+            caption = getattr(block, "caption_bbox", None)
+            kind = (
+                "figure" if isinstance(block, Image) else "table" if isinstance(block, Table) else None
+            )
+            if kind is None or caption is None or block.bbox is None:
+                continue
+            if _rect_inside(block.bbox, caption):
+                continue
+            _draw_region(
+                canvas, fonts.regular, caption, CAPTION_LABELS[kind], CAPTION_COLOR, height
+            )
+            drawn += 1
         canvas.showPage()
         canvas.save()
         target = writer.add_page(source_page)

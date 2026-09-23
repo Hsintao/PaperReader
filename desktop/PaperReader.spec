@@ -14,6 +14,10 @@ datas = [
     (str(project_root / "frontend" / "dist"), "frontend_dist"),
     (str(project_root / "desktop" / "assets" / "PaperReader.ico"), "."),
     (str(backend_dir / "app" / "assets" / "fonts"), "app/assets/fonts"),
+    # The PDF translation worker is started as `python -m
+    # workers.pdfmathtranslate` with the bundle root as its working directory,
+    # so the package has to keep its own name at the top level.
+    (str(project_root / "workers"), "workers"),
 ]
 datas += collect_data_files("pypdfium2")
 datas += collect_data_files("reportlab")

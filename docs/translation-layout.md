@@ -1,5 +1,11 @@
 # 译文 PDF 排版设计
 
+> **历史文档**（2026-09-20）：本文记录 PaperReader 自带的译文排版器。该排版器已被
+> PDFMathTranslate-next worker 取代，`layout_fit.py`、`layout_model.py`、`layout_render.py`
+> 及配套脚本也已从仓库删除；解析、翻译与译文排版现在集中在 `workers/pdfmathtranslate`。
+> 本文只作为旧排版器的设计记录保留，正文不再代表当前实现，当前设计见
+> [DEVELOPMENT.md](DEVELOPMENT.md) 第 19 节。
+>
 > 状态：已确认设计
 > 日期：2026-09-20
 > 适用范围：英文论文翻译为简体中文后的定位式 PDF、左右对照阅读和独立译文 PDF

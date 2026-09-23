@@ -21,17 +21,19 @@ def _document(document_id: str, source: Path) -> DocumentRecord:
 def _artifacts(document_id: str) -> Path:
     """The per-document output directory with everything the pipeline wrote."""
     output_dir = settings.output_dir / document_id
-    (output_dir / "mineru" / "images").mkdir(parents=True, exist_ok=True)
+    (output_dir / "extraction" / "debug").mkdir(parents=True, exist_ok=True)
     (output_dir / "figure-previews").mkdir(parents=True, exist_ok=True)
-    (output_dir / "formula-crops").mkdir(parents=True, exist_ok=True)
     (output_dir / "original.pdf").write_bytes(b"%PDF-1.4\n")
     (output_dir / f"{document_id}_Chinese_ver.pdf").write_bytes(b"%PDF-1.4\n")
     (output_dir / f"{document_id}_原文标注.pdf").write_bytes(b"%PDF-1.4\n")
-    (output_dir / "layout-plan.json").write_text("{}", encoding="utf-8")
     (output_dir / "alignment.json").write_text("[]", encoding="utf-8")
-    (output_dir / "extraction-checkpoint.json").write_text("{}", encoding="utf-8")
-    (output_dir / "translation-checkpoint.json").write_text("{}", encoding="utf-8")
-    (output_dir / "mineru" / "images" / "page_001_img_00.png").write_bytes(b"png")
+    (output_dir / "extraction" / "manifest.json").write_text(
+        '{"schema_version": "paperreader-manifest-v1", "pages": []}', encoding="utf-8"
+    )
+    (output_dir / "extraction" / "glossary.csv").write_text(
+        "source,target\nattention,注意力\n", encoding="utf-8"
+    )
+    (output_dir / "figure-previews" / "original-crop-1.png").write_bytes(b"png")
     return output_dir
 
 

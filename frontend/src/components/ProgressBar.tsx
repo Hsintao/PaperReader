@@ -9,6 +9,8 @@ type Props = {
   failure?: FailureItem | null
   retrying?: boolean
   onRetry?: () => void
+  cancelling?: boolean
+  onCancel?: () => void
 }
 
 function formatEta(s?: number | null): string {
@@ -27,7 +29,9 @@ export function ProgressBar({
   stages,
   failure,
   retrying = false,
-  onRetry
+  onRetry,
+  cancelling = false,
+  onCancel
 }: Props) {
   if (status === 'done') {
       return (
@@ -87,6 +91,11 @@ export function ProgressBar({
               ? `当前：${currentStageLabel}`
               : '处理中'}
         </span>
+        {onCancel && (status === 'processing' || status === 'queued') && (
+          <button className="btn small" disabled={cancelling} onClick={onCancel}>
+            {cancelling ? '正在取消…' : '取消处理'}
+          </button>
+        )}
         <span className="muted small">{pct}% · 预计剩余 {formatEta(etaSeconds)}</span>
       </div>
     </div>

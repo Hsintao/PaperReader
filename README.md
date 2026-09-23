@@ -6,31 +6,30 @@ English | [简体中文](docs/zh-cn/README.zh-cn.md)
 
 > 📖 **Please read the [User Guide (中文)](docs/user_instruction.md) before downloading.** It covers installation (including the Windows "unblock ZIP" step that prevents most launch failures), provider setup, paper submission, history, and artifacts.
 
-v2.2.0 replaces the reflowed LaTeX translation with a page-faithful one: every translated block is pinned to the source paragraph's coordinates, figures, formulas, captions and table rules are reused from the original page, and the translated PDF keeps the source page size and page count. TeX Live is no longer required. See the [release notes](docs/releases/v2.2.0.md). Frontend/API package version: `2.2.0`.
+v2.2.0 translates PDFs with PDFMathTranslate-next: parsing, translation and the translated PDF all come from one worker pass that keeps the source page size and page count and reuses the original page's figures, formulas and table rules. See the [release notes](docs/releases/v2.2.0.md). Frontend/API package version: `2.2.0`.
 
 ![](./images/demo1.png)
 
-PaperReader is a full-stack bilingual paper-reading app. Upload a PDF; PaperReader parses it (SoMark cloud API, optional MinerU cloud API, or the built-in text-layer parser), translates it with an LLM, lays the translation out on the source page — same page size, same page count, figures and formulas untouched — and lets you read both versions side by side.
+PaperReader is a full-stack bilingual paper-reading app. Upload a PDF; PaperReader runs it through a local PDFMathTranslate-next worker, which parses the pages, translates the text through your LLM endpoint and writes a translated PDF plus a structured manifest of every block, figure, table, caption and reference. PaperReader builds the outline, the reference list, the bilingual alignment and the annotated source PDF from that manifest, and the reader shows the original and the translation side by side.
 
 ## Desktop quick start
 
 - **Windows**: download the ZIP from the release page, extract the complete archive, and run `PaperReader.exe`. If it fails to open, unblock the ZIP first — see the [User Guide](docs/user_instruction.md).
 - **macOS (Apple Silicon)**: open the DMG and copy PaperReader to Applications.
-- Both builds ask for your LLM and [SoMark](https://somark.cn) (or MinerU) credentials in the in-app Settings dialog; everything else is bundled.
-- Translated PDF generation requires a Chinese font on the host (macOS: Songti SC; Windows: SimSun; Linux: fonts-noto-cjk). No TeX installation is needed.
+- Both builds ask for your LLM API key in the in-app Settings dialog. The translator itself runs from a PDFMathTranslate-next runtime that is installed separately — see `desktop/requirements-worker.txt`.
+- Translated PDFs carry their own Chinese fonts and the annotated source PDF is drawn with the fonts bundled with the app, so no host font and no TeX installation are needed.
 - Platform guides: [Windows](desktop/README_zh.md) · [macOS](desktop/README_macos_zh.md)
 
 ## Features
 
-- No accounts and no sign-in: one local operator uses the whole app, with LLM / SoMark / MinerU / parser / vision settings kept in a `0600` local file; stored keys are never returned to the frontend
+- No accounts and no sign-in: one local operator uses the whole app, with the LLM, vision, theme and reading settings kept in a `0600` local file; the stored key is never returned to the frontend
 - Persistent history in local SQLite; processed files reopen after a restart
-- PDF-only upload: `.pdf` files are parsed with the SoMark cloud API (default), the optional MinerU cloud API, or the built-in local text-layer extractor
-- PDF parsing via the SoMark cloud API — no local OCR or GPU required
-- Concurrent LLM translation with validated per-chunk checkpoints and automatic retry; failed documents resume from the last checkpoint instead of starting over
-- Translation domain setting (computer science / medicine / general academic) that selects the translation prompt and its terminology rules; each domain keeps its own glossary, which accumulates the terms learned from translated documents and is consolidated on a fixed interval
-- Page-faithful translation layout: every block is pinned to its source coordinates with the source's own font size, weight, alignment and line spacing; when the translation does not fit it first uses the whitespace below, then shrinks that block only, then continues into a region the parser dropped, and finally falls back to the source wording
-- Figures, block formulas, captions and running heads are reused verbatim from the source page; tables keep their vector rules and only the translated cell text is replaced
-- Blocks are verified after composition: any source text that survived removal reverts that block, and a page whose original text would be lost falls back to the untouched source page
+- PDF-only upload: `.pdf` files go to the PDFMathTranslate-next worker, which parses the pages, translates them through your LLM endpoint and writes the translated PDF in one pass
+- The worker is a separate process with its own runtime (`desktop/requirements-worker.txt`): the backend never imports the translator, and one JSON job file describes each run
+- Translation domain setting (computer science / medicine / general academic) that selects the translation prompt and its terminology rules; each domain keeps its own glossary, which accumulates the terms the translator extracts, is consolidated on a fixed interval, and is passed to the worker as job input
+- The output keeps the source layout: the translation is typeset onto the source page, reusing the original figures, block formulas and table rules, with the source page size and page count
+- The worker publishes a manifest (`paperreader-manifest-v1`) holding page geometry, typed blocks with source and translated text, protected spans (URLs, citations, numbers, inline formulas), figure and table captions and cells, references, and the logical-object to fragment mapping
+- The outline, figure gallery, reference list, bilingual alignment index and annotated source PDF are all built from that manifest; the annotated PDF boxes every parsed region, including each figure and table caption
 - Optional vision-model adversarial check on each page (auto / manual review modes, off by default)
 - Side-by-side original/translated PDF reader with outlines (bookmarks or backend-parsed section structure), selectable text, trackpad zoom, on-demand page rendering, and a progress bar with stage breakdown, ETA, and failure diagnosis
 - In-document search (Ctrl/Cmd+F) with match navigation across the whole file

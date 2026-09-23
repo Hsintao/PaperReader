@@ -73,7 +73,12 @@ def main():
         env = os.environ.copy()
         env.update(PAPERREADER_NO_WINDOW='1', DATA_DIR=str(base / '用户数据'),
                    PAPERREADER_ENV_FILE=str(base / 'config.env'),
-                   OPENAI_API_KEY='', MINERU_API_KEY='', PDF_PARSER='local',
+                   OPENAI_API_KEY='',
+                   # The smoke test has no PDFMathTranslate-next runtime, so it
+                   # pins the worker at a real interpreter: the upload is
+                   # accepted, the worker then fails, and the document has to
+                   # land in `failed` rather than stay `processing`.
+                   PDFMATHTRANSLATE_PYTHON=sys.executable,
                    PAPERREADER_PORT=str(args.port))
         if args.web:
             env['PYTHONPATH'] = str(root / 'backend')
@@ -125,7 +130,7 @@ def main():
             assert first.json('/api/documents') == []
             settings = first.json('/api/settings/me/providers', {
                 'api_key': 'local-test-key', 'base_url': 'https://llm.example/v1',
-                'model': 'smoke-model', 'pdf_parser': 'local'}, 'PUT')
+                'model': 'smoke-model'}, 'PUT')
             assert settings['api_key_configured'] is True
             first.json('/api/settings/me', {'theme': 'dark'}, 'PUT')
             # Only generated artifacts are reachable; the database and the
@@ -147,13 +152,19 @@ def main():
                                              headers={'Content-Type': f'multipart/form-data; boundary={boundary}'})
             with first.opener.open(request, timeout=20) as response:
                 document_id = json.load(response)['document_id']
-            deadline = time.monotonic() + 30
+            deadline = time.monotonic() + 120
             while time.monotonic() < deadline:
                 document = first.json('/api/document/' + document_id)
                 if document['status'] in ('done', 'failed'):
                     break
                 time.sleep(0.2)
-            assert document['status'] in ('done', 'failed'), 'Upload pipeline did not settle'
+            # Without a PDFMathTranslate-next runtime the document cannot
+            # succeed, but the worker's failure has to reach the document
+            # record instead of leaving it stuck in `processing`.
+            assert document['status'] == 'failed', (
+                f"worker availability must be reflected in the document status, got {document['status']}"
+            )
+            assert document['failure'], 'a failed document must record why'
             source_url = '/data/outputs/' + document_id + '/original.pdf'
             content, _ = first.request(source_url)
             assert content.startswith(b'%PDF')
