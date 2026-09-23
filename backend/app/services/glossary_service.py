@@ -27,8 +27,10 @@ _LOCK = threading.RLock()
 _REFRESH_STARTED = threading.Event()
 
 _GLOSSARY_VERSION = 1
-MAX_GLOSSARY_TERMS = 500
-MAX_PENDING_TERMS = 1000
+# The glossary is bounded by file size, not term count: the worker matches the
+# whole library against each paragraph offline, so a big library costs nothing
+# per request — the file just must not grow without bound.
+MAX_GLOSSARY_BYTES = 50 * 1024 * 1024
 PROMPT_TERM_LIMIT = 24
 _MAX_DOCUMENTS_PER_TERM = 5
 _MAX_EN_CHARS = 80
@@ -171,14 +173,42 @@ def record_candidate_terms(domain: str, pairs, document_id: str = "") -> None:
                 if document_id and document_id not in documents:
                     documents.append(document_id)
                 term["documents"] = documents[-_MAX_DOCUMENTS_PER_TERM:]
-            if len(entries) > MAX_PENDING_TERMS:
-                entries = _sorted_terms(entries, MAX_PENDING_TERMS)
             _write(target, entries, updated_at=_read_updated_at(target) or now)
     except Exception as exc:  # noqa: BLE001 - never block translation
         logger.warning("Could not record glossary candidates for %s: %s", domain, exc)
 
 
-def _merge_pending(glossary: list[dict], pending: list[dict]) -> list[dict]:
+def _payload_bytes(domain: str, terms: list[dict]) -> int:
+    """The on-disk size of a glossary file holding ``terms``."""
+    body = json.dumps(
+        {
+            "version": _GLOSSARY_VERSION,
+            "domain": domain,
+            "updated_at": _utcnow(),
+            "terms": terms,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    return len(body.encode("utf-8")) + 1
+
+
+def _pruned_to_size(domain: str, terms: list[dict]) -> list[dict]:
+    """Keep the best-supported terms that fit the glossary's size budget."""
+    ordered = _sorted_terms(terms)
+    if _payload_bytes(domain, ordered) <= MAX_GLOSSARY_BYTES:
+        return ordered
+    lo, hi = 0, len(ordered)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if _payload_bytes(domain, ordered[:mid]) <= MAX_GLOSSARY_BYTES:
+            lo = mid
+        else:
+            hi = mid - 1
+    return ordered[:lo]
+
+
+def _merge_pending(domain: str, glossary: list[dict], pending: list[dict]) -> list[dict]:
     merged = [dict(term) for term in glossary]
     index = {
         str(term.get("en", "")).strip().casefold(): term
@@ -214,13 +244,16 @@ def _merge_pending(glossary: list[dict], pending: list[dict]) -> list[dict]:
             # Keep the stored rendering but keep the term's evidence growing.
             existing["count"] = existing_count + max(1, count)
         existing["updated_at"] = now
-    if len(merged) > MAX_GLOSSARY_TERMS:
-        merged = _sorted_terms(merged, MAX_GLOSSARY_TERMS)
-    return merged
+    return _pruned_to_size(domain, merged)
 
 
 def consolidate_glossary(domain: str) -> dict:
-    """Fold the pending pool into the domain glossary and clear the pool."""
+    """Fold the pending pool into the domain glossary.
+
+    The glossary is capped, so a candidate whose votes cannot yet displace an
+    existing entry stays in the pool: its votes keep accumulating across
+    documents until it earns a slot, instead of being dropped at the cap.
+    """
     normalized = normalize_domain(domain)
     target = glossary_path(normalized)
     pending = pending_path(normalized)
@@ -229,12 +262,25 @@ def consolidate_glossary(domain: str) -> dict:
         if not candidates:
             return _snapshot(normalized, refresh=False)
         glossary = _read(target)
-        _write(target, _merge_pending(glossary, candidates), updated_at=_utcnow())
-        _write(pending, [], updated_at=_utcnow())
+        merged = _merge_pending(normalized, glossary, candidates)
+        admitted = {
+            str(term.get("en", "")).strip().casefold()
+            for term in merged
+            if str(term.get("en", "")).strip()
+        }
+        leftover = []
+        for candidate in candidates:
+            english = str(candidate.get("en", "")).strip()
+            chinese, _ = _dominant_rendering(candidate)
+            if english and chinese and english.casefold() not in admitted:
+                leftover.append(candidate)
+        _write(target, merged, updated_at=_utcnow())
+        _write(pending, leftover, updated_at=_utcnow())
     logger.info(
-        "Glossary consolidated for %s: %d candidate term(s) merged",
+        "Glossary consolidated for %s: %d candidate term(s) merged, %d kept pending",
         normalized,
-        len(candidates),
+        len(candidates) - len(leftover),
+        len(leftover),
     )
     return _snapshot(normalized, refresh=False)
 
@@ -268,7 +314,7 @@ def consolidate_due_domains() -> None:
         refresh_if_due(domain)
 
 
-def glossary_terms_for_prompt(domain: str, limit: int = PROMPT_TERM_LIMIT) -> list[tuple[str, str]]:
+def glossary_terms_for_prompt(domain: str, limit: int | None = PROMPT_TERM_LIMIT) -> list[tuple[str, str]]:
     with _LOCK:
         terms = _read(glossary_path(domain))
     return [
@@ -286,25 +332,18 @@ def _snapshot(domain: str, *, refresh: bool) -> dict:
         terms = _read(glossary_path(normalized))
         pending = _read(pending_path(normalized))
         updated_at = _read_updated_at(glossary_path(normalized))
+    try:
+        size_bytes = glossary_path(normalized).stat().st_size
+    except OSError:
+        size_bytes = 0
     return {
         "domain": normalized,
         "label": DOMAINS[normalized].label,
         "updated_at": updated_at,
         "term_count": len(terms),
         "pending_count": len(pending),
+        "size_bytes": size_bytes,
         "interval_minutes": max(1, int(settings.glossary_refresh_interval_minutes)),
-        "terms": [
-            {
-                "en": str(term.get("en", "")).strip(),
-                "zh": str(term.get("zh", "")).strip(),
-                "count": int(term.get("count") or 0),
-                "updated_at": term.get("updated_at")
-                if isinstance(term.get("updated_at"), str)
-                else None,
-            }
-            for term in _sorted_terms(terms, 200)
-            if str(term.get("en", "")).strip() and str(term.get("zh", "")).strip()
-        ],
     }
 
 

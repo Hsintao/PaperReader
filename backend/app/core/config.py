@@ -85,15 +85,6 @@ class Settings(BaseSettings):
 
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
 
-    # Vision-model adversarial check (Phase D)
-    # Disabled by default. The model must be multimodal and reachable at
-    # OPENAI_BASE_URL; deepseek-flash accepts image input on the default
-    # endpoint.
-    vision_model: str = Field(default="deepseek-flash", alias="VISION_MODEL")
-    vision_check_enabled: bool = Field(default=False, alias="VISION_CHECK_ENABLED")
-    vision_check_mode: str = Field(default="auto", alias="VISION_CHECK_MODE")  # auto | manual
-    vision_check_max_pages: int = Field(default=8, alias="VISION_CHECK_MAX_PAGES")
-
     # How often the per-domain terminology glossary folds newly learned terms
     # into the stored glossary. Applied by a background thread; the settings
     # API also catches up on a missed interval after a restart.

@@ -1,7 +1,7 @@
 """Application settings for a single local operator.
 
-Everything the pipeline needs — the translation endpoint, the vision-check
-model, reading preferences — lives in one JSON file under the data directory.
+Everything the pipeline needs — the translation endpoint, reading
+preferences — lives in one JSON file under the data directory.
 The file is created with owner-only permissions, so the API key stays as
 private as the rest of the local data.
 """
@@ -24,11 +24,11 @@ from app.services.translation_prompts import normalize_domain
 
 _LOCK = threading.RLock()
 _THEMES = {"light", "dark"}
-_VISION_MODES = {"auto", "manual"}
 
 # Fields removed when SoMark / MinerU parsing was replaced by the
-# PDFMathTranslate-next worker. Dropped from settings.json on startup so the
-# stored file never advertises a backend that no longer exists.
+# PDFMathTranslate-next worker, and the vision-check settings retired with
+# that feature. Dropped from settings.json on startup so the stored file
+# never advertises an option that no longer exists.
 REMOVED_KEYS = (
     "pdf_parser",
     "somark_api_key",
@@ -40,6 +40,9 @@ REMOVED_KEYS = (
     "mineru_enable_formula",
     "mineru_enable_table",
     "mineru_is_ocr",
+    "vision_model",
+    "vision_enabled",
+    "vision_mode",
 )
 
 
@@ -52,10 +55,7 @@ class AppSettings:
     api_key: str = ""
     base_url: str = ""
     model: str = ""
-    vision_model: str = ""
     theme: str = "light"
-    vision_enabled: bool = False
-    vision_mode: str = "auto"
     show_annotated_pdf: bool = False
     translation_domain: str = "general"
     favorites: list[str] = field(default_factory=list)
@@ -65,7 +65,6 @@ def _defaults() -> AppSettings:
     return AppSettings(
         base_url=settings.openai_base_url,
         model=settings.openai_model,
-        vision_model=settings.vision_model,
     )
 
 
@@ -145,10 +144,7 @@ def update_settings(
     clear_api_key: bool = False,
     base_url: str | None = None,
     model: str | None = None,
-    vision_model: str | None = None,
     theme: str | None = None,
-    vision_enabled: bool | None = None,
-    vision_mode: str | None = None,
     show_annotated_pdf: bool | None = None,
     translation_domain: str | None = None,
     favorites: list[str] | None = None,
@@ -162,14 +158,8 @@ def update_settings(
         current.base_url = base_url.strip()
     if model is not None:
         current.model = model.strip()
-    if vision_model is not None:
-        current.vision_model = vision_model.strip()
     if theme is not None:
         current.theme = theme
-    if vision_enabled is not None:
-        current.vision_enabled = bool(vision_enabled)
-    if vision_mode is not None:
-        current.vision_mode = vision_mode
     if show_annotated_pdf is not None:
         current.show_annotated_pdf = bool(show_annotated_pdf)
     if translation_domain is not None:
@@ -179,15 +169,11 @@ def update_settings(
 
     if current.theme not in _THEMES:
         current.theme = "light"
-    if current.vision_mode not in _VISION_MODES:
-        current.vision_mode = "auto"
     current.translation_domain = normalize_domain(current.translation_domain)
     if not current.base_url:
         current.base_url = settings.openai_base_url
     if not current.model:
         current.model = settings.openai_model
-    if not current.vision_model:
-        current.vision_model = settings.vision_model
     if not current.base_url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="LLM Base URL must start with http:// or https://")
 
@@ -211,10 +197,7 @@ def serialize_settings(value: AppSettings) -> dict:
         "api_key_configured": bool(value.api_key),
         "base_url": value.base_url,
         "model": value.model,
-        "vision_model": value.vision_model,
         "theme": value.theme,
-        "vision_enabled": value.vision_enabled,
-        "vision_mode": value.vision_mode,
         "show_annotated_pdf": value.show_annotated_pdf,
         "translation_domain": value.translation_domain,
         "favorites": value.favorites,

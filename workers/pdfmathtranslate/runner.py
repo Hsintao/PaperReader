@@ -142,6 +142,7 @@ def _translate(job: Job, writer: EventWriter):
 
     config = _build_config(job)
     _suppress_debug_annotations()
+    _keep_user_glossary_in_translation()
 
     def on_progress(**event: Any) -> None:
         kind = str(event.get("type") or "")
@@ -207,6 +208,35 @@ def _suppress_debug_annotations() -> None:
         self.translation_config.debug = False
 
     AddDebugInformation.process = turn_debug_off
+
+
+def _keep_user_glossary_in_translation() -> None:
+    """Translate with the operator's glossary AND the auto-extracted one.
+
+    BabelDOC 0.6.2 replaces every user glossary with the auto-extracted one
+    whenever term extraction succeeds, so the curated CSV the job carries
+    would never reach the translator. The patch makes translation see both:
+    the operator's glossary always, plus the auto-extracted entries it does
+    not already define — on a conflict the curated rendering wins.
+    """
+    from babeldoc.format.pdf.translation_config import SharedContextCrossSplitPart
+    from babeldoc.glossary import Glossary
+
+    def user_glossary_wins(self, auto_extract_enabled: bool) -> list:
+        with self._lock:
+            glossaries = list(self.user_glossaries)
+            auto = self.auto_extracted_glossary
+            if auto:
+                extra = [
+                    entry
+                    for entry in auto.entries
+                    if Glossary.normalize_source(entry.source) not in self.norm_terms
+                ]
+                if extra:
+                    glossaries.append(Glossary(name=auto.name, entries=extra))
+            return glossaries
+
+    SharedContextCrossSplitPart.get_glossaries_for_translation = user_glossary_wins
 
 
 def _mono_pdf(result) -> Path:

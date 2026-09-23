@@ -85,11 +85,7 @@ export function ProgressBar({
       </div>
       <div className="progress-meta">
         <span className="small">
-          {status === 'awaiting_review'
-            ? '等待人工审核…'
-            : currentStageLabel
-              ? `当前：${currentStageLabel}`
-              : '处理中'}
+          {currentStageLabel ? `当前：${currentStageLabel}` : '处理中'}
         </span>
         {onCancel && (status === 'processing' || status === 'queued') && (
           <button className="btn small" disabled={cancelling} onClick={onCancel}>

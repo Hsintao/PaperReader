@@ -1,7 +1,7 @@
 from pathlib import Path
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
 
 from app.core.config import settings
 from app.models.schemas import UploadResponse
@@ -30,8 +30,6 @@ def _run_pipeline(record_id: str) -> None:
 async def upload(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    vision_check_enabled: bool = Form(False),
-    vision_check_mode: str = Form("auto"),
 ) -> UploadResponse:
     suffix = Path(file.filename or "").suffix.lower()
     if suffix != ".pdf":
@@ -52,8 +50,6 @@ async def upload(
             sink.write(chunk)
 
     record = create_document_record(target_path, "pdf")
-    record.vision_check_enabled = bool(vision_check_enabled)
-    record.vision_check_mode = vision_check_mode if vision_check_mode in ("auto", "manual") else "auto"
 
     background_tasks.add_task(_run_pipeline, record.document_id)
     return UploadResponse(document_id=record.document_id, status=record.status)

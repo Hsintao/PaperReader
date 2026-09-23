@@ -6,7 +6,6 @@ import type { AnnotationItem, PdfPaneHandle } from '../components/PdfPane'
 import type { FigureItem, UserSettings } from '../lib/api'
 import type { OutlineItem } from '../lib/pdfOutline'
 import { ProgressBar } from '../components/ProgressBar'
-import { ReviewModal } from '../components/ReviewModal'
 import { SettingsModal } from '../components/SettingsModal'
 import { Sidebar } from '../components/Sidebar'
 import type { ArtifactItem, DocumentStatus, DocumentSummary } from '../lib/api'
@@ -52,8 +51,6 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
   const [overrideRight, setOverrideRight] = useState<OverridePdf>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [theme, setTheme] = useState<UserSettings['theme']>(settings.theme)
-  const [visionEnabled, setVisionEnabled] = useState(settings.vision_enabled)
-  const [visionMode, setVisionMode] = useState<UserSettings['vision_mode']>(settings.vision_mode)
   const [favorites, setFavorites] = useState<string[]>(settings.favorites)
   const [notice, setNotice] = useState<string | null>(null)
   const [retrying, setRetrying] = useState(false)
@@ -76,8 +73,6 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
 
   useEffect(() => {
     setTheme(settings.theme)
-    setVisionEnabled(settings.vision_enabled)
-    setVisionMode(settings.vision_mode)
     setFavorites(settings.favorites)
   }, [settings])
 
@@ -387,7 +382,7 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
   const handleUpload = useCallback(async (file: File) => {
     setUploading(true)
     try {
-      const result = await uploadFile(file, { visionCheckEnabled: visionEnabled, visionCheckMode: visionMode })
+      const result = await uploadFile(file)
       setActiveId(result.document_id)
       await refreshSummaries()
     } catch (e: any) {
@@ -396,7 +391,7 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
     } finally {
       setUploading(false)
     }
-  }, [refreshSummaries, visionEnabled, visionMode])
+  }, [refreshSummaries])
 
   const handleIncomingFile = useCallback((file: File) => {
     if (!/\.pdf$/i.test(file.name)) {
@@ -469,7 +464,6 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
   const artifacts = activeDoc?.artifacts ?? []
   const logs = activeDoc?.logs ?? []
   const stages = activeDoc?.stages ?? []
-  const pendingReviews = activeDoc?.pending_reviews ?? []
 
   const sourceTitle = useMemo(() => {
     if (!activeDoc) return '原始 PDF'
@@ -496,8 +490,6 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
           artifacts={artifacts}
           logs={logs}
           theme={theme}
-          visionEnabled={visionEnabled}
-          visionMode={visionMode}
           activeStatus={activeDoc?.status}
           onUpload={handleIncomingFile}
           onSelect={setActiveId}
@@ -508,7 +500,6 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
           onCollapse={() => setShowSidebar(false)}
           onOpenInPane={handleOpenInPane}
           onOpenSettings={() => setSettingsOpen(true)}
-          onToggleVision={() => setSettingsOpen(true)}
           onToggleTheme={() => {
             const next = theme === 'dark' ? 'light' : 'dark'
             setTheme(next)
@@ -620,15 +611,6 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
         onClose={() => setSettingsOpen(false)}
         onSettingsChange={onSettingsChange}
       />
-      {activeId && activeDoc?.status === 'awaiting_review' && pendingReviews.length > 0 && (
-        <ReviewModal
-          documentId={activeId}
-          proposals={pendingReviews}
-          onResolved={() => {
-            void getDocumentStatus(activeId).then((d) => setDocCache((c) => ({ ...c, [activeId]: d })))
-          }}
-        />
-      )}
     </div>
   )
 }

@@ -28,14 +28,6 @@ class StageItem(BaseModel):
     duration_ms: int | None = None
 
 
-class ReviewProposalItem(BaseModel):
-    page_index: int
-    issues: list[str] = []
-    original_md: str = ""
-    proposed_md: str = ""
-    image_url: str | None = None
-
-
 class FailureItem(BaseModel):
     stage: str
     message: str
@@ -68,7 +60,6 @@ class DocumentStatusResponse(BaseModel):
     current_stage_label: str | None = None
     eta_seconds: int | None = None
     stages: list[StageItem] = []
-    pending_reviews: list[ReviewProposalItem] = []
     failure: FailureItem | None = None
     last_read_page: int = 0
     last_read_ratio: float = 0.0

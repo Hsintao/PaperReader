@@ -15,7 +15,6 @@ from app.models.schemas import (
     LocateCounterpartResponse,
     RenameDocumentRequest,
     ReferenceItem,
-    ReviewProposalItem,
     RetryDocumentResponse,
     StageItem,
 )
@@ -155,16 +154,6 @@ def get_document(
                 duration_ms=s.duration_ms,
             )
             for s in record.stages
-        ],
-        pending_reviews=[
-            ReviewProposalItem(
-                page_index=p.page_index,
-                issues=p.issues,
-                original_md=p.original_md,
-                proposed_md=p.proposed_md,
-                image_url=p.image_url,
-            )
-            for p in record.pending_reviews
         ],
         failure=FailureItem(**record.failure.__dict__) if record.failure else None,
         last_read_page=record.last_read_page,

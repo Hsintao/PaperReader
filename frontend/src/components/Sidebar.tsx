@@ -33,8 +33,6 @@ type Props = {
   artifacts: ArtifactItem[]
   logs: string[]
   theme: 'light' | 'dark'
-  visionEnabled: boolean
-  visionMode: 'auto' | 'manual'
   activeStatus?: string
   onUpload: (file: File) => void
   onSelect: (documentId: string) => void
@@ -46,7 +44,6 @@ type Props = {
   onOpenInPane?: (artifact: ArtifactItem) => void
   onEditTex?: () => void
   onOpenSettings: () => void
-  onToggleVision: () => void
   onToggleTheme: () => void
   onRefreshStatus: () => void
   onSearchLocate: (hit: LibrarySearchHit) => void
@@ -77,8 +74,6 @@ export function Sidebar({
   artifacts,
   logs,
   theme,
-  visionEnabled,
-  visionMode,
   activeStatus,
   onUpload,
   onSelect,
@@ -90,7 +85,6 @@ export function Sidebar({
   onOpenInPane,
   onEditTex,
   onOpenSettings,
-  onToggleVision,
   onToggleTheme,
   onRefreshStatus,
   onSearchLocate,
@@ -161,15 +155,6 @@ export function Sidebar({
       </div>
 
       <div className="sidebar-toolbar" role="toolbar" aria-label="工具">
-        <button
-          className={`icon-btn vision-btn ${visionEnabled ? 'active' : ''}`}
-          title={`视觉校验：${visionEnabled ? `开 (${visionMode === 'manual' ? '人工' : '自动'})` : '关'} · 点击切换`}
-          onClick={onToggleVision}
-        >
-          <span className="vision-glyph">
-            {visionEnabled ? (visionMode === 'manual' ? '人' : '自') : '×'}
-          </span>
-        </button>
         <button
           className="icon-btn"
           title={`刷新状态：${activeStatus ?? '—'}`}

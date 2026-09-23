@@ -50,7 +50,7 @@ def test_consolidate_merges_pending_and_clears_the_pool(isolated_storage):
 
     assert snapshot["term_count"] == 1
     assert snapshot["pending_count"] == 0
-    assert snapshot["terms"][0]["en"] == "myocardial infarction"
+    assert _glossary("medical")["terms"][0]["en"] == "myocardial infarction"
     assert snapshot["updated_at"] is not None
     assert _pending("medical")["terms"] == []
 
@@ -78,8 +78,7 @@ def test_consolidate_keeps_the_better_supported_rendering(isolated_storage):
     assert _glossary("cs")["terms"][0]["zh"] == "关注"
 
 
-def test_glossary_is_pruned_to_the_highest_counts(isolated_storage, monkeypatch):
-    monkeypatch.setattr(glossary_service, "MAX_GLOSSARY_TERMS", 3)
+def test_glossary_is_pruned_to_fit_the_size_budget(isolated_storage, monkeypatch):
     glossary_service.record_candidate_terms(
         "cs",
         [("alpha", "甲"), ("beta", "乙"), ("gamma", "丙"), ("delta", "丁")],
@@ -87,10 +86,45 @@ def test_glossary_is_pruned_to_the_highest_counts(isolated_storage, monkeypatch)
     )
     glossary_service.record_candidate_terms("cs", [("delta", "丁")], "d2")
     glossary_service.record_candidate_terms("cs", [("delta", "丁")], "d3")
+    glossary_service.consolidate_glossary("cs")
+    full_size = glossary_service.glossary_path("cs").stat().st_size
+
+    monkeypatch.setattr(glossary_service, "MAX_GLOSSARY_BYTES", full_size - 1)
+    glossary_service.record_candidate_terms("cs", [("delta", "丁")], "d4")
     snapshot = glossary_service.consolidate_glossary("cs")
 
+    kept = [term["en"] for term in _glossary("cs")["terms"]]
     assert snapshot["term_count"] == 3
-    assert snapshot["terms"][0]["en"] == "delta"
+    assert kept[0] == "delta"
+    assert "gamma" not in kept
+    assert glossary_service.glossary_path("cs").stat().st_size <= full_size - 1
+
+
+def test_a_full_glossary_keeps_unadmitted_candidates_pending(isolated_storage, monkeypatch):
+    glossary_service.record_candidate_terms("cs", [("alpha", "甲"), ("beta", "乙")], "d1")
+    glossary_service.record_candidate_terms("cs", [("alpha", "甲"), ("beta", "乙")], "d2")
+    glossary_service.consolidate_glossary("cs")
+
+    # The size budget only covers what is already stored, so the newcomer
+    # cannot enter yet — but it stays in the pool instead of being dropped.
+    monkeypatch.setattr(
+        glossary_service,
+        "MAX_GLOSSARY_BYTES",
+        glossary_service.glossary_path("cs").stat().st_size,
+    )
+    glossary_service.record_candidate_terms("cs", [("gamma", "丙")], "d3")
+    snapshot = glossary_service.consolidate_glossary("cs")
+    assert snapshot["term_count"] == 2
+    assert snapshot["pending_count"] == 1
+    assert _pending("cs")["terms"][0]["en"] == "gamma"
+
+    # Its votes keep accumulating, so a repeated sighting lets it displace a
+    # weaker entry instead of starting over from zero.
+    glossary_service.record_candidate_terms("cs", [("gamma", "丙")], "d4")
+    glossary_service.record_candidate_terms("cs", [("gamma", "丙")], "d5")
+    snapshot = glossary_service.consolidate_glossary("cs")
+    assert "gamma" in {term["en"] for term in _glossary("cs")["terms"]}
+    assert snapshot["pending_count"] == 0
 
 
 def test_prompt_terms_are_ordered_by_evidence_and_capped(isolated_storage):
@@ -131,6 +165,7 @@ def test_snapshot_consolidates_the_first_pending_pool(isolated_storage):
     assert snapshot["label"] == "计算机科学"
     assert snapshot["term_count"] == 1
     assert snapshot["pending_count"] == 0
+    assert snapshot["size_bytes"] == glossary_service.glossary_path("cs").stat().st_size
     assert snapshot["interval_minutes"] == settings.glossary_refresh_interval_minutes
 
 
@@ -142,7 +177,7 @@ def test_delete_glossary_term_persists(isolated_storage):
 
     snapshot = glossary_service.delete_glossary_term("cs", "Attention")
 
-    assert [term["en"] for term in snapshot["terms"]] == ["embedding"]
+    assert snapshot["term_count"] == 1
     assert [term["en"] for term in _glossary("cs")["terms"]] == ["embedding"]
 
 

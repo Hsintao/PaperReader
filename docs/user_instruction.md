@@ -38,7 +38,7 @@ open ./dist/PaperReader.app
 ### 配置 AI 服务
 PaperReader 没有账号，也不需要注册或登录：打开即可使用，配置一次后长期生效。
 
-点击左侧栏工具栏最右侧的齿轮按钮打开「设置」，在「AI 服务」页填入 API Key 和 Base URL、模型名称，即可用自己的大模型密钥进行翻译与视觉校验。推荐使用价格相对较低的模型，如 DeepSeek-V4-Flash-0731。
+点击左侧栏工具栏最右侧的齿轮按钮打开「设置」，在「AI 服务」页填入 API Key 和 Base URL、模型名称，即可用自己的大模型密钥进行翻译。推荐使用价格相对较低的模型，如 DeepSeek-V4-Flash-0731。
 
 PDF 的解析、翻译与译文排版全部由本机的 **PDFMathTranslate-next worker** 完成，不需要再配置任何解析服务。worker 是一个独立进程，用单独的 Python 运行时执行；该运行时不在主程序依赖中，需要按 `desktop/requirements-worker.txt` 单独安装，或由打包版本随包提供。找不到可用运行时时，上传会直接提示 worker 不可用，不会开始处理。
 

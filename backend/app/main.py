@@ -11,7 +11,6 @@ from app.api.routes_data import router as data_router
 from app.api.routes_discovery import router as discovery_router
 from app.api.routes_document import router as document_router
 from app.api.routes_glossary import router as glossary_router
-from app.api.routes_review import router as review_router
 from app.api.routes_settings import router as settings_router
 from app.api.routes_upload import router as upload_router
 from app.core.config import settings
@@ -46,7 +45,6 @@ app.include_router(upload_router, prefix="/api", tags=["upload"])
 app.include_router(document_router, prefix="/api", tags=["document"])
 app.include_router(annotations_router, prefix="/api", tags=["annotations"])
 app.include_router(discovery_router, prefix="/api", tags=["discovery"])
-app.include_router(review_router, prefix="/api", tags=["review"])
 
 app.include_router(data_router, tags=["data"])
 

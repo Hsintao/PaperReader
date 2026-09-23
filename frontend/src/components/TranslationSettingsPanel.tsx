@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Languages, RefreshCw, Trash2 } from 'lucide-react'
+import { Languages, RefreshCw } from 'lucide-react'
 import {
   TRANSLATION_DOMAINS,
-  deleteGlossaryTerm,
   getGlossary,
   refreshGlossary,
   type GlossarySnapshot,
@@ -14,11 +13,10 @@ type Props = {
   onDomainChange: (domain: TranslationDomain) => void
 }
 
-function formatUpdatedAt(value?: string | null): string {
-  if (!value) return '尚未合并'
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return '尚未合并'
-  return parsed.toLocaleString()
+function formatBytes(bytes: number): string {
+  if (!bytes) return '0 KB'
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
 }
 
 export function TranslationSettingsPanel({ domain, onDomainChange }: Props) {
@@ -46,18 +44,6 @@ export function TranslationSettingsPanel({ domain, onDomainChange }: Props) {
     setError(null)
     try {
       setSnapshot(await refreshGlossary(domain))
-    } catch (e: any) {
-      setError(e?.message || String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function removeTerm(en: string) {
-    setBusy(true)
-    setError(null)
-    try {
-      setSnapshot(await deleteGlossaryTerm(domain, en))
     } catch (e: any) {
       setError(e?.message || String(e))
     } finally {
@@ -103,30 +89,8 @@ export function TranslationSettingsPanel({ domain, onDomainChange }: Props) {
       </div>
 
       <p className="glossary-meta">
-        术语 {snapshot?.term_count ?? 0} 条 · 待合并 {snapshot?.pending_count ?? 0} 条 · 最近更新 {formatUpdatedAt(snapshot?.updated_at)}
+        当前大小 {formatBytes(snapshot?.size_bytes ?? 0)}
       </p>
-
-      {snapshot && snapshot.terms.length > 0 ? (
-        <div className="glossary-list">
-          {snapshot.terms.map((term) => (
-            <div className="glossary-term" key={term.en}>
-              <span className="glossary-term-source">{term.en}</span>
-              <span className="glossary-term-target">{term.zh}</span>
-              <span className="glossary-term-count">{term.count}</span>
-              <button
-                className="icon-btn"
-                aria-label={`删除术语 ${term.en}`}
-                onClick={() => void removeTerm(term.en)}
-                disabled={busy}
-              >
-                <Trash2 size={14} />
-              </button>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <p className="glossary-empty">术语库会从已翻译的内容中自动积累，并按设定间隔合并。</p>
-      )}
 
       {error && <div className="form-error" role="status">{error}</div>}
     </section>

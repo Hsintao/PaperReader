@@ -26,7 +26,6 @@ PDF_STAGES: list[tuple[str, str, float]] = [
     ("translate", "翻译", 35.0),
     ("render", "版式合成", 6.0),
     ("clean", "清洗与对齐", 3.0),
-    ("vision_check", "视觉模型校验", 10.0),
 ]
 
 
@@ -84,14 +83,11 @@ def _stage_avg(source_type: str, stage_key: str) -> float | None:
         return None
 
 
-def init_stages(record: DocumentRecord, *, vision_check_enabled: bool = False) -> None:
+def init_stages(record: DocumentRecord) -> None:
     """Populate record.stages with declared stages (status=pending)."""
-    plan = list(PDF_STAGES)
-    if not vision_check_enabled:
-        plan = [s for s in plan if s[0] != "vision_check"]
     record.stages = [
         StageEntry(key=key, label=label, weight=weight, status="pending")
-        for (key, label, weight) in plan
+        for (key, label, weight) in PDF_STAGES
     ]
     record.progress = 0
     record.current_stage = None

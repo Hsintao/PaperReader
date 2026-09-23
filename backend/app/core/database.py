@@ -98,9 +98,6 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
                 stage_started_at REAL,
                 eta_seconds INTEGER,
                 stages_json TEXT NOT NULL DEFAULT '[]',
-                vision_check_enabled INTEGER NOT NULL DEFAULT 0,
-                vision_check_mode TEXT NOT NULL DEFAULT 'auto',
-                pending_reviews_json TEXT NOT NULL DEFAULT '[]',
                 failure_json TEXT,
                 retry_count INTEGER NOT NULL DEFAULT 0,
                 deleted_at TEXT
@@ -136,9 +133,6 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
                     stage_started_at REAL,
                     eta_seconds INTEGER,
                     stages_json TEXT NOT NULL DEFAULT '[]',
-                        vision_check_enabled INTEGER NOT NULL DEFAULT 0,
-                    vision_check_mode TEXT NOT NULL DEFAULT 'auto',
-                    pending_reviews_json TEXT NOT NULL DEFAULT '[]',
                     failure_json TEXT,
                     retry_count INTEGER NOT NULL DEFAULT 0,
                         deleted_at TEXT

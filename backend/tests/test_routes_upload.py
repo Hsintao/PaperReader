@@ -77,7 +77,6 @@ def test_upload_stores_the_pdf_and_queues_the_pipeline(client, configure_provide
     response = client.post(
         "/api/upload",
         files={"file": ("paper.pdf", payload, "application/pdf")},
-        data={"vision_check_enabled": "false", "vision_check_mode": "auto"},
     )
 
     assert response.status_code == 200, response.text

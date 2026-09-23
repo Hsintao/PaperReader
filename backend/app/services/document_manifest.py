@@ -104,7 +104,7 @@ class DocumentManifest:
         return self.pages[index] if 0 <= index < len(self.pages) else None
 
     def markdown(self, side: str = "translated") -> str:
-        """The document as light Markdown, for search and the vision check."""
+        """The document as light Markdown, for search and the reader view."""
         parts: list[str] = []
         for block in self.blocks:
             text = _block_side_text(block, side).strip()

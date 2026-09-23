@@ -23,7 +23,7 @@ export function ProviderSettingsForm({
       <div className="settings-section-heading">
         <div>
           <h3>大模型服务</h3>
-          <p>用于论文翻译、问答和视觉校验。密钥只加密保存在本机。</p>
+          <p>用于论文翻译与问答。密钥只加密保存在本机。</p>
         </div>
         <span className={`config-status ${apiKeyConfigured ? 'ready' : 'missing'}`}>
           {apiKeyConfigured ? <CheckCircle2 size={14} /> : <CircleAlert size={14} />}
@@ -64,12 +64,6 @@ export function ProviderSettingsForm({
           <span>删除已保存的大模型 API Key</span>
         </label>
       )}
-
-      <div className="settings-divider" />
-      <label className="field">
-        <span>视觉校验模型</span>
-        <input value={value.vision_model} onChange={(e) => set('vision_model', e.target.value)} />
-      </label>
     </div>
   )
 }

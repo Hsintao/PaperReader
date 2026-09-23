@@ -876,6 +876,68 @@ def test_debug_annotations_are_turned_off_before_the_pdf_is_drawn(monkeypatch):
     assert config.debug is False
 
 
+def test_translation_sees_the_user_glossary_beside_the_extracted_one(monkeypatch):
+    from workers.pdfmathtranslate.runner import _keep_user_glossary_in_translation
+
+    class _Entry:
+        def __init__(self, source, target) -> None:
+            self.source = source
+            self.target = target
+
+    class _Glossary:
+        def __init__(self, name, entries) -> None:
+            self.name = name
+            self.entries = list(entries)
+
+        @staticmethod
+        def normalize_source(term: str) -> str:
+            return " ".join(term.lower().split())
+
+    class _SharedContext:
+        def __init__(self) -> None:
+            import threading
+
+            self._lock = threading.Lock()
+            self.user_glossaries = []
+            self.auto_extracted_glossary = None
+            self.norm_terms = set()
+
+        def get_glossaries_for_translation(self, auto_extract_enabled):
+            raise AssertionError("the patch must replace this method")
+
+    glossary_module = types.ModuleType("babeldoc.glossary")
+    glossary_module.Glossary = _Glossary
+    config_module = types.ModuleType("babeldoc.format.pdf.translation_config")
+    config_module.SharedContextCrossSplitPart = _SharedContext
+    monkeypatch.setitem(sys.modules, glossary_module.__name__, glossary_module)
+    monkeypatch.setitem(sys.modules, config_module.__name__, config_module)
+
+    _keep_user_glossary_in_translation()
+
+    context = _SharedContext()
+    curated = _Glossary("domain", [_Entry("Residual Learning", "残差学习")])
+    context.user_glossaries = [curated]
+    context.norm_terms = {"residual learning"}
+    context.auto_extracted_glossary = _Glossary(
+        "auto",
+        [
+            _Entry("residual learning", "剩余学习"),  # conflicts: curated wins
+            _Entry("feature attention", "特征注意力"),  # new: kept
+        ],
+    )
+
+    glossaries = context.get_glossaries_for_translation(True)
+    assert glossaries[0] is curated
+    assert len(glossaries) == 2
+    assert [(e.source, e.target) for e in glossaries[1].entries] == [
+        ("feature attention", "特征注意力")
+    ]
+
+    # No auto-extracted glossary: the curated one still goes in alone.
+    context.auto_extracted_glossary = None
+    assert context.get_glossaries_for_translation(True) == [curated]
+
+
 def test_the_job_file_carries_the_configured_output_mode(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "pdfmathtranslate_output_mode", "dual")
 

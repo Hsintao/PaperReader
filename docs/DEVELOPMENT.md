@@ -1068,7 +1068,7 @@ PaperReader/
 │   │   ├── services/       # document_pipeline、pdf_translation_worker（worker 进程边界）、document_manifest（manifest → IR）、
 │   │   │                   # document_ir、document_structure、alignment_service、annotation_render、cjk_fonts、
 │   │   │                   # pdf_ops、pdf_extraction、app_settings、glossary_service、paper_metadata、
-│   │   │                   # translation_prompts、vision_check_service、stage_tracker
+│   │   │                   # translation_prompts、stage_tracker
 │   │   ├── workers/        # tasks.py（Celery）
 │   │   └── main.py
 │   └── tests/              # pytest
@@ -1136,8 +1136,6 @@ cp .env.example .env
 
 - `SQLITE_DB_NAME`（默认 `paperreader.db`）— `DATA_DIR` 下的本地持久化数据库文件。
 - `GLOSSARY_REFRESH_INTERVAL_MINUTES`（默认 `30`）— 分领域术语库把候选术语合并进正式术语库的间隔（分钟）。由后台线程执行，设置接口读取术语库时也会补齐一次错过的间隔。翻译领域本身是本地设置（`settings.json` 的 `translation_domain`），不是环境变量。
-- `VISION_MODEL`（默认 `deepseek-flash`）— Phase D 视觉校验使用的多模态模型，必须与 `OPENAI_BASE_URL` 同一 OpenAI 兼容端点且支持视觉（如 `deepseek-flash`、`GLM-4.5V`、`GLM-4.6V`、`Qwen3-VL-30B-A3B-Instruct`、`Qwen3-VL-235B-A22B-Instruct`）。
-- `VISION_CHECK_ENABLED`（默认 `false`）、`VISION_CHECK_MODE`（`auto` | `manual`）、`VISION_CHECK_MAX_PAGES`（默认 `8`）— Phase D 的部署默认值。默认关闭校验，可在「设置 → 阅读偏好」中开启自动/手动校验。
 
 ### PDFMathTranslate-next worker
 
@@ -1202,12 +1200,12 @@ python -m compileall backend/app     # 快速语法检查
 
 应用没有账号体系：单个本地操作者直接使用全部功能，没有登录、向导或个人中心。
 
-- 设置（LLM `API Key` / `Base URL` / `Model`、视觉模型、主题、视觉校验偏好、翻译领域、收藏）
+- 设置（LLM `API Key` / `Base URL` / `Model`、主题、翻译领域、收藏）
   统一存放在 `DATA_DIR/settings.json`，文件权限为 `0600`，写入采用临时文件 + `os.replace` 的原子替换。
-- 读取接口只返回 `api_key_configured` 布尔值加上 `base_url` / `model` / `vision_model` / `theme` / `vision_enabled` / `vision_mode` / `show_annotated_pdf` / `translation_domain` / `favorites`，不会回显密钥明文。
+- 读取接口只返回 `api_key_configured` 布尔值加上 `base_url` / `model` / `theme` / `show_annotated_pdf` / `translation_domain` / `favorites`，不会回显密钥明文。
 - 启动时 `app_settings.purge_removed_keys()` 会从 `settings.json` 中删掉早期版本遗留的解析器配置键（常量 `REMOVED_KEYS`）。
 - `translation_domain`（`cs` | `medical` | `general`）决定翻译提示词中的领域参数，并对应一套术语库；写入非法值时回落 `general`。
-- 术语库存放在 `DATA_DIR/glossary/<domain>.json`，候选池为同目录的 `<domain>.pending.json`：作业开始时把术语库写成 CSV 交给 worker，翻译器抽取到的术语随 manifest 回来并进入候选池，后台线程按 `GLOSSARY_REFRESH_INTERVAL_MINUTES` 合并进术语库（冲突按票数取多数），也可在「设置 → 翻译设置」中立即更新或删除单条术语。该目录不在 `/data/` 的对外暴露范围内。
+- 术语库存放在 `DATA_DIR/glossary/<domain>.json`，候选池为同目录的 `<domain>.pending.json`：作业开始时把术语库写成 CSV 交给 worker，翻译器抽取到的术语随 manifest 回来并进入候选池，后台线程按 `GLOSSARY_REFRESH_INTERVAL_MINUTES` 合并进术语库（冲突按票数取多数；术语库按文件大小封顶 50MB，超限时按票数从高到低保留，候选池不设上限），也可在「设置 → 翻译设置」中立即更新。该目录不在 `/data/` 的对外暴露范围内。
 - 文档与批注持久化在本地 SQLite：`documents`、`annotations`。没有 `owner_user_id`，也没有用户/会话表。
 - 前端首次进入时若未配置 API Key，会在工作台空白页给出「开始前需要配置 AI 服务」的入口，点击打开「设置」弹窗。
 
@@ -1231,11 +1229,11 @@ docker compose up --build
   - `PUT /api/settings/me`
   - `PUT /api/settings/me/providers`
 - **术语库（routes_glossary.py）**
-  - `GET /api/glossary/{domain}` — 术语库快照（术语、候选数、最近更新时间），读取时会补齐错过的合并间隔
+  - `GET /api/glossary/{domain}` — 术语库快照（条数、候选数、文件大小、最近更新时间），读取时会补齐错过的合并间隔
   - `POST /api/glossary/{domain}/refresh` — 立即合并候选池
   - `DELETE /api/glossary/{domain}/terms` — 删除一条术语（请求体 `{"en": "..."}`）
 - **上传**
-  - `POST /api/upload`（multipart，仅接受 `.pdf`；表单字段 `vision_check_enabled`、`vision_check_mode`）— 缺少大模型 Key 返回 409 `config_required`，找不到可用的 worker 解释器返回 409 `worker_unavailable`
+  - `POST /api/upload`（multipart，仅接受 `.pdf`）— 缺少大模型 Key 返回 409 `config_required`，找不到可用的 worker 解释器返回 409 `worker_unavailable`
 - **文档**
   - `GET /api/documents` — 列出本机文档摘要
   - `GET /api/document/{document_id}`
@@ -1250,9 +1248,6 @@ docker compose up --build
   - `GET /api/document/{document_id}/structure` — 后端解析的章节目录与图表列表
   - `GET /api/document/{document_id}/bibtex` — 依据 Semantic Scholar 元数据导出 BibTeX
   - `GET /api/search?q=` — 跨文档全文搜索
-- **视觉校验（Phase D）**
-  - `GET /api/document/{document_id}/review`
-  - `POST /api/document/{document_id}/review` — 接受 / 拒绝视觉模型提出的修订
 - **译文 PDF** — 由 worker 产出：解析、翻译与排版在同一个进程里完成，译文排回原稿页面并沿用原稿的图片、公式与表格线条；`translated_pdf` artifact 指向 `outputs/<id>/<源文件名>_Chinese_ver.pdf`
 - **产物访问**
   - `GET|HEAD /data/{file_path}` — 产物与上传源文件下载；仅 `uploads/` 与 `outputs/` 下的文件可访问，
@@ -1265,8 +1260,7 @@ docker compose up --build
 - `artifacts`（上传与生成的文件：`source_pdf` / `original_pdf` / `translated_pdf` / `annotated_pdf` / `alignment_index` / `manifest` / `glossary`）
 - `references`（提取的参考文献条目，用于预览）
 - `progress`、`current_stage`、`current_stage_label`、`eta_seconds`、`stages`（Phase A）
-- `pending_reviews` — `manual` 模式下等待人工决策的视觉模型修订提案（Phase D）
-- `failure.stage` — 失败阶段，取值为 `upload` / `parse` / `clean` / `vision_check` / `translate` / `render`；重试与重新处理都从 `parse` 重跑（worker 一次处理整篇文档，没有可复用的半成品）
+- `failure.stage` — 失败阶段，取值为 `upload` / `parse` / `clean` / `translate` / `render`；重试与重新处理都从 `parse` 重跑（worker 一次处理整篇文档，没有可复用的半成品）
 - 以及既有的 `status`、`original_pdf_url`、`translated_pdf_url`、`logs`
 
 ## 19.8 平台说明
@@ -1293,4 +1287,4 @@ docker compose up --build
 - 上传接口立即返回，流水线在 `BackgroundTasks` 里执行；翻译与排版的并发由 worker 内部管理，后端只转述它的进度事件。
 - 文档与批注持久化在 SQLite，设置存放在 `settings.json`；应用面向单个本地操作者，不是加固的互联网级多租户服务。
 - 参考文献提取是启发式的（基于章节/行模式），不是完整的引文解析器。
-- 前端支持设置弹窗、面板开关、拖拽产物预览与视觉校验人工复核。
+- 前端支持设置弹窗、面板开关与拖拽产物预览。

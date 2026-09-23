@@ -24,14 +24,6 @@ export type StageItem = {
   duration_ms?: number | null
 }
 
-export type ReviewProposalItem = {
-  page_index: number
-  issues: string[]
-  original_md: string
-  proposed_md: string
-  image_url?: string | null
-}
-
 export type FailureItem = {
   stage: string
   message: string
@@ -58,7 +50,6 @@ export type DocumentStatus = {
   current_stage_label?: string | null
   eta_seconds?: number | null
   stages: StageItem[]
-  pending_reviews: ReviewProposalItem[]
   failure?: FailureItem | null
   last_read_page: number
   last_read_ratio: number
@@ -114,10 +105,7 @@ export type UserSettings = {
   api_key_configured: boolean
   base_url: string
   model: string
-  vision_model: string
   theme: 'light' | 'dark'
-  vision_enabled: boolean
-  vision_mode: 'auto' | 'manual'
   show_annotated_pdf: boolean
   translation_domain: TranslationDomain
   favorites: string[]
@@ -147,13 +135,6 @@ export const TRANSLATION_DOMAINS: {
   }
 ]
 
-export type GlossaryTerm = {
-  en: string
-  zh: string
-  count: number
-  updated_at?: string | null
-}
-
 export type GlossarySnapshot = {
   domain: TranslationDomain
   label: string
@@ -161,7 +142,7 @@ export type GlossarySnapshot = {
   term_count: number
   pending_count: number
   interval_minutes: number
-  terms: GlossaryTerm[]
+  size_bytes: number
 }
 
 export type ProviderSettingsDraft = {
@@ -169,7 +150,6 @@ export type ProviderSettingsDraft = {
   clear_api_key?: boolean
   base_url: string
   model: string
-  vision_model: string
 }
 
 
@@ -245,27 +225,9 @@ export async function refreshGlossary(domain: TranslationDomain): Promise<Glossa
   return apiFetch(`/api/glossary/${domain}/refresh`, { method: 'POST' })
 }
 
-export async function deleteGlossaryTerm(
-  domain: TranslationDomain,
-  en: string
-): Promise<GlossarySnapshot> {
-  return apiFetch(`/api/glossary/${domain}/terms`, {
-    method: 'DELETE',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ en })
-  })
-}
-
-export type UploadOptions = {
-  visionCheckEnabled?: boolean
-  visionCheckMode?: 'auto' | 'manual'
-}
-
-export async function uploadFile(file: File, options: UploadOptions = {}): Promise<UploadResult> {
+export async function uploadFile(file: File): Promise<UploadResult> {
   const form = new FormData()
   form.append('file', file)
-  form.append('vision_check_enabled', String(options.visionCheckEnabled ?? false))
-  form.append('vision_check_mode', options.visionCheckMode ?? 'auto')
   return apiFetch('/api/upload', { method: 'POST', body: form })
 }
 
@@ -405,17 +367,5 @@ export function annotatedPdfName(sourceFilename: string): string {
   const leaf = (sourceFilename || 'document.pdf').split(/[\\/]/).pop() || 'document.pdf'
   const stem = leaf.replace(/\.[^.]+$/, '') || 'document'
   return `${stem}_原文标注.pdf`
-}
-
-export async function postReviewDecision(
-  documentId: string,
-  accept: boolean,
-  edits?: string
-): Promise<void> {
-  await apiFetch(`/api/document/${documentId}/review`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ accept, edits })
-  })
 }
 

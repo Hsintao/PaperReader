@@ -56,15 +56,6 @@ class StageEntry:
 
 
 @dataclass
-class ReviewProposal:
-    page_index: int
-    issues: list[str] = field(default_factory=list)
-    original_md: str = ""
-    proposed_md: str = ""
-    image_url: str | None = None
-
-
-@dataclass
 class FailureEntry:
     stage: str
     message: str
@@ -109,9 +100,6 @@ class DocumentRecord:
     stage_started_at: float | None = None
     eta_seconds: int | None = None
     stages: list[StageEntry] = field(default_factory=list)
-    vision_check_enabled: bool = False
-    vision_check_mode: str = "auto"
-    pending_reviews: list[ReviewProposal] = field(default_factory=list)
     failure: FailureEntry | None = None
     retry_count: int = 0
     last_read_page: int = 0
@@ -192,9 +180,6 @@ def _document_from_row(row) -> DocumentRecord:
         stage_started_at=row["stage_started_at"],
         eta_seconds=row["eta_seconds"],
         stages=[StageEntry(**item) for item in json.loads(row["stages_json"] or "[]")],
-        vision_check_enabled=bool(row["vision_check_enabled"]),
-        vision_check_mode=row["vision_check_mode"] or "auto",
-        pending_reviews=[ReviewProposal(**item) for item in json.loads(row["pending_reviews_json"] or "[]")],
         failure=FailureEntry(**failure_payload) if isinstance(failure_payload, dict) else None,
         retry_count=int(row["retry_count"] or 0),
         last_read_page=int(row["last_read_page"] or 0),
@@ -215,9 +200,8 @@ def save_document(record: DocumentRecord) -> DocumentRecord:
                 original_pdf_url, translated_pdf_url, extracted_text, translated_text,
                 artifacts_json, references_json, logs_json, created_at, updated_at, last_opened_at,
                 size_bytes, progress, current_stage, current_stage_label, stage_started_at,
-                eta_seconds, stages_json, vision_check_enabled,
-                vision_check_mode, pending_reviews_json, deleted_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                eta_seconds, stages_json, deleted_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(document_id) DO UPDATE SET
                 source_type = excluded.source_type,
                 source_path = excluded.source_path,
@@ -239,9 +223,6 @@ def save_document(record: DocumentRecord) -> DocumentRecord:
                 stage_started_at = excluded.stage_started_at,
                 eta_seconds = excluded.eta_seconds,
                 stages_json = excluded.stages_json,
-                vision_check_enabled = excluded.vision_check_enabled,
-                vision_check_mode = excluded.vision_check_mode,
-                pending_reviews_json = excluded.pending_reviews_json,
                 deleted_at = excluded.deleted_at
             """,
             (
@@ -267,9 +248,6 @@ def save_document(record: DocumentRecord) -> DocumentRecord:
                 record.stage_started_at,
                 record.eta_seconds,
                 _serialize_items(record.stages),
-                1 if record.vision_check_enabled else 0,
-                record.vision_check_mode,
-                _serialize_items(record.pending_reviews),
                 _to_iso(record.deleted_at),
             ),
         )

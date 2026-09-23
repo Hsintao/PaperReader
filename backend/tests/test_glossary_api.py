@@ -14,7 +14,8 @@ def test_glossary_snapshot_starts_empty(isolated_storage):
     payload = response.json()
     assert payload["domain"] == "cs"
     assert payload["label"] == "计算机科学"
-    assert payload["terms"] == []
+    assert payload["term_count"] == 0
+    assert payload["size_bytes"] == 0
     assert payload["updated_at"] is None
 
 
@@ -28,7 +29,8 @@ def test_refresh_endpoint_merges_pending_candidates(isolated_storage):
 
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert [term["en"] for term in payload["terms"]] == ["myocardial infarction"]
+    assert payload["term_count"] == 1
+    assert payload["size_bytes"] > 0
     assert payload["pending_count"] == 0
 
 
@@ -44,7 +46,7 @@ def test_delete_endpoint_removes_one_term(isolated_storage):
         )
 
     assert response.status_code == 200, response.text
-    assert [term["en"] for term in response.json()["terms"]] == ["embedding"]
+    assert response.json()["term_count"] == 1
 
 
 def test_unknown_domain_is_rejected(isolated_storage):

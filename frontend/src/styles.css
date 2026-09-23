@@ -269,11 +269,6 @@ textarea { resize: vertical; }
 }
 .sidebar-toolbar .icon-btn { width: 30px; height: 30px; }
 .toolbar-spacer { flex: 1; }
-.vision-btn .vision-glyph {
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1;
-}
 
 .literature-chat-entry {
   margin: 12px 12px 4px;
@@ -1409,13 +1404,6 @@ textarea { resize: vertical; }
 .segmented-control button { padding: 7px 10px; color: var(--text-soft); }
 .segmented-control button.active { color: var(--accent); background: var(--bg-soft); box-shadow: var(--shadow-sm); font-weight: 600; }
 .glossary-meta { margin: 0; color: var(--muted); font-size: 12px; }
-.glossary-list { display: flex; flex-direction: column; max-height: 240px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius); }
-.glossary-term { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--border); font-size: 12px; }
-.glossary-term:last-child { border-bottom: 0; }
-.glossary-term-source { color: var(--text-soft); overflow-wrap: anywhere; }
-.glossary-term-target { font-weight: 600; overflow-wrap: anywhere; }
-.glossary-term-count { color: var(--muted); font-variant-numeric: tabular-nums; }
-.glossary-empty { margin: 0; padding: 14px; color: var(--muted); font-size: 12px; text-align: center; border: 1px dashed var(--border); border-radius: var(--radius); }
 .danger-check { color: var(--danger); }
 
 /* ============ First-run setup ============ */
@@ -1429,28 +1417,6 @@ textarea { resize: vertical; }
 .privacy-note { display: flex; gap: 7px; align-items: flex-start; max-width: 500px; color: var(--muted); font-size: 11px; }
 .privacy-note svg { flex: 0 0 auto; color: var(--success); }
 .setup-submit { flex: 0 0 auto; padding: 9px 18px; }
-
-/* ============ Review modal (Phase D) ============ */
-.review-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
-.review-pre {
-  background: var(--bg);
-  padding: 8px;
-  border-radius: var(--radius-sm);
-  font-family: 'SF Mono', Menlo, monospace;
-  font-size: 11px;
-  max-height: 360px;
-  overflow: auto;
-  white-space: pre-wrap;
-}
-.review-issues {
-  margin: 6px 0 12px;
-  padding-left: 18px;
-  color: var(--warning);
-}
 
 .missing-char-row {
   display: flex;

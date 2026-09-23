@@ -22,7 +22,7 @@ PaperReader is a full-stack bilingual paper-reading app. Upload a PDF; PaperRead
 
 ## Features
 
-- No accounts and no sign-in: one local operator uses the whole app, with the LLM, vision, theme and reading settings kept in a `0600` local file; the stored key is never returned to the frontend
+- No accounts and no sign-in: one local operator uses the whole app, with the LLM, theme and reading settings kept in a `0600` local file; the stored key is never returned to the frontend
 - Persistent history in local SQLite; processed files reopen after a restart
 - PDF-only upload: `.pdf` files go to the PDFMathTranslate-next worker, which parses the pages, translates them through your LLM endpoint and writes the translated PDF in one pass
 - The worker is a separate process with its own runtime (`desktop/requirements-worker.txt`): the backend never imports the translator, and one JSON job file describes each run
@@ -30,7 +30,6 @@ PaperReader is a full-stack bilingual paper-reading app. Upload a PDF; PaperRead
 - The output keeps the source layout: the translation is typeset onto the source page, reusing the original figures, block formulas and table rules, with the source page size and page count
 - The worker publishes a manifest (`paperreader-manifest-v1`) holding page geometry, typed blocks with source and translated text, protected spans (URLs, citations, numbers, inline formulas), figure and table captions and cells, references, and the logical-object to fragment mapping
 - The outline, figure gallery, reference list, bilingual alignment index and annotated source PDF are all built from that manifest; the annotated PDF boxes every parsed region, including each figure and table caption
-- Optional vision-model adversarial check on each page (auto / manual review modes, off by default)
 - Side-by-side original/translated PDF reader with outlines (bookmarks or backend-parsed section structure), selectable text, trackpad zoom, on-demand page rendering, and a progress bar with stage breakdown, ETA, and failure diagnosis
 - In-document search (Ctrl/Cmd+F) with match navigation across the whole file
 - Persistent colored annotations with optional notes, restored on reopen, exportable as a bilingual Markdown reading-notes file

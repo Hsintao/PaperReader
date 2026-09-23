@@ -10,10 +10,7 @@ _SETTINGS_KEYS = {
     "api_key_configured",
     "base_url",
     "model",
-    "vision_model",
     "theme",
-    "vision_enabled",
-    "vision_mode",
     "show_annotated_pdf",
     "translation_domain",
     "favorites",
@@ -28,7 +25,6 @@ def test_settings_roundtrip_masks_keys(isolated_storage):
                 "api_key": "secret-key",
                 "base_url": "https://llm.example/v1",
                 "model": "paper-model",
-                "vision_model": "vision-model",
             },
         )
         assert response.status_code == 200, response.text
@@ -37,7 +33,6 @@ def test_settings_roundtrip_masks_keys(isolated_storage):
         assert "secret-key" not in response.text
         assert payload["base_url"] == "https://llm.example/v1"
         assert payload["model"] == "paper-model"
-        assert payload["vision_model"] == "vision-model"
 
         stored = client.get("/api/settings/me")
         assert stored.status_code == 200
@@ -74,6 +69,9 @@ def test_startup_purges_retired_parser_settings(isolated_storage):
                 "pdf_parser": "somark",
                 "somark_base_url": "https://somark.cn/api/v1",
                 "mineru_api_key": "mineru-secret",
+                "vision_model": "vision-model",
+                "vision_enabled": True,
+                "vision_mode": "manual",
                 "theme": "dark",
             }
         ),
@@ -83,6 +81,7 @@ def test_startup_purges_retired_parser_settings(isolated_storage):
     assert app_settings.purge_removed_keys() is True
     stored = json.loads(settings_path().read_text(encoding="utf-8"))
     assert (stored["api_key"], stored["theme"]) == ("kept-key", "dark")
+    assert "vision_model" not in stored
     assert app_settings.purge_removed_keys() is False
 
 
@@ -127,16 +126,6 @@ def test_preferences_persist_across_clients(isolated_storage):
         payload = second.get("/api/settings/me").json()
         assert payload["theme"] == "dark"
         assert payload["favorites"] == ["doc-1"]
-
-
-def test_vision_check_defaults_off_and_keeps_explicit_choice(isolated_storage):
-    with TestClient(app) as client:
-        assert client.get("/api/settings/me").json()["vision_enabled"] is False
-
-        updated = client.put("/api/settings/me", json={"vision_enabled": True})
-        assert updated.status_code == 200
-        assert updated.json()["vision_enabled"] is True
-        assert client.get("/api/settings/me").json()["vision_enabled"] is True
 
 
 def test_show_annotated_pdf_defaults_off_and_keeps_explicit_choice(isolated_storage):

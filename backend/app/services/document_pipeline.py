@@ -43,7 +43,6 @@ from app.services.stage_tracker import (
     with_stage,
 )
 from app.services.translation_prompts import DOMAINS, normalize_domain
-from app.services.vision_check_service import run_vision_check_on_markdown
 
 _TITLE_H1_PATTERN = re.compile(r"(?m)^#\s+(.+)$")
 _NOUGAT_MISSING_PAGE_PATTERN = re.compile(r"^\s*\[MISSING_PAGE[^\]]*\]\s*$", re.MULTILINE)
@@ -228,9 +227,11 @@ def _write_domain_glossary(domain: str, work_dir: Path) -> Path | None:
     """Render the operator's domain glossary in the worker's CSV format.
 
     The terms the operator curated are what the translator should honour, so
-    they travel with the job instead of being applied after the fact.
+    they travel with the job instead of being applied after the fact. The
+    worker matches them against each paragraph itself, so the whole library
+    goes in — not just the most frequent few.
     """
-    terms = glossary_terms_for_prompt(domain)
+    terms = glossary_terms_for_prompt(domain, limit=None)
     if not terms:
         return None
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -401,7 +402,6 @@ def process_document(
         override_api_key = provider_settings.api_key
         override_base_url = provider_settings.base_url
         override_model = provider_settings.model
-    vision_model = provider_settings.vision_model if provider_settings else settings.vision_model
     translation_domain = normalize_domain(
         provider_settings.translation_domain if provider_settings else None
     )
@@ -414,7 +414,7 @@ def process_document(
     if record.stages and resume_from:
         prepare_stages_for_retry(record, "parse")
     else:
-        init_stages(record, vision_check_enabled=record.vision_check_enabled)
+        init_stages(record)
     save_document(record)
     try:
         record.size_bytes = record.source_path.stat().st_size
@@ -462,21 +462,6 @@ def process_document(
 
         with with_stage(record, "clean"):
             _build_reader_state(record, result.manifest(), translation_domain, output_dir)
-
-        if record.vision_check_enabled:
-            with with_stage(record, "vision_check"):
-                try:
-                    record.extracted_text = run_vision_check_on_markdown(
-                        record,
-                        pdf_path=output_dir / "original.pdf",
-                        text=record.extracted_text,
-                        output_dir=output_dir,
-                        api_key=override_api_key,
-                        base_url=override_base_url,
-                        model=vision_model,
-                    )
-                except Exception as exc:
-                    record.logs.append(f"Vision check skipped: {exc}")
 
         record.status = "done"
         record.failure = None
