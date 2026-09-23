@@ -369,6 +369,6 @@ export function annotatedPdfName(sourceFilename: string): string {
 export function mergedPdfName(sourceFilename: string): string {
   const leaf = (sourceFilename || 'document.pdf').split(/[\\/]/).pop() || 'document.pdf'
   const stem = leaf.replace(/\.[^.]+$/, '') || 'document'
-  return `${stem}_左右对照.pdf`
+  return `${stem}_双语对照.pdf`
 }
 

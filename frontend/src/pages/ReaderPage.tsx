@@ -539,7 +539,7 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
             pdfUrl={panePdfUrl}
             downloads={[
               { title: '下载译文 PDF', label: '译文', href: translatedPdfUrl, name: translatedName },
-              { title: '下载左右对照合并 PDF', label: '合并', href: mergedPdfUrl, name: mergedName }
+              { title: '下载双语对照 PDF', label: '双语', href: mergedPdfUrl, name: mergedName }
             ]}
             counterpartLabel="对应内容"
             onLocateCounterpart={(payload) => void handleLocateCounterpart('original', payload)}

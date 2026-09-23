@@ -98,7 +98,7 @@ def test_merged_pdf_endpoint_rebuilds_legacy_documents(client, tmp_path):
 
     assert response.status_code == 200
     url = response.json()["merged_pdf_url"]
-    assert url.endswith("_左右对照.pdf")
+    assert url.endswith("_双语对照.pdf")
     status = client.get(f"/api/document/{record.document_id}").json()
     assert status["merged_pdf_url"] == url
 

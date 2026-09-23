@@ -101,7 +101,7 @@ export function SettingsModal({ open, settings, onClose, onSettingsChange }: Pro
                 <div className="settings-section-heading"><div><h3>阅读体验</h3><p>这些偏好保存在本机数据目录。</p></div></div>
                 <div className="field-grid two">
                   <label className="field"><span>主题</span><select value={reading.theme} onChange={(e) => setReading((v) => ({ ...v, theme: e.target.value as 'light' | 'dark' }))}><option value="light">浅色</option><option value="dark">深色</option></select></label>
-                  <label className="field"><span>原文标注</span><select value={reading.show_annotated_pdf ? 'on' : 'off'} onChange={(e) => setReading((v) => ({ ...v, show_annotated_pdf: e.target.value === 'on' }))}><option value="off">关闭 · 显示左右对照 PDF</option><option value="on">开启 · 显示原文标注版本</option></select></label>
+                  <label className="field"><span>原文标注</span><select value={reading.show_annotated_pdf ? 'on' : 'off'} onChange={(e) => setReading((v) => ({ ...v, show_annotated_pdf: e.target.value === 'on' }))}><option value="off">关闭 · 显示双语对照 PDF</option><option value="on">开启 · 显示原文标注版本</option></select></label>
                 </div>
               </section>
             )}
