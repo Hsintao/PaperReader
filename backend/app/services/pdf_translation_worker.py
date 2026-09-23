@@ -1,0 +1,402 @@
+"""Process boundary around the PDFMathTranslate-next worker.
+
+The backend never imports the translator. It writes a job file, starts the
+worker as a child process, and reads newline-delimited JSON events from its
+stdout. Everything the pipeline needs afterwards — the translated PDF, the
+stable manifest, the glossary — is a file the worker published.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shlex
+import subprocess
+import threading
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Iterable
+
+from app.core.config import settings
+
+EventSink = Callable[[dict], None]
+
+_STAGES = {"parse", "translate", "render"}
+
+
+class WorkerError(RuntimeError):
+    """The worker could not produce a usable result."""
+
+    def __init__(self, message: str, *, stage: str = "parse") -> None:
+        super().__init__(message)
+        self.stage = stage if stage in _STAGES else "parse"
+
+
+class WorkerUnavailable(WorkerError):
+    """No usable worker command is configured on this machine."""
+
+
+class WorkerCancelled(WorkerError):
+    """The operator cancelled the active worker run."""
+
+
+@dataclass
+class WorkerProducts:
+    translated_pdf: Path
+    manifest_path: Path
+    extraction_dir: Path
+    debug_dir: Path
+    mode_label: str
+    page_count: int
+    glossary_path: Path | None = None
+    dual_pdf: Path | None = None
+
+
+def bundle_root() -> Path:
+    """Where ``workers/`` lives: the repository root, or the desktop bundle."""
+    override = os.environ.get("PAPERREADER_BUNDLE_ROOT")
+    if override:
+        return Path(override).resolve()
+    # backend/app/services/pdf_translation_worker.py -> repository root
+    return Path(__file__).resolve().parents[3]
+
+
+def _unbracket_ipv6(value: str) -> str:
+    """Rewrite bracketed IPv6 entries in a NO_PROXY list.
+
+    httpx builds its proxy mounts from ``NO_PROXY`` and does not recognise the
+    bracketed form: ``[::1]`` falls through to its wildcard branch and becomes
+    ``all://*[::1]``, which fails URL parsing with
+    ``InvalidURL: Invalid port: ':1]'``. Proxy managers do write that form, and
+    to httpx ``::1`` means the same bypass.
+    """
+    entries: list[str] = []
+    for entry in value.split(","):
+        entry = entry.strip()
+        if len(entry) > 2 and entry.startswith("[") and entry.endswith("]"):
+            entry = entry[1:-1]
+        if entry and entry not in entries:
+            entries.append(entry)
+    return ",".join(entries)
+
+
+def worker_environment() -> dict[str, str]:
+    """The environment a worker process is started with."""
+    environment = {**os.environ, "PYTHONPATH": str(bundle_root())}
+    for name in ("NO_PROXY", "no_proxy"):
+        value = environment.get(name)
+        if value:
+            environment[name] = _unbracket_ipv6(value)
+    return environment
+
+
+def worker_command(job_path: Path | None = None) -> list[str]:
+    """The argv that starts the worker.
+
+    ``PDFMATHTRANSLATE_WORKER`` may name any executable, which is how a desktop
+    bundle ships a frozen worker. Otherwise the worker runs as a module under
+    the configured interpreter.
+    """
+    template = (settings.pdfmathtranslate_worker or "").strip()
+    if template:
+        parts = shlex.split(template)
+        if job_path is not None and not any(str(job_path) in part for part in parts):
+            parts.append(str(job_path))
+        return parts
+    interpreter = (settings.pdfmathtranslate_python or "").strip() or "python3"
+    parts = [interpreter, "-m", "workers.pdfmathtranslate"]
+    if job_path is not None:
+        parts.append(str(job_path))
+    return parts
+
+
+def require_worker_ready() -> None:
+    """Fail an upload early when the worker cannot be started at all."""
+    executable = worker_command()[0]
+    if os.sep in executable:
+        if not Path(executable).is_file():
+            raise WorkerUnavailable(
+                f"worker interpreter not found: {executable}", stage="parse"
+            )
+        return
+    from shutil import which
+
+    if which(executable) is None:
+        raise WorkerUnavailable(
+            f"worker interpreter not found on PATH: {executable}", stage="parse"
+        )
+
+
+def _job_payload(
+    *,
+    document_id: str,
+    input_pdf: Path,
+    output_dir: Path,
+    work_dir: Path,
+    api_key: str,
+    base_url: str,
+    model: str,
+    glossary_path: Path | None,
+) -> dict:
+    payload = {
+        "job_id": document_id,
+        "input_pdf": str(input_pdf),
+        "output_dir": str(output_dir),
+        "work_dir": str(work_dir),
+        "translation": {"api_key": api_key, "base_url": base_url, "model": model},
+        "options": {
+            "output": settings.pdfmathtranslate_output_mode,
+            "no_watermark": True,
+            "debug": bool(settings.pdfmathtranslate_debug),
+        },
+        "qps": max(1, int(settings.pdfmathtranslate_qps)),
+    }
+    if glossary_path is not None:
+        payload["glossary"] = str(glossary_path)
+    return payload
+
+
+class WorkerRun:
+    """One worker process, tracked so it can always be stopped."""
+
+    def __init__(self, process: subprocess.Popen) -> None:
+        self.process = process
+        self.timed_out = False
+        self.cancelled = False
+        self._lock = threading.Lock()
+
+    @property
+    def pid(self) -> int:
+        return self.process.pid
+
+    def cancel(self) -> None:
+        """Stop the worker; it cleans up its own working directory on SIGTERM."""
+        self.cancelled = True
+        self._stop(force=False)
+
+    def kill(self) -> None:
+        # ``SIGKILL`` is not defined on Windows. ``Popen.kill`` provides the
+        # same forceful operation on every supported platform.
+        self._stop(force=True)
+
+    def _stop(self, *, force: bool) -> None:
+        with self._lock:
+            if self.process.poll() is not None:
+                return
+            try:
+                self.process.kill() if force else self.process.terminate()
+                self.process.wait(timeout=10)
+            except (subprocess.TimeoutExpired, OSError):
+                try:
+                    self.process.kill()
+                    self.process.wait(timeout=10)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+
+
+_ACTIVE_RUNS: dict[str, WorkerRun] = {}
+_ACTIVE_RUNS_LOCK = threading.RLock()
+
+
+def cancel_worker(document_id: str) -> bool:
+    """Cancel the worker currently translating ``document_id``."""
+    with _ACTIVE_RUNS_LOCK:
+        run = _ACTIVE_RUNS.get(document_id)
+    if run is None:
+        return False
+    run.cancel()
+    return True
+
+
+def _read_events(stream, sink: EventSink | None) -> list[dict]:
+    """Drain the worker's event stream. Never raises: the exit code decides."""
+    events: list[dict] = []
+    for line in stream:
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        events.append(event)
+        if sink is not None:
+            try:
+                sink(event)
+            except Exception:  # noqa: BLE001 - reporting never fails a job
+                pass
+    return events
+
+
+def run_worker(
+    *,
+    document_id: str,
+    input_pdf: Path,
+    output_dir: Path,
+    work_dir: Path,
+    api_key: str,
+    base_url: str,
+    model: str,
+    glossary_path: Path | None = None,
+    on_event: EventSink | None = None,
+    on_start: Callable[[WorkerRun], None] | None = None,
+    timeout: float | None = None,
+) -> WorkerProducts:
+    """Translate one PDF and return the products the worker published."""
+    require_worker_ready()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    job_path = work_dir / "job.json"
+    job_path.write_text(
+        json.dumps(
+            _job_payload(
+                document_id=document_id,
+                input_pdf=input_pdf,
+                output_dir=output_dir,
+                work_dir=work_dir,
+                api_key=api_key,
+                base_url=base_url,
+                model=model,
+                glossary_path=glossary_path,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    started = time.monotonic()
+    process = subprocess.Popen(
+        worker_command(job_path),
+        cwd=str(bundle_root()),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        env=worker_environment(),
+    )
+    run = WorkerRun(process)
+    with _ACTIVE_RUNS_LOCK:
+        _ACTIVE_RUNS[document_id] = run
+    if on_start is not None:
+        on_start(run)
+
+    budget = settings.pdfmathtranslate_timeout if timeout is None else timeout
+    stderr_chunks: list[str] = []
+    stderr_thread = threading.Thread(
+        target=lambda: stderr_chunks.append(process.stderr.read() or ""),
+        daemon=True,
+    )
+    stderr_thread.start()
+
+    def _deadline() -> None:
+        run.timed_out = True
+        run.kill()
+
+    watchdog = threading.Timer(budget, _deadline)
+    watchdog.daemon = True
+    watchdog.start()
+
+    try:
+        events = _read_events(process.stdout, on_event)
+        code = process.wait()
+    finally:
+        watchdog.cancel()
+        stderr_thread.join(timeout=5)
+        with _ACTIVE_RUNS_LOCK:
+            if _ACTIVE_RUNS.get(document_id) is run:
+                del _ACTIVE_RUNS[document_id]
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+
+    if run.timed_out:
+        raise WorkerError(
+            f"worker exceeded its {int(budget)}s budget", stage="translate"
+        )
+    if run.cancelled:
+        raise WorkerCancelled("worker cancelled", stage="translate")
+
+    failure = _last_error(events)
+    if failure is not None:
+        raise WorkerError(failure[0], stage=failure[1])
+
+    if code != 0:
+        tail = "".join(stderr_chunks).strip().splitlines()[-3:]
+        detail = f": {' | '.join(tail)}" if tail else ""
+        raise WorkerError(f"worker exited with code {code}{detail}", stage="parse")
+
+    finish = _last_finish(events)
+    if finish is None:
+        raise WorkerError("worker reported no result", stage="render")
+
+    products = _products_from_finish(finish, output_dir)
+    elapsed = time.monotonic() - started
+    products.mode_label = f"{products.mode_label} · {elapsed:.0f}s"
+    return products
+
+
+def _last_error(events: Iterable[dict]) -> tuple[str, str] | None:
+    for event in reversed(list(events)):
+        if event.get("type") == "error":
+            stage = str(event.get("stage") or "parse")
+            return str(event.get("message") or "worker failed"), stage
+    return None
+
+
+def _last_finish(events: Iterable[dict]) -> dict | None:
+    for event in reversed(list(events)):
+        if event.get("type") == "finish":
+            return event
+    return None
+
+
+def _existing_path(value: object) -> Path | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    path = Path(text)
+    return path if path.is_file() else None
+
+
+def _products_from_finish(finish: dict, output_dir: Path) -> WorkerProducts:
+    translated = _existing_path(finish.get("translated_pdf"))
+    if translated is None:
+        raise WorkerError(
+            f"worker reported a translated PDF that does not exist: "
+            f"{finish.get('translated_pdf')}",
+            stage="render",
+        )
+    manifest = _existing_path(finish.get("manifest_path"))
+    if manifest is None:
+        raise WorkerError(
+            f"worker reported a manifest that does not exist: "
+            f"{finish.get('manifest_path')}",
+            stage="render",
+        )
+    extraction = Path(str(finish.get("extraction_dir") or output_dir / "extraction"))
+    debug = Path(str(finish.get("debug_dir") or extraction / "debug"))
+    dual = None
+    reported_dual = str(finish.get("dual_pdf") or "").strip()
+    if reported_dual:
+        dual = _existing_path(reported_dual)
+        if dual is None:
+            raise WorkerError(
+                f"worker reported a bilingual PDF that does not exist: {reported_dual}",
+                stage="render",
+            )
+    return WorkerProducts(
+        translated_pdf=translated,
+        manifest_path=manifest,
+        extraction_dir=extraction,
+        debug_dir=debug,
+        mode_label=str(finish.get("mode_label") or "PDFMathTranslate-next"),
+        page_count=int(finish.get("page_count") or 0),
+        glossary_path=_existing_path(finish.get("glossary_path")),
+        dual_pdf=dual,
+    )

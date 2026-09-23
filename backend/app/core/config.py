@@ -5,6 +5,11 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _looks_like_path(value: str) -> bool:
+    """Whether a configured executable names a file rather than a PATH entry."""
+    return any(separator and separator in value for separator in (os.sep, os.altsep, "/"))
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=os.environ.get("PAPERREADER_ENV_FILE")
@@ -17,8 +22,31 @@ class Settings(BaseSettings):
         project_root = Path(__file__).resolve().parents[3]
         if not self.data_dir.is_absolute():
             self.data_dir = (project_root / self.data_dir).resolve()
-        if not self.pdf_parser:
-            self.pdf_parser = "somark"
+        if not self.pdfmathtranslate_python:
+            self.pdfmathtranslate_python = "python3"
+        elif _looks_like_path(self.pdfmathtranslate_python):
+            # A bare name is looked up on PATH, but a path is resolved against
+            # the project root: the backend's own working directory differs
+            # between `make backend` (backend/) and `make web` (also backend/,
+            # after the script cd's), so a relative path would name a different
+            # interpreter depending on how the server was started.
+            interpreter = Path(self.pdfmathtranslate_python)
+            if not interpreter.is_absolute():
+                self.pdfmathtranslate_python = str(
+                    (project_root / interpreter).resolve()
+                )
+        if not self.pdfmathtranslate_version:
+            self.pdfmathtranslate_version = "2.9.0"
+        mode = (self.pdfmathtranslate_output_mode or "").strip().lower()
+        self.pdfmathtranslate_output_mode = mode if mode in {"mono", "dual"} else "mono"
+        worker_dir = self.pdfmathtranslate_working_dir
+        # ``Path("")`` is represented as ``.`` and is truthy. Leaving it
+        # relative makes the backend write the job relative to its process,
+        # while the child worker resolves it relative to the bundle cwd.
+        if str(worker_dir) in {"", "."}:
+            self.pdfmathtranslate_working_dir = self.data_dir / "worker"
+        elif not worker_dir.is_absolute():
+            self.pdfmathtranslate_working_dir = (project_root / worker_dir).resolve()
 
     app_env: str = Field(default="dev", alias="APP_ENV")
     desktop_mode: bool = Field(default=False, alias="PAPERREADER_DESKTOP")
@@ -32,27 +60,28 @@ class Settings(BaseSettings):
     openai_base_url: str = Field(default="https://api.deepseek.com", alias="OPENAI_BASE_URL")
     openai_model: str = Field(default="deepseek-flash", alias="OPENAI_MODEL")
 
-    # PDF parsing backend: "local" extracts the embedded text layer with pypdf
-    # (no external service / API key needed); "somark" (default) and "mineru"
-    # use the respective cloud API.
-    pdf_parser: str = Field(default="", alias="PDF_PARSER")
-
-    somark_api_key: str = Field(default="", alias="SOMARK_API_KEY")
-    somark_base_url: str = Field(default="https://somark.cn/api/v1", alias="SOMARK_BASE_URL")
-    somark_poll_interval: float = Field(default=3.0, alias="SOMARK_POLL_INTERVAL")
-    somark_timeout: float = Field(default=600.0, alias="SOMARK_TIMEOUT")
-
-    mineru_api_key: str = Field(default="", alias="MINERU_API_KEY")
-    mineru_base_url: str = Field(default="https://mineru.net/api/v4", alias="MINERU_BASE_URL")
-    mineru_model_version: str = Field(default="vlm", alias="MINERU_MODEL_VERSION")
-    mineru_language: str = Field(default="en", alias="MINERU_LANGUAGE")
-    mineru_enable_formula: bool = Field(default=True, alias="MINERU_ENABLE_FORMULA")
-    mineru_enable_table: bool = Field(default=True, alias="MINERU_ENABLE_TABLE")
-    mineru_is_ocr: bool = Field(default=False, alias="MINERU_IS_OCR")
-    mineru_poll_interval: float = Field(default=5.0, alias="MINERU_POLL_INTERVAL")
-    mineru_timeout: float = Field(default=600.0, alias="MINERU_TIMEOUT")
-
-    layout_debug: bool = Field(default=False, alias="LAYOUT_DEBUG")
+    # PDFMathTranslate-next worker. The backend never imports the translator; it
+    # starts it as a separate process whose interpreter and command are given
+    # here, so the heavy dependency stays out of the backend's environment.
+    pdfmathtranslate_python: str = Field(default="", alias="PDFMATHTRANSLATE_PYTHON")
+    pdfmathtranslate_worker: str = Field(default="", alias="PDFMATHTRANSLATE_WORKER")
+    pdfmathtranslate_version: str = Field(default="", alias="PDFMATHTRANSLATE_VERSION")
+    pdfmathtranslate_timeout: float = Field(
+        default=3600.0, alias="PDFMATHTRANSLATE_TIMEOUT"
+    )
+    pdfmathtranslate_working_dir: Path = Field(
+        default=Path(""), alias="PDFMATHTRANSLATE_WORKING_DIR"
+    )
+    # Keep the translator's own layout output under
+    # outputs/<document>/extraction/debug. It is what the manifest is converted
+    # from and runs to hundreds of megabytes per paper, so it is off by default.
+    pdfmathtranslate_debug: bool = Field(default=False, alias="PDFMATHTRANSLATE_DEBUG")
+    pdfmathtranslate_output_mode: str = Field(
+        default="mono", alias="PDFMATHTRANSLATE_OUTPUT_MODE"
+    )
+    # Paragraphs translated concurrently. The translator is the only slow stage
+    # of a run, and its wall time scales with this; 4 is the library default.
+    pdfmathtranslate_qps: int = Field(default=4, alias="PDFMATHTRANSLATE_QPS")
 
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
 
@@ -65,19 +94,6 @@ class Settings(BaseSettings):
     vision_check_mode: str = Field(default="auto", alias="VISION_CHECK_MODE")  # auto | manual
     vision_check_max_pages: int = Field(default=8, alias="VISION_CHECK_MAX_PAGES")
 
-    # Translation concurrency (chunked LLM calls)
-    translate_concurrency: int = Field(default=16, alias="TRANSLATE_CONCURRENCY")
-    translate_max_retries: int = Field(default=5, alias="TRANSLATE_MAX_RETRIES")
-    # Global LLM request rate limit (requests per second). 0 disables limiting.
-    # Applied as a shared token bucket across all threads to avoid 429s under
-    # high translate concurrency.
-    llm_rate_limit_rps: float = Field(default=4.0, alias="LLM_RATE_LIMIT_RPS")
-    # Max characters joined per IR batch request. Larger batches amortize RTT
-    # but risk hitting per-request token limits; tune per provider.
-    translate_batch_max_chars: int = Field(default=6000, alias="TRANSLATE_BATCH_MAX_CHARS")
-    # Hard cap for a single prose segment. MinerU can emit a whole page as one
-    # paragraph; pre-splitting it avoids model output-limit truncation.
-    translate_segment_max_chars: int = Field(default=2000, alias="TRANSLATE_SEGMENT_MAX_CHARS")
     # How often the per-domain terminology glossary folds newly learned terms
     # into the stored glossary. Applied by a background thread; the settings
     # API also catches up on a missed interval after a restart.

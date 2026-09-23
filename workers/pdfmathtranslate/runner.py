@@ -1,0 +1,415 @@
+"""Run one PDFMathTranslate-next job and publish its products.
+
+Flow: build a BabelDOC configuration from the job, translate while forwarding
+BabelDOC's progress events, then convert the debug layout it leaves behind into
+the stable manifest PaperReader reads, and publish:
+
+* ``<output_dir>/translated.pdf``                     the translated PDF
+* ``<output_dir>/translated.dual.pdf``                the bilingual PDF, in dual mode
+* ``<output_dir>/extraction/manifest.json``           the stable manifest
+* ``<output_dir>/extraction/debug/*.json``            the parse output it came from
+* ``<output_dir>/extraction/glossary.csv``            the worker's glossary, if any
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import shutil
+import sys
+import traceback
+from pathlib import Path
+from typing import Any
+
+from workers.pdfmathtranslate import (
+    BABELDOC_VERSION,
+    GLOSSARY_FILENAME,
+    PDFMATHTRANSLATE_VERSION,
+)
+from workers.pdfmathtranslate.events import EventWriter, stage_group
+from workers.pdfmathtranslate.job import Job, JobError, load_job
+from workers.pdfmathtranslate.manifest import build_manifest, write_manifest
+
+logger = logging.getLogger("pdfmathtranslate.worker")
+
+_VALID_STAGES = {"parse", "translate", "render"}
+
+
+class WorkerError(RuntimeError):
+    """A failure the worker can describe to the backend in one sentence."""
+
+    def __init__(self, message: str, *, stage: str = "parse") -> None:
+        super().__init__(message)
+        self.stage = stage if stage in _VALID_STAGES else "parse"
+
+
+def _sha256(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _python_version_of(module_name: str) -> str:
+    try:
+        from importlib.metadata import version
+
+        return version(module_name)
+    except Exception:  # noqa: BLE001 - the pin is informational only
+        return ""
+
+
+def _build_settings(job: Job):
+    """Translate the job into the library's settings model."""
+    from pdf2zh_next.config.model import (
+        BasicSettings,
+        PDFSettings,
+        SettingsModel,
+        TranslationSettings,
+    )
+    from pdf2zh_next.config.translate_engine_model import OpenAISettings
+
+    if not job.api_key:
+        raise WorkerError("no translation API key in the job", stage="translate")
+    if not job.model:
+        raise WorkerError("no translation model in the job", stage="translate")
+
+    # PaperReader always publishes the no-watermark monolingual PDF as its
+    # translated artifact. A dual request may additionally produce a dual PDF,
+    # but it must not disable the mono output that the publish contract reads.
+    no_mono = False
+    no_dual = job.output_mode == "mono"
+    settings = SettingsModel(
+        # The manifest is converted from BabelDOC's debug layout, so debug mode
+        # is always on. Whether the worker *keeps* that output is a separate
+        # decision, controlled by the job's keep_debug flag.
+        basic=BasicSettings(debug=True),
+        translation=TranslationSettings(
+            lang_in=job.source_lang,
+            lang_out=job.target_lang,
+            output=str(job.output_dir),
+            qps=job.qps,
+            glossaries=str(job.glossary_path) if job.glossary_path else None,
+        ),
+        pdf=PDFSettings(
+            no_mono=no_mono,
+            no_dual=no_dual,
+            watermark_output_mode="no_watermark" if job.no_watermark else "watermarked",
+        ),
+        translate_engine_settings=OpenAISettings(
+            openai_model=job.model,
+            openai_base_url=job.base_url or None,
+            openai_api_key=job.api_key,
+        ),
+    )
+    settings.validate_settings()
+    return settings
+
+
+def _build_config(job: Job):
+    """The BabelDOC configuration for this job, pinned to our own directories."""
+    from pdf2zh_next.high_level import create_babeldoc_config
+
+    settings = _build_settings(job)
+    config = create_babeldoc_config(settings, job.input_pdf)
+    # BabelDOC defaults the working directory to a shared cache location; a job
+    # must not depend on, or leak into, another job's state. Its own output goes
+    # to scratch as well: only the products the worker publishes are kept.
+    # The library only creates the directory when it builds the config itself,
+    # so an override has to create it here.
+    config.working_dir = job.babeldoc_work_dir / job.input_pdf.stem
+    Path(config.working_dir).mkdir(parents=True, exist_ok=True)
+    config.output_dir = job.work_dir / "out"
+    Path(config.output_dir).mkdir(parents=True, exist_ok=True)
+    config.use_rich_pbar = False
+    config.progress_monitor = None
+    return config
+
+
+def _translate(job: Job, writer: EventWriter):
+    """Run BabelDOC to completion, forwarding its progress.
+
+    BabelDOC's async wrapper ends on a handshake between the progress monitor
+    and the event loop that never resolves when the monitor belongs to the
+    caller, so the worker drives the synchronous entry point with its own
+    monitor instead.
+    """
+    from babeldoc.format.pdf.high_level import do_translate, get_translation_stage
+    from babeldoc.progress_monitor import ProgressMonitor
+
+    config = _build_config(job)
+    _suppress_debug_annotations()
+
+    def on_progress(**event: Any) -> None:
+        kind = str(event.get("type") or "")
+        if kind == "stage_summary":
+            writer.stage_summary(list(event.get("stages") or []))
+        elif kind in {"progress_start", "progress_update", "progress_end"}:
+            writer.progress(kind, str(event.get("stage") or ""), event)
+        elif kind == "error":
+            error = event.get("error")
+            raise WorkerError(
+                f"{type(error).__name__}: {error}"
+                if isinstance(error, BaseException)
+                else str(error or "translation failed"),
+                stage=_error_stage(event),
+            )
+
+    with ProgressMonitor(
+        get_translation_stage(config),
+        progress_change_callback=on_progress,
+    ) as monitor:
+        result = do_translate(monitor, config)
+    if result is None:
+        raise WorkerError("translation finished without a result", stage="render")
+    return result, config
+
+
+def _error_stage(event: dict) -> str:
+    stage = str(event.get("stage") or "")
+    return stage_group(stage) if stage else "translate"
+
+
+def _suppress_debug_annotations() -> None:
+    """Keep BabelDOC's debug drawing out of the published PDF.
+
+    The worker runs BabelDOC in debug mode because the manifest is converted
+    from the debug layout dumps, but the same flag also draws every paragraph
+    box, paragraph label and formula curve into the PDF it produces. All the
+    debug JSON has been written by the time ``AddDebugInformation`` runs — it
+    is the last midend pass — so the patch replaces that pass with one that
+    only turns debug mode off: the annotation pass no-ops, and the typesetting
+    and PDF rendering that follow add no rectangles, labels or curves.
+    """
+    from babeldoc.format.pdf.document_il.midend.add_debug_information import (
+        AddDebugInformation,
+    )
+
+    def turn_debug_off(self, docs) -> None:
+        self.translation_config.debug = False
+
+    AddDebugInformation.process = turn_debug_off
+
+
+def _mono_pdf(result) -> Path:
+    """The translated PDF to publish, preferring the watermark-free output."""
+    for attribute in ("no_watermark_mono_pdf_path", "mono_pdf_path"):
+        candidate = getattr(result, attribute, None)
+        if candidate and Path(candidate).is_file():
+            return Path(candidate)
+    raise WorkerError(
+        "the translator produced no monolingual PDF", stage="render"
+    )
+
+
+def _publish_dual(job: Job, result) -> Path | None:
+    """Publish the bilingual PDF when the job asked for one.
+
+    The monolingual PDF is always the document's translated artifact; a job that
+    also asked for the bilingual one additionally registers this, so a requested
+    output mode never ends up as work nobody can read.
+    """
+    if job.output_mode == "mono":
+        return None
+    source = None
+    for attribute in ("no_watermark_dual_pdf_path", "dual_pdf_path"):
+        candidate = getattr(result, attribute, None)
+        if candidate and Path(candidate).is_file():
+            source = Path(candidate)
+            break
+    if source is None:
+        raise WorkerError(
+            "the translator produced no bilingual PDF for a dual job", stage="render"
+        )
+    target = job.dual_pdf
+    if source.resolve() != target.resolve():
+        shutil.copyfile(source, target)
+    return target
+
+
+def _publish_debug(job: Job, debug_dir: Path) -> dict:
+    """Keep the translator's own layout output when the job asks for it.
+
+    It is what the manifest was converted from, and it is large — hundreds of
+    megabytes for a long paper — so it is off by default and the manifest is
+    the thing that persists.
+    """
+    if not job.keep_debug:
+        return {"debug_files": []}
+    debug_out = job.extraction_dir / "debug"
+    debug_out.mkdir(parents=True, exist_ok=True)
+    copied: list[str] = []
+    for source in sorted(debug_dir.glob("*.json")):
+        if source.is_file():
+            shutil.copyfile(source, debug_out / source.name)
+            copied.append(source.name)
+    return {"debug_files": copied}
+
+
+def _publish_glossary(job: Job, result, config) -> Path | None:
+    """Persist the terms the translator extracted, when it extracted any."""
+    source = getattr(result, "auto_extracted_glossary_path", None)
+    if source and Path(source).is_file():
+        target = job.extraction_dir / GLOSSARY_FILENAME
+        shutil.copyfile(Path(source), target)
+        return target
+    glossary = getattr(
+        getattr(config, "shared_context_cross_split_part", None),
+        "auto_extracted_glossary",
+        None,
+    )
+    if glossary is None or not getattr(glossary, "entries", None):
+        return None
+    target = job.extraction_dir / GLOSSARY_FILENAME
+    target.write_text(glossary.to_csv(), encoding="utf-8-sig")
+    return target
+
+
+def _read_glossary(path: Path | None) -> list[dict]:
+    """The manifest carries the glossary as rows, not as a file reference."""
+    if path is None or not path.is_file():
+        return []
+    import csv
+
+    entries: list[dict] = []
+    try:
+        with path.open(encoding="utf-8-sig", newline="") as handle:
+            for row in csv.DictReader(handle):
+                source = str(row.get("source") or "").strip()
+                target = str(row.get("target") or "").strip()
+                if source and target:
+                    entries.append({"source": source, "target": target})
+    except (OSError, UnicodeError, ValueError):
+        return []
+    return entries
+
+
+def run(job: Job, writer: EventWriter) -> dict:
+    """Execute the job and return the payload of the ``finish`` event."""
+    if not job.input_pdf.is_file():
+        raise WorkerError(f"input PDF not found: {job.input_pdf}", stage="parse")
+
+    job.output_dir.mkdir(parents=True, exist_ok=True)
+    job.extraction_dir.mkdir(parents=True, exist_ok=True)
+    job.babeldoc_work_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info("worker job %s: %s", job.job_id, job.input_pdf.name)
+    try:
+        result, config = _translate(job, writer)
+
+        translated = _mono_pdf(result)
+        target = job.translated_pdf
+        if translated.resolve() != target.resolve():
+            shutil.copyfile(translated, target)
+
+        dual_target = _publish_dual(job, result)
+
+        debug_dir = job.babeldoc_work_dir / job.input_pdf.stem
+
+        glossary_path = _publish_glossary(job, result, config)
+
+        mode_label = (
+            f"PDFMathTranslate-next {PDFMATHTRANSLATE_VERSION} · "
+            f"{job.output_mode}"
+            f"{' · 无水印' if job.no_watermark else ''}"
+        )
+        manifest = build_manifest(
+            debug_dir,
+            source_pdf=job.input_pdf,
+            source_sha256=_sha256(job.input_pdf),
+            mode_label=mode_label,
+            generator={
+                "worker": "pdfmathtranslate",
+                "pdfmathtranslate_version": PDFMATHTRANSLATE_VERSION,
+                "babeldoc_version": BABELDOC_VERSION,
+                "installed_babeldoc_version": _python_version_of("babeldoc"),
+                "source_lang": job.source_lang,
+                "target_lang": job.target_lang,
+                "output_mode": job.output_mode,
+                "no_watermark": job.no_watermark,
+            },
+            glossary=_read_glossary(glossary_path),
+        )
+        write_manifest(job.manifest_path, manifest)
+        debug_info = _publish_debug(job, debug_dir)
+    finally:
+        _clean_work_dir(job)
+
+    payload = {
+        "job_id": job.job_id,
+        "translated_pdf": str(target),
+        "mono_pdf_path": str(getattr(result, "mono_pdf_path", "") or ""),
+        "no_watermark_mono_pdf_path": str(
+            getattr(result, "no_watermark_mono_pdf_path", "") or ""
+        ),
+        "glossary_path": str(glossary_path) if glossary_path else "",
+        "dual_pdf": str(dual_target) if dual_target else "",
+        "manifest_path": str(job.manifest_path),
+        "debug_dir": str(job.extraction_dir / "debug"),
+        "extraction_dir": str(job.extraction_dir),
+        "mode_label": mode_label,
+        "page_count": int(manifest.get("page_count") or 0),
+        **debug_info,
+    }
+    return payload
+
+
+def _clean_work_dir(job: Job) -> None:
+    """The scratch directory holds hundreds of megabytes of debug output."""
+    if job.keep_debug or job.work_dir == job.output_dir:
+        return
+    shutil.rmtree(job.work_dir, ignore_errors=True)
+
+
+def _configure_logging() -> None:
+    """Logs go to stderr; stdout carries events only."""
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    root = logging.getLogger()
+    root.handlers = [handler]
+    root.setLevel(logging.INFO)
+    for noisy in ("httpx", "httpcore", "openai", "urllib3", "pdfminer"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="pdfmathtranslate-worker",
+        description="Translate one PDF and publish a PaperReader manifest.",
+    )
+    parser.add_argument("job", help="path to the job JSON file")
+    args = parser.parse_args(argv)
+
+    _configure_logging()
+    writer = EventWriter()
+    try:
+        job = load_job(args.job)
+    except JobError as exc:
+        writer.error(str(exc))
+        return 2
+
+    try:
+        payload = run(job, writer)
+    except WorkerError as exc:
+        logger.error("worker job %s failed: %s", job.job_id, exc)
+        writer.error(str(exc), stage=exc.stage)
+        return 1
+    except KeyboardInterrupt:
+        logger.warning("worker job %s cancelled", job.job_id)
+        writer.error("worker job cancelled", stage="parse")
+        return 130
+    except BaseException as exc:  # noqa: BLE001 - reported, never swallowed
+        logger.error("worker job %s crashed: %s", job.job_id, exc)
+        logger.debug("%s", traceback.format_exc())
+        writer.error(f"{type(exc).__name__}: {exc}", stage="parse")
+        return 1
+
+    writer.finish(payload)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
