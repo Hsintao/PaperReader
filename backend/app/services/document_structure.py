@@ -9,6 +9,7 @@ structure of ours, so its caption is located in the translated PDF's text layer.
 from __future__ import annotations
 
 import re
+import threading
 from pathlib import Path
 
 from app.core.config import settings
@@ -17,6 +18,10 @@ from app.services.document_manifest import DocumentManifest, Figure, outline_of
 
 _FIGURE_LIMIT = 200
 _CROP_MARGIN = 4
+
+# PDFium is not thread-safe, and FastAPI runs sync endpoints on a threadpool,
+# so every pdfium call in this process is serialized through one lock.
+_PDFIUM_LOCK = threading.Lock()
 
 
 def _url_for(path: Path) -> str | None:
@@ -172,18 +177,14 @@ def _float_crop(page, item: dict, anchors: list[tuple[float, float]]) -> tuple |
         textpage.close()
 
 
-def _render_crop(pdf, page_index: int, crop, preview: Path, source_mtime: float) -> None:
+def _render_crop(page, crop, preview: Path, source_mtime: float) -> None:
     if preview.exists() and preview.stat().st_mtime >= source_mtime:
         return
-    page = pdf[page_index]
+    bitmap = page.render(scale=0.8, crop=crop or (0, 0, 0, 0))
     try:
-        bitmap = page.render(scale=0.8, crop=crop or (0, 0, 0, 0))
-        try:
-            bitmap.to_pil().save(preview)
-        finally:
-            bitmap.close()
+        bitmap.to_pil().save(preview)
     finally:
-        page.close()
+        bitmap.close()
 
 
 def _original_previews(
@@ -207,18 +208,17 @@ def _original_previews(
             page = pdf[page_index]
             try:
                 size = page.get_size()
+                preview_dir.mkdir(parents=True, exist_ok=True)
+                preview = preview_dir / f"original-crop-{index + 1}.png"
+                if figure.bbox:
+                    _render_crop(
+                        page,
+                        _crop_from_bbox(figure.bbox, size),
+                        preview,
+                        path.stat().st_mtime,
+                    )
             finally:
                 page.close()
-            preview_dir.mkdir(parents=True, exist_ok=True)
-            preview = preview_dir / f"original-crop-{index + 1}.png"
-            if figure.bbox:
-                _render_crop(
-                    pdf,
-                    page_index,
-                    _crop_from_bbox(figure.bbox, size),
-                    preview,
-                    path.stat().st_mtime,
-                )
             if preview.exists():
                 item["url"] = _url_for(preview) or ""
             result.append(item)
@@ -282,13 +282,16 @@ def _translated_previews(record: DocumentRecord, figures: list[dict]) -> list[di
             item["page"] = page_index + 1
             preview_dir.mkdir(parents=True, exist_ok=True)
             preview = preview_dir / f"translated-crop-{figure_index + 1}.png"
-            _render_crop(
-                pdf,
-                page_index,
-                _float_crop(pdf[page_index], item, anchors.get((page_index, item["kind"]), [])),
-                preview,
-                path.stat().st_mtime,
-            )
+            page = pdf[page_index]
+            try:
+                _render_crop(
+                    page,
+                    _float_crop(page, item, anchors.get((page_index, item["kind"]), [])),
+                    preview,
+                    path.stat().st_mtime,
+                )
+            finally:
+                page.close()
             if preview.exists():
                 item["url"] = _url_for(preview) or ""
             result.append(item)
@@ -303,12 +306,13 @@ def build_document_structure(record: DocumentRecord) -> dict:
         return {"outline": [], "figures": []}
     figures = _gallery(manifest)
     structure = {"outline": outline_of(manifest), "figures": []}
-    try:
-        structure["figures"] = _original_previews(record, figures)
-    except Exception:  # noqa: BLE001 - the outline survives a failed crop
-        structure["figures"] = [figure.as_dict() for figure in figures]
-    try:
-        structure["translated_figures"] = _translated_previews(record, structure["figures"])
-    except Exception:  # noqa: BLE001 - the source gallery survives
-        structure["translated_figures"] = []
+    with _PDFIUM_LOCK:
+        try:
+            structure["figures"] = _original_previews(record, figures)
+        except Exception:  # noqa: BLE001 - the outline survives a failed crop
+            structure["figures"] = [figure.as_dict() for figure in figures]
+        try:
+            structure["translated_figures"] = _translated_previews(record, structure["figures"])
+        except Exception:  # noqa: BLE001 - the source gallery survives
+            structure["translated_figures"] = []
     return structure
