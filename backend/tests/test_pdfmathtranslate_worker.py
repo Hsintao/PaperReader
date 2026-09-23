@@ -821,21 +821,54 @@ def test_debug_annotations_are_turned_off_before_the_pdf_is_drawn(monkeypatch):
 
     drawn = []
 
+    def recorder(name):
+        def method(self, *args, **kwargs) -> None:
+            drawn.append(name)
+
+        return method
+
     class _AddDebugInformation:
         def __init__(self, translation_config) -> None:
             self.translation_config = translation_config
 
         def process(self, docs) -> None:
-            drawn.append(docs)
+            drawn.append("add_debug_information")
 
-    module = types.ModuleType(
-        "babeldoc.format.pdf.document_il.midend.add_debug_information"
-    )
-    module.AddDebugInformation = _AddDebugInformation
-    monkeypatch.setitem(sys.modules, module.__name__, module)
+    midend = "babeldoc.format.pdf.document_il.midend"
+    stubs = {
+        f"{midend}.add_debug_information": {
+            "AddDebugInformation": _AddDebugInformation,
+        },
+        f"{midend}.layout_parser": {
+            "LayoutParser": type(
+                "LayoutParser", (), {"_save_debug_box_to_page": recorder("layout")}
+            ),
+        },
+        f"{midend}.detect_scanned_file": {
+            "DetectScannedFile": type(
+                "DetectScannedFile", (), {"_save_debug_box_to_page": recorder("scanned")}
+            ),
+        },
+        f"{midend}.table_parser": {
+            "TableParser": type(
+                "TableParser", (), {"_save_debug_box_to_page": recorder("table")}
+            ),
+        },
+    }
+    for name, attributes in stubs.items():
+        module = types.ModuleType(name)
+        for attribute, value in attributes.items():
+            setattr(module, attribute, value)
+        monkeypatch.setitem(sys.modules, name, module)
 
     _suppress_debug_annotations()
     _suppress_debug_annotations()
+
+    for attributes in stubs.values():
+        for cls in attributes.values():
+            if hasattr(cls, "_save_debug_box_to_page"):
+                cls._save_debug_box_to_page(types.SimpleNamespace(), object())
+    assert drawn == []
 
     config = types.SimpleNamespace(debug=True)
     _AddDebugInformation(config).process(object())

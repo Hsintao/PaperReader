@@ -177,16 +177,31 @@ def _suppress_debug_annotations() -> None:
     """Keep BabelDOC's debug drawing out of the published PDF.
 
     The worker runs BabelDOC in debug mode because the manifest is converted
-    from the debug layout dumps, but the same flag also draws every paragraph
-    box, paragraph label and formula curve into the PDF it produces. All the
-    debug JSON has been written by the time ``AddDebugInformation`` runs — it
-    is the last midend pass — so the patch replaces that pass with one that
-    only turns debug mode off: the annotation pass no-ops, and the typesetting
-    and PDF rendering that follow add no rectangles, labels or curves.
+    from the debug layout dumps, but the same flag also makes several midend
+    passes draw into the document itself: the layout, table and scanned-page
+    passes each stamp green class-name labels onto the page, and
+    ``AddDebugInformation`` frames every paragraph and curve. The labels
+    render unconditionally, so those passes are patched to no-ops.
+    ``AddDebugInformation`` is the last midend pass — all the debug JSON has
+    been written by the time it runs — so it is replaced with one that only
+    turns debug mode off, and the typesetting and PDF rendering that follow
+    add no rectangles, labels or curves.
     """
     from babeldoc.format.pdf.document_il.midend.add_debug_information import (
         AddDebugInformation,
     )
+    from babeldoc.format.pdf.document_il.midend.detect_scanned_file import (
+        DetectScannedFile,
+    )
+    from babeldoc.format.pdf.document_il.midend.layout_parser import LayoutParser
+    from babeldoc.format.pdf.document_il.midend.table_parser import TableParser
+
+    def draw_nothing(self, *args, **kwargs) -> None:
+        return None
+
+    LayoutParser._save_debug_box_to_page = draw_nothing
+    DetectScannedFile._save_debug_box_to_page = draw_nothing
+    TableParser._save_debug_box_to_page = draw_nothing
 
     def turn_debug_off(self, docs) -> None:
         self.translation_config.debug = False
