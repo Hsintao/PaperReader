@@ -38,7 +38,6 @@ PaperReader 是一款全栈双语论文阅读应用。上传 PDF 后，PaperRead
 - 图表墙：解析出的全部图表以缩略图条展示，点击跳转到所在页
 - 侧栏跨文档全文搜索，点击命中直达文档对应位置
 - 基于 Semantic Scholar 的论文元数据（标题/作者/年份/期刊）与一键 BibTeX 导出
-- 产物面板：参考文献预览与拖入 PDF 窗格
 - 明/暗主题本地持久化
 - 原生桌面应用（Windows 使用 WebView2，macOS 使用 WKWebView）
 

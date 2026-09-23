@@ -25,8 +25,6 @@ import {
   Download,
   FileText,
   Images,
-  Link2,
-  Link2Off,
   List,
   Maximize2,
   Rows3,
@@ -40,14 +38,17 @@ export type AnnotationItem = ApiAnnotationItem
 
 export type FigureItem = ApiFigureItem
 
+export type DownloadItem = {
+  title: string
+  label: string
+  href?: string
+  name?: string
+}
+
 type Props = {
   title: string
   pdfUrl?: string
-  overrideUrl?: string
-  overrideTitle?: string
-  onAcceptDrop?: (payload: { url: string; name: string; kind: string }) => void
-  onClearOverride?: () => void
-  downloadName?: string
+  downloads?: DownloadItem[]
   counterpartLabel?: string
   onLocateCounterpart?: (payload: {
     selectedText: string
@@ -66,9 +67,6 @@ type Props = {
   onExportNotes?: () => void
   initialPosition?: { page: number; ratio: number } | null
   onProgressChange?: (page: number, ratio: number) => void
-  onUserScrollRatio?: (ratio: number) => void
-  syncEnabled?: boolean
-  onToggleSync?: () => void
   figures?: FigureItem[]
   outline?: OutlineItem[] | null
   onActivate?: () => void
@@ -82,7 +80,6 @@ export type PdfPaneHandle = {
     highlightText?: string
     positionRatio: number
   }) => Promise<void>
-  scrollToRatio: (ratio: number) => void
   goToPage: (page: number) => void
   openSearch: () => void
 }
@@ -105,11 +102,7 @@ const ANNOTATION_COLORS = ['yellow', 'green', 'blue', 'pink']
 export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
   title,
   pdfUrl,
-  overrideUrl,
-  overrideTitle,
-  onAcceptDrop,
-  onClearOverride,
-  downloadName,
+  downloads,
   counterpartLabel,
   onLocateCounterpart,
   annotations = [],
@@ -118,9 +111,6 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
   onExportNotes,
   initialPosition,
   onProgressChange,
-  onUserScrollRatio,
-  syncEnabled,
-  onToggleSync,
   figures = [],
   outline = null,
   onActivate
@@ -145,7 +135,6 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
   const [outlineReady, setOutlineReady] = useState(false)
   const [outlineSource, setOutlineSource] = useState<'native' | 'generated' | null>(null)
   const [mode, setMode] = useState<ViewMode>('scroll')
-  const [dragOver, setDragOver] = useState(false)
   const [selectionMenu, setSelectionMenu] = useState<{
     x: number
     y: number
@@ -171,9 +160,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
   annotationsRef.current = annotations
   const counterpartRef = useRef(counterpart)
   counterpartRef.current = counterpart
-  const overrideActive = Boolean(overrideUrl)
   const centerCurrentMatchRef = useRef(false)
-  const syncEmitRef = useRef(0)
   const progressTimerRef = useRef<ReturnType<typeof setTimeout> | 0>(0)
   const progressValueRef = useRef<{ page: number; ratio: number } | null>(null)
   const restoredPositionRef = useRef(false)
@@ -186,10 +173,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
     [numPages]
   )
 
-  const effectiveUrl = overrideUrl || pdfUrl
-  const effectiveTitle = overrideUrl ? (overrideTitle || '已覆盖') : title
-
-  const { getPageText } = usePageText({ docRef: pdfDocumentRef, activeKey: effectiveUrl || '' })
+  const { getPageText } = usePageText({ docRef: pdfDocumentRef, activeKey: pdfUrl || '' })
 
   const updateRenderRange = () => {
     const scroller = scrollRef.current
@@ -230,7 +214,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
     scaleRef,
     scale,
     setScale,
-    activeKey: effectiveUrl || ''
+    activeKey: pdfUrl || ''
   })
 
   useEffect(() => {
@@ -263,7 +247,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
       zoomStackRef.current.style.transform = ''
       zoomStackRef.current.style.willChange = ''
     }
-  }, [pdfUrl, overrideUrl])
+  }, [pdfUrl])
 
   useEffect(() => {
     const el = containerRef.current
@@ -278,7 +262,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
     // The .pdf-body element only exists once a URL is set; on a fresh load the
     // first mount renders the empty branch, so the observer must re-attach
     // when the PDF actually appears (otherwise fit-width stays broken).
-  }, [effectiveUrl])
+  }, [pdfUrl])
 
   useEffect(() => {
     scaleRef.current = scale
@@ -287,7 +271,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scale])
 
-  const fileOpts = useMemo(() => (effectiveUrl ? { url: effectiveUrl, withCredentials: true } : null), [effectiveUrl])
+  const fileOpts = useMemo(() => (pdfUrl ? { url: pdfUrl, withCredentials: true } : null), [pdfUrl])
 
   async function mapOutlineItem(doc: any, item: any): Promise<OutlineItem> {
     let pageIndex: number | null = null
@@ -506,17 +490,15 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
       }
     }
 
-    if (!overrideActive) {
-      for (const annotation of annotationsRef.current) {
-        if (annotation.page !== page || !annotation.quote) continue
-        paintQuote(
-          pageEl,
-          index,
-          annotation.quote,
-          annotation.id,
-          `pdf-annotation-highlight pdf-annotation-${annotation.color}`
-        )
-      }
+    for (const annotation of annotationsRef.current) {
+      if (annotation.page !== page || !annotation.quote) continue
+      paintQuote(
+        pageEl,
+        index,
+        annotation.quote,
+        annotation.id,
+        `pdf-annotation-highlight pdf-annotation-${annotation.color}`
+      )
     }
 
     if (counterpartMissing) setLocateMessage('未在此页找到对应文字，请选择一句完整文本后重试。')
@@ -615,17 +597,6 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
 
   useImperativeHandle(ref, () => ({
     locateAndHighlight,
-    scrollToRatio(ratio: number) {
-      const scroller = scrollRef.current
-      if (!scroller || mode !== 'scroll') return
-      const clamped = Math.max(0, Math.min(1, ratio))
-      isProgrammaticScrollRef.current = true
-      scroller.scrollTop = clamped * Math.max(0, scroller.scrollHeight - scroller.clientHeight)
-      updateRenderRange()
-      window.setTimeout(() => {
-        isProgrammaticScrollRef.current = false
-      }, 120)
-    },
     goToPage(page: number) {
       const target = Math.max(1, Math.min(numPages || 1, Math.round(page)))
       if (mode !== 'scroll') {
@@ -700,8 +671,8 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
   }
 
   // Track current page in scroll mode by detecting which page is closest to
-  // top; the same handler drives virtualization, synced scrolling, and
-  // reading-progress reporting.
+  // top; the same handler drives virtualization and reading-progress
+  // reporting.
   useEffect(() => {
     if (mode !== 'scroll' || !numPages) return
     const scroller = scrollRef.current
@@ -733,11 +704,6 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
       const denominator = Math.max(1, scroller.scrollHeight - scroller.clientHeight)
       const ratio = Math.max(0, Math.min(1, scroller.scrollTop / denominator))
       emitProgress(current, ratio)
-      const now = Date.now()
-      if (now - syncEmitRef.current > 120) {
-        syncEmitRef.current = now
-        onUserScrollRatio?.(ratio)
-      }
     }
     scroller.addEventListener('scroll', handler, { passive: true })
     return () => {
@@ -751,7 +717,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, numPages, onProgressChange, onUserScrollRatio])
+  }, [mode, numPages, onProgressChange])
 
   // Recompute the rendered window when layout geometry changes without a
   // user scroll (document load, zoom, pane resize).
@@ -825,36 +791,6 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
     )
   }
 
-  function handleDragOver(e: React.DragEvent) {
-    if (!onAcceptDrop) return
-    e.preventDefault()
-    setDragOver(true)
-  }
-  function handleDragLeave() {
-    setDragOver(false)
-  }
-  function handleDrop(e: React.DragEvent) {
-    if (!onAcceptDrop) return
-    e.preventDefault()
-    setDragOver(false)
-    try {
-      const raw = e.dataTransfer.getData('application/x-paperreader-artifact') || e.dataTransfer.getData('text/plain')
-      if (!raw) return
-      const payload = JSON.parse(raw)
-      if (!payload?.url) return
-      const kind = String(payload.kind || '')
-      const name = String(payload.name || 'preview')
-      const isPdf = kind.includes('pdf') || /\.pdf$/i.test(name) || /\.pdf(\?|$)/i.test(payload.url)
-      if (!isPdf) {
-        alert('仅支持拖入 PDF 类文件')
-        return
-      }
-      onAcceptDrop({ url: payload.url, name, kind })
-    } catch (err) {
-      console.error(err)
-    }
-  }
-
   // Capture each page's intrinsic aspect ratio once (from the PDF page
   // dictionaries at load) so the page wrappers can be sized synchronously on
   // every scale change; without stable sizes the layout collapses while
@@ -871,18 +807,13 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
     return { width, height: width * ratio + extraHeight }
   }
 
-  if (!effectiveUrl) {
+  if (!pdfUrl) {
     return (
-      <div
-        className={`pdf-pane ${dragOver ? 'drop-target' : ''}`}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-      >
+      <div className="pdf-pane">
         <div className="pdf-toolbar">
           <div className="pdf-title">{title}</div>
         </div>
-        <div className="pdf-empty muted">{onAcceptDrop ? '暂无 PDF · 可将左侧产物拖入此处' : '暂无 PDF'}</div>
+        <div className="pdf-empty muted">暂无 PDF</div>
       </div>
     )
   }
@@ -924,28 +855,15 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
 
   return (
     <div
-      className={`pdf-pane ${dragOver ? 'drop-target' : ''}`}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
+      className="pdf-pane"
       onMouseDownCapture={() => onActivate?.()}
     >
       <div className="pdf-toolbar">
-        <div className="pdf-title" title={effectiveTitle}>
-          {effectiveTitle}
-          {overrideUrl && onClearOverride && (
-            <button
-              className="icon-btn"
-              title="还原默认 PDF"
-              style={{ marginLeft: 6 }}
-              onClick={onClearOverride}
-            >
-              <X size={14} />
-            </button>
-          )}
+        <div className="pdf-title" title={title}>
+          {title}
         </div>
         <div className="pdf-controls">
-          {onCreateAnnotation && !overrideActive && (
+          {onCreateAnnotation && (
             <button
               className="icon-btn"
               title="批注笔记"
@@ -957,15 +875,6 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
           <button className="icon-btn" title="搜索（Ctrl+F）" onClick={() => search.openSearch()}>
             <Search size={16} />
           </button>
-          {onToggleSync && (
-            <button
-              className={`icon-btn ${syncEnabled ? 'active' : ''}`}
-              title={syncEnabled ? '关闭双栏联动滚动' : '开启双栏联动滚动'}
-              onClick={() => onToggleSync()}
-            >
-              {syncEnabled ? <Link2 size={16} /> : <Link2Off size={16} />}
-            </button>
-          )}
           <button
             className="icon-btn"
             title="目录"
@@ -1045,9 +954,20 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
           >
             <FileText size={16} />
           </button>
-          <a className="icon-btn" title="下载" href={effectiveUrl} download={downloadName || true}>
-            <Download size={16} />
-          </a>
+          {(downloads && downloads.length > 0 ? downloads : [{ title: '下载', label: '', href: pdfUrl }]).map((item) => (
+            <a
+              key={item.title}
+              className={`icon-btn download-btn${item.href ? '' : ' disabled'}`}
+              title={item.title}
+              href={item.href}
+              download={item.name || true}
+              aria-disabled={!item.href}
+              onClick={item.href ? undefined : (event) => event.preventDefault()}
+            >
+              <Download size={16} />
+              {item.label && <span>{item.label}</span>}
+            </a>
+          ))}
         </div>
       </div>
 
@@ -1156,7 +1076,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
             ))}
           </aside>
         )}
-        {notesOpen && !overrideActive && (
+        {notesOpen && (
           <aside className="pdf-notes-panel" aria-label="批注笔记">
             <div className="pdf-overlay-heading"><strong>批注笔记 · {annotations.length}</strong><button className="icon-btn" title="关闭批注笔记" onClick={() => setNotesOpen(false)}><X size={14} /></button></div>
             <button className="btn" disabled={!annotations.length} onClick={() => onExportNotes?.()}>导出阅读笔记</button>
@@ -1196,7 +1116,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
                 >
                   跳转到{counterpartLabel || '对应内容'}并高亮
                 </button>
-                {onCreateAnnotation && !overrideActive && (
+                {onCreateAnnotation && (
                   <div className="menu-annotation">
                     <div className="menu-annotation-colors">
                       {ANNOTATION_COLORS.map((color) => (

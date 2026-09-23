@@ -52,6 +52,7 @@ class DocumentStatusResponse(BaseModel):
     original_pdf_url: str | None = None
     translated_pdf_url: str | None = None
     annotated_pdf_url: str | None = None
+    merged_pdf_url: str | None = None
     artifacts: list[ArtifactItem] = []
     references: list[ReferenceItem] = []
     logs: list[str] = []

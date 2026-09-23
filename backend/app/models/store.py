@@ -151,6 +151,13 @@ def dual_pdf_filename(source_filename: str) -> str:
     return f"{stem[:120]}_双语对照.pdf"
 
 
+def merged_pdf_filename(source_filename: str) -> str:
+    """Return the user-facing side-by-side bilingual PDF filename."""
+    stem = Path(source_filename or "document.pdf").stem
+    stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", stem).strip(" .") or "document"
+    return f"{stem[:120]}_左右对照.pdf"
+
+
 def _serialize_items(items: list) -> str:
     return json.dumps([asdict(item) for item in items], ensure_ascii=False)
 

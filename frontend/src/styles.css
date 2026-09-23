@@ -429,22 +429,6 @@ textarea { resize: vertical; }
 .badge.failed { background: #fef3f2; color: var(--danger); }
 .badge.pending { background: #f3f4f6; color: var(--pending); }
 
-.sidebar-section { padding: 0 8px; flex: 0 0 auto; min-height: 0; display: flex; flex-direction: column; }
-.section-toggle {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 10px;
-  color: var(--text-soft);
-  font-size: 12px;
-  font-weight: 500;
-  border-radius: var(--radius-sm);
-}
-.section-toggle:hover { background: var(--bg); }
-.chev-toggle { transition: transform 0.15s; }
-.chev-toggle.open { transform: rotate(90deg); }
-
 .layout-issue-page {
   display: flex;
   flex-direction: column;
@@ -471,89 +455,6 @@ textarea { resize: vertical; }
 }
 .layout-issue-item:hover { background: var(--bg-soft, var(--bg)); }
 .layout-issue-kind { font-size: 12px; font-weight: 500; }
-
-.artifact-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 4px 8px 8px;
-  max-height: 40vh;
-  overflow-y: auto;
-}
-.artifact-item {
-  background: var(--bg);
-  padding: 6px 8px;
-  border-radius: var(--radius-sm);
-  cursor: grab;
-}
-.artifact-item:active { cursor: grabbing; }
-.artifact-name {
-  font-size: 12px;
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.artifact-meta {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: 2px;
-}
-.artifact-open {
-  width: 22px; height: 22px;
-  display: inline-flex; align-items: center; justify-content: center;
-  color: var(--text-soft);
-  border-radius: 4px;
-}
-.artifact-open:hover { background: var(--accent-soft); color: var(--accent); }
-
-.artifact-tip {
-  position: fixed;
-  z-index: 1000;
-  background: var(--bg-soft);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-md);
-  padding: 8px;
-  pointer-events: none;
-}
-.artifact-tip-header {
-  margin-bottom: 6px;
-  word-break: break-all;
-}
-.artifact-tip-body {
-  max-height: 240px;
-  overflow: hidden;
-}
-.artifact-tip-pre {
-  font-family: 'SF Mono', Menlo, monospace;
-  font-size: 10px;
-  line-height: 1.35;
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: var(--text-soft);
-  max-height: 240px;
-  overflow: hidden;
-}
-.log-list {
-  max-height: 30vh;
-  overflow-y: auto;
-  padding: 4px 8px 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.log-line {
-  font-family: 'SF Mono', Menlo, monospace;
-  font-size: 11px;
-  color: var(--text-soft);
-  background: var(--bg);
-  padding: 4px 8px;
-  border-radius: 4px;
-  word-break: break-all;
-}
 
 /* ============ Workspace ============ */
 .workspace {
@@ -627,6 +528,13 @@ textarea { resize: vertical; }
   box-shadow: var(--shadow-sm);
   border: 1px solid var(--border);
 }
+/* The reader's single pane is a direct child of the workspace column. */
+.workspace > .pdf-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  margin: 8px;
+}
 .pdf-toolbar {
   display: flex;
   align-items: center;
@@ -662,6 +570,13 @@ textarea { resize: vertical; }
 }
 .icon-btn:hover:not(:disabled) { background: var(--bg); color: var(--text); }
 .icon-btn.active { background: var(--accent-soft); color: var(--accent); }
+.icon-btn.download-btn {
+  width: auto;
+  padding: 0 8px;
+  gap: 4px;
+  font-size: 12px;
+}
+.icon-btn.download-btn.disabled { opacity: 0.4; cursor: default; }
 .page-input {
   width: 50px;
   padding: 4px 6px;
@@ -1200,12 +1115,6 @@ textarea { resize: vertical; }
 }
 .retry-button {
   flex: 0 0 auto;
-}
-
-/* ============ PDF drop target (Phase C) ============ */
-.pdf-pane.drop-target {
-  outline: 2px dashed var(--accent);
-  outline-offset: -6px;
 }
 
 /* ============ Project drawer (Phase B) ============ */

@@ -17,12 +17,13 @@ from __future__ import annotations
 import io
 from typing import Iterable, Sequence
 
-from pypdf import PdfReader, PdfWriter
+from pypdf import PdfReader, PdfWriter, Transformation
 from pypdf.generic import (
     ArrayObject,
     ContentStream,
     DecodedStreamObject,
     DictionaryObject,
+    IndirectObject,
     NameObject,
     NumberObject,
     RectangleObject,
@@ -303,3 +304,82 @@ def merge_overlay_bytes(
     if clip is not None:
         overlay.cropbox = RectangleObject(clip)
     target_page.merge_page(overlay)
+
+
+def _display_size(page) -> tuple[float, float]:
+    width, height = page_size(page)
+    rotation = int(page.get("/Rotate", 0) or 0) % 360
+    return (height, width) if rotation in (90, 270) else (width, height)
+
+
+def _place_transform(page, slot_x: float, slot_top: float) -> Transformation:
+    """Map a source page into a slot of the merged page, honouring /Rotate.
+
+    ``merge_transformed_page`` ignores the source page's rotation flag, so a
+    rotated page is turned here explicitly: shift its box to the origin,
+    apply the rotation (PDF's /Rotate is clockwise, pypdf's is not), then
+    translate the result so it lands top-aligned at ``slot_x``.
+    """
+    origin_x, origin_y = page_origin(page)
+    width, height = page_size(page)
+    rotation = int(page.get("/Rotate", 0) or 0) % 360
+    transform = Transformation().translate(tx=-origin_x, ty=-origin_y)
+    if rotation:
+        transform = transform.rotate(360 - rotation)
+    corners = [(0.0, 0.0), (width, 0.0), (0.0, height), (width, height)]
+    mapped = [_apply(transform.ctm, x, y) for x, y in corners]
+    min_x = min(x for x, _ in mapped)
+    max_y = max(y for _, y in mapped)
+    return transform.translate(tx=slot_x - min_x, ty=slot_top - max_y)
+
+
+def _mergeable(page) -> None:
+    """Replace a non-array ``/Annots`` so pypdf's merge can iterate it.
+
+    Some producers write ``/Annots null``; ``merge_transformed_page`` treats
+    the entry as an array and crashes on the null.
+    """
+    annots = page.get(NameObject("/Annots"))
+    if annots is None:
+        return
+    resolved = annots.get_object() if isinstance(annots, IndirectObject) else annots
+    if not isinstance(resolved, ArrayObject):
+        page[NameObject("/Annots")] = ArrayObject()
+
+
+def build_side_by_side_pdf(original_path, translated_path, output_path, gap: float = 12.0) -> int:
+    """Stitch original and translated pages into one wide-page PDF.
+
+    Output page i holds original page i on the left and translated page i on
+    the right, top-aligned, so the reader shows the bilingual document as a
+    single file. When the page counts differ the shorter side leaves its
+    half blank. Returns the number of pages written.
+    """
+    original = PdfReader(str(original_path))
+    translated = PdfReader(str(translated_path))
+    writer = PdfWriter()
+    count = max(len(original.pages), len(translated.pages))
+    for index in range(count):
+        left = original.pages[index] if index < len(original.pages) else None
+        right = translated.pages[index] if index < len(translated.pages) else None
+        left_width, left_height = _display_size(left) if left is not None else (0.0, 0.0)
+        right_width, right_height = _display_size(right) if right is not None else (0.0, 0.0)
+        if not left_width:
+            left_width, left_height = right_width, right_height
+        if not right_width:
+            right_width, right_height = left_width, left_height
+        page = writer.add_blank_page(
+            width=left_width + gap + right_width,
+            height=max(left_height, right_height),
+        )
+        if left is not None:
+            _mergeable(left)
+            page.merge_transformed_page(left, _place_transform(left, 0.0, page.mediabox.height))
+        if right is not None:
+            _mergeable(right)
+            page.merge_transformed_page(
+                right, _place_transform(right, left_width + gap, page.mediabox.height)
+            )
+    with open(output_path, "wb") as handle:
+        writer.write(handle)
+    return count

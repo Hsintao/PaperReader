@@ -2,13 +2,6 @@ import type { OutlineItem } from './pdfOutline'
 
 export type UploadResult = { document_id: string; status: string }
 
-export type ArtifactItem = {
-  name: string
-  kind: string
-  path: string
-  url?: string | null
-}
-
 export type ReferenceItem = {
   index: number
   text: string
@@ -42,9 +35,8 @@ export type DocumentStatus = {
   original_pdf_url?: string | null
   translated_pdf_url?: string | null
   annotated_pdf_url?: string | null
-  artifacts: ArtifactItem[]
+  merged_pdf_url?: string | null
   references: ReferenceItem[]
-  logs: string[]
   progress: number
   current_stage?: string | null
   current_stage_label?: string | null
@@ -260,6 +252,11 @@ export async function ensureAnnotatedPdf(documentId: string): Promise<string> {
   return payload.annotated_pdf_url
 }
 
+export async function ensureMergedPdf(documentId: string): Promise<string> {
+  const payload = await apiFetch(`/api/document/${documentId}/merged-pdf`, { method: 'POST' })
+  return payload.merged_pdf_url
+}
+
 export async function listDocuments(): Promise<DocumentSummary[]> {
   return apiFetch('/api/documents')
 }
@@ -367,5 +364,11 @@ export function annotatedPdfName(sourceFilename: string): string {
   const leaf = (sourceFilename || 'document.pdf').split(/[\\/]/).pop() || 'document.pdf'
   const stem = leaf.replace(/\.[^.]+$/, '') || 'document'
   return `${stem}_原文标注.pdf`
+}
+
+export function mergedPdfName(sourceFilename: string): string {
+  const leaf = (sourceFilename || 'document.pdf').split(/[\\/]/).pop() || 'document.pdf'
+  const stem = leaf.replace(/\.[^.]+$/, '') || 'document'
+  return `${stem}_左右对照.pdf`
 }
 

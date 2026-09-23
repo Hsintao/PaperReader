@@ -38,7 +38,6 @@ PaperReader is a full-stack bilingual paper-reading app. Upload a PDF; PaperRead
 - Figure gallery: every parsed figure and table as a thumbnail strip that jumps to its page
 - Library-wide full-text search across all parsed documents, opening the match at its location
 - Paper metadata (title/authors/year/venue) via Semantic Scholar with one-click BibTeX export
-- Artifact panel with reference preview and drag-into-PDF-pane
 - Light / dark theme persisted locally
 - Native desktop apps (WebView2 on Windows, WKWebView on macOS arm64)
 

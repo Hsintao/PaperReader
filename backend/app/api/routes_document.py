@@ -22,6 +22,7 @@ from app.models.store import (
     list_documents as store_list_documents,
     annotated_pdf_filename,
     mark_document_failed,
+    merged_pdf_filename,
     normalized_source_filename,
     queue_document_reprocess,
     queue_document_retry,
@@ -34,7 +35,7 @@ from app.models.store import (
 from app.services.alignment_service import load_alignment_entries, locate_in_alignment, proportional_highlight
 from app.services.annotation_render import ANNOTATION_REVISION
 from app.services.app_settings import load_settings
-from app.services.document_pipeline import build_annotated_pdf, process_document
+from app.services.document_pipeline import build_annotated_pdf, build_merged_pdf, process_document
 from app.services.pdf_translation_worker import cancel_worker
 
 
@@ -63,6 +64,13 @@ def _annotated_pdf_url(record) -> str | None:
             and item.url
             and item.revision == ANNOTATION_REVISION
         ),
+        None,
+    )
+
+
+def _artifact_url(record, kind: str) -> str | None:
+    return next(
+        (item.url for item in record.artifacts if item.kind == kind and item.url),
         None,
     )
 
@@ -133,6 +141,7 @@ def get_document(
         original_pdf_url=record.original_pdf_url,
         translated_pdf_url=record.translated_pdf_url,
         annotated_pdf_url=_annotated_pdf_url(record),
+        merged_pdf_url=_artifact_url(record, "merged_pdf"),
         artifacts=[
             ArtifactItem(name=item.name, kind=item.kind, path=item.path, url=item.url)
             for item in record.artifacts
@@ -257,6 +266,9 @@ def rename_document(
     _rename_artifact(
         record, "annotated_pdf", annotated_pdf_filename(record.source_filename), out_dir
     )
+    _rename_artifact(
+        record, "merged_pdf", merged_pdf_filename(record.source_filename), out_dir
+    )
     save_document(record)
     return get_document(document_id)
 
@@ -293,6 +305,19 @@ def create_annotated_pdf(document_id: str) -> dict:
             detail="无法生成原文标注：缺少解析缓存，请先重新处理该文档。",
         )
     return {"annotated_pdf_url": url}
+
+
+@router.post("/document/{document_id}/merged-pdf")
+def create_merged_pdf(document_id: str) -> dict:
+    """Build the side-by-side bilingual PDF for a document that predates it."""
+    record = require_document(document_id)
+    url = build_merged_pdf(record)
+    if not url:
+        raise HTTPException(
+            status_code=409,
+            detail="无法生成对照 PDF：缺少原文或译文文件，请先重新处理该文档。",
+        )
+    return {"merged_pdf_url": url}
 
 
 @router.post(

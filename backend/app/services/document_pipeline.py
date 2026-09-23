@@ -20,6 +20,7 @@ from app.models.store import (
     FailureEntry,
     annotated_pdf_filename,
     dual_pdf_filename,
+    merged_pdf_filename,
     save_document,
     set_document_metadata,
     translated_pdf_filename,
@@ -35,6 +36,7 @@ from app.services.document_manifest import (
 )
 from app.services.glossary_service import glossary_terms_for_prompt, record_candidate_terms
 from app.services.pdf_extraction import PdfTranslationResult
+from app.services.pdf_ops import build_side_by_side_pdf
 from app.services.pdf_translation_worker import WorkerCancelled, WorkerError, run_worker
 from app.services.stage_tracker import (
     init_stages,
@@ -116,6 +118,43 @@ def _publish_dual_pdf(
         shutil.copyfile(dual_pdf, output)
         dual_pdf.unlink(missing_ok=True)
     _append_artifact(record, name, "dual_pdf", output)
+
+
+def _publish_merged_pdf(
+    record: DocumentRecord, translated_pdf: Path, output_dir: Path
+) -> None:
+    """Stitch source and translated pages into one side-by-side PDF.
+
+    The merged file is what the reader displays, but a failure here must not
+    fail an otherwise translated document: a missing merge is rebuilt on
+    demand when the document opens.
+    """
+    target = output_dir / merged_pdf_filename(record.source_filename)
+    try:
+        build_side_by_side_pdf(record.source_path, translated_pdf, target)
+    except Exception as exc:  # noqa: BLE001 - never block the pipeline on this
+        record.logs.append(f"Merged PDF skipped: {exc}")
+        return
+    _append_artifact(record, target.name, "merged_pdf", target)
+
+
+def build_merged_pdf(record: DocumentRecord) -> str | None:
+    """Build the side-by-side PDF for a document that predates the feature."""
+    if not record.source_path.is_file():
+        return None
+    translated = next(
+        (item for item in record.artifacts if item.kind == "translated_pdf"), None
+    )
+    if translated is None or not Path(translated.path).is_file():
+        return None
+    output_dir = settings.output_dir / record.document_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _publish_merged_pdf(record, Path(translated.path), output_dir)
+    save_document(record)
+    artifact = next(
+        (item for item in record.artifacts if item.kind == "merged_pdf"), None
+    )
+    return artifact.url if artifact else None
 
 
 def _publish_annotated_pdf(
@@ -431,7 +470,9 @@ def process_document(
         if not resume_from:
             with with_stage(record, "upload"):
                 pass
-        _drop_artifacts(record, MANIFEST_KIND, GLOSSARY_KIND, "annotated_pdf", "dual_pdf")
+        _drop_artifacts(
+            record, MANIFEST_KIND, GLOSSARY_KIND, "annotated_pdf", "dual_pdf", "merged_pdf"
+        )
 
         glossary_csv = _write_domain_glossary(translation_domain, work_dir)
         try:
@@ -452,9 +493,10 @@ def process_document(
         switcher.close()
         result = PdfTranslationResult.from_worker(record.source_path, products)
         record.translated_pdf_url = None
-        _publish_translated_pdf(record, result.translated_pdf, output_dir)
+        translated_output = _publish_translated_pdf(record, result.translated_pdf, output_dir)
         if result.dual_pdf is not None:
             _publish_dual_pdf(record, result.dual_pdf, output_dir)
+        _publish_merged_pdf(record, translated_output, output_dir)
         _register_source_artifacts(record, output_dir)
         _register_extraction_artifacts(record, result)
         record.logs.append(f"Extraction model: {result.mode_label}")

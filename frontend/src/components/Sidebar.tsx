@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   ChevronRight,
-  Eye,
   FileText,
   FolderOpen,
   Moon,
@@ -16,12 +15,10 @@ import {
   Trash2,
 } from 'lucide-react'
 import type {
-  ArtifactItem,
   DocumentSummary,
   LibrarySearchHit,
 } from '../lib/api'
-import { getDocumentBibtex, makeDataUrl, searchLibrary } from '../lib/api'
-import { ArtifactPreviewTip } from './ArtifactPreviewTip'
+import { getDocumentBibtex, searchLibrary } from '../lib/api'
 
 type Tab = 'tasks' | 'favorites'
 
@@ -30,8 +27,6 @@ type Props = {
   activeDocumentId?: string
   favorites: string[]
   uploading: boolean
-  artifacts: ArtifactItem[]
-  logs: string[]
   theme: 'light' | 'dark'
   activeStatus?: string
   onUpload: (file: File) => void
@@ -41,8 +36,6 @@ type Props = {
   onRename: (documentId: string, name: string) => void
   onReprocess: (documentId: string) => void
   onCollapse: () => void
-  onOpenInPane?: (artifact: ArtifactItem) => void
-  onEditTex?: () => void
   onOpenSettings: () => void
   onToggleTheme: () => void
   onRefreshStatus: () => void
@@ -71,8 +64,6 @@ export function Sidebar({
   activeDocumentId,
   favorites,
   uploading,
-  artifacts,
-  logs,
   theme,
   activeStatus,
   onUpload,
@@ -82,8 +73,6 @@ export function Sidebar({
   onRename,
   onReprocess,
   onCollapse,
-  onOpenInPane,
-  onEditTex,
   onOpenSettings,
   onToggleTheme,
   onRefreshStatus,
@@ -91,11 +80,7 @@ export function Sidebar({
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [tab, setTab] = useState<Tab>('tasks')
-  const [showArtifacts, setShowArtifacts] = useState(true)
-  const [showLogs, setShowLogs] = useState(false)
-  const [hoverPreview, setHoverPreview] = useState<{ artifact: ArtifactItem; rect: DOMRect } | null>(null)
   const [contextMenu, setContextMenu] = useState<{ documentId: string; x: number; y: number } | null>(null)
-  const hoverTimerRef = useRef<number | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchHits, setSearchHits] = useState<LibrarySearchHit[]>([])
   const [searching, setSearching] = useState(false)
@@ -132,10 +117,6 @@ export function Sidebar({
       alert(`导出 BibTeX 失败：${e?.message ?? String(e)}`)
     }
   }
-
-  useEffect(() => () => {
-    if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current)
-  }, [])
 
   const visible =
     tab === 'favorites'
@@ -329,122 +310,7 @@ export function Sidebar({
         )}
       </div>
         )}
-
-      {activeDocumentId && (
-        <>
-          <div className="sidebar-divider" />
-          <div className="sidebar-section">
-            <button className="section-toggle" onClick={() => setShowArtifacts((v) => !v)}>
-              <ChevronRight size={12} className={`chev-toggle ${showArtifacts ? 'open' : ''}`} />
-              产物文件 ({artifacts.length})
-            </button>
-            {showArtifacts && (
-              <div className="artifact-list">
-                {artifacts.length === 0 ? (
-                  <div className="muted small" style={{ padding: '4px 12px' }}>暂无</div>
-                ) : (
-                  artifacts.map((item, idx) => {
-                    const href = item.url ? makeDataUrl(item.url) : ''
-                    const isPdf = item.kind.includes('pdf') || /\.pdf$/i.test(item.name)
-                    const onMouseEnter = (e: React.MouseEvent<HTMLDivElement>) => {
-                      if (!item.url) return
-                      const rect = e.currentTarget.getBoundingClientRect()
-                      if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current)
-                      hoverTimerRef.current = window.setTimeout(() => {
-                        setHoverPreview({ artifact: item, rect })
-                      }, 220)
-                    }
-                    const onMouseLeave = () => {
-                      if (hoverTimerRef.current) window.clearTimeout(hoverTimerRef.current)
-                      hoverTimerRef.current = null
-                      setHoverPreview(null)
-                    }
-                    return (
-                      <div
-                        key={`${item.path}-${idx}`}
-                        className="artifact-item"
-                        draggable={!!item.url}
-                        onDragStart={(e) => {
-                          if (!item.url) return
-                          const payload = JSON.stringify({ url: makeDataUrl(item.url), name: item.name, kind: item.kind })
-                          e.dataTransfer.setData('application/x-paperreader-artifact', payload)
-                          e.dataTransfer.setData('text/plain', payload)
-                          e.dataTransfer.effectAllowed = 'copy'
-                        }}
-                        onMouseEnter={onMouseEnter}
-                        onMouseLeave={onMouseLeave}
-                        title={item.url ? '拖拽到 PDF 区域可预览，悬浮可见缩略图' : ''}
-                      >
-                        <div className="artifact-name">{item.name}</div>
-                        <div className="artifact-meta">
-                          <span className="muted small">{item.kind}</span>
-                          <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                            {isPdf && onOpenInPane && (
-                              <button
-                                className="icon-btn artifact-open"
-                                title="在阅读器中打开"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  onOpenInPane(item)
-                                }}
-                              >
-                                <Eye size={12} />
-                              </button>
-                            )}
-                            {item.name === 'translated.tex' && onEditTex && (
-                              <button
-                                className="icon-btn artifact-open"
-                                title="编辑并重新编译"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  onEditTex()
-                                }}
-                              >
-                                <Pencil size={12} />
-                              </button>
-                            )}
-                            {href && (
-                              <a href={href} target="_blank" rel="noreferrer" className="small">打开</a>
-                            )}
-                          </span>
-                        </div>
-                      </div>
-                    )
-                  })
-                )}
-              </div>
-            )}
-          </div>
-
-          <div className="sidebar-section">
-            <button className="section-toggle" onClick={() => setShowLogs((v) => !v)}>
-              <ChevronRight size={12} className={`chev-toggle ${showLogs ? 'open' : ''}`} />
-              日志 ({logs.length})
-            </button>
-            {showLogs && (
-              <div className="log-list">
-                {logs.length === 0 ? (
-                  <div className="muted small" style={{ padding: '4px 12px' }}>暂无</div>
-                ) : (
-                  logs.map((l, i) => (
-                    <div key={i} className="log-line">{l}</div>
-                  ))
-                )}
-              </div>
-            )}
-          </div>
-        </>
-        )}
       </div>
-
-      {hoverPreview && hoverPreview.artifact.url && (
-        <ArtifactPreviewTip
-          url={hoverPreview.artifact.url}
-          kind={hoverPreview.artifact.kind}
-          name={hoverPreview.artifact.name}
-          anchorRect={hoverPreview.rect}
-        />
-      )}
 
       {contextMenu && (
         <>

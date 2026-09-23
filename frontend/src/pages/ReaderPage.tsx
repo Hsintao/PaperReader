@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { AlertCircle, PanelLeftOpen, UploadCloud } from 'lucide-react'
 import { PdfPane } from '../components/PdfPane'
 import type { AnnotationItem, PdfPaneHandle } from '../components/PdfPane'
@@ -8,21 +7,22 @@ import type { OutlineItem } from '../lib/pdfOutline'
 import { ProgressBar } from '../components/ProgressBar'
 import { SettingsModal } from '../components/SettingsModal'
 import { Sidebar } from '../components/Sidebar'
-import type { ArtifactItem, DocumentStatus, DocumentSummary } from '../lib/api'
+import type { DocumentStatus, DocumentSummary } from '../lib/api'
 import {
-  annotatedPdfName,
   cancelDocument,
   createAnnotation,
   deleteAnnotation,
   deleteDocument,
   downloadNotes,
   ensureAnnotatedPdf,
+  ensureMergedPdf,
   getDocumentStatus,
   getDocumentStructure,
   listAnnotations,
   listDocuments,
   locateCounterpart,
   makeDataUrl,
+  mergedPdfName,
   renameDocument,
   reprocessDocument,
   retryDocument,
@@ -32,8 +32,6 @@ import {
   uploadFile
 } from '../lib/api'
 
-type OverridePdf = { url: string; name: string } | null
-type PaneSide = 'original' | 'translated'
 type PendingLocate = { text: string; side: 'original' | 'translated' } | null
 
 type Props = {
@@ -47,8 +45,6 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
   const [docCache, setDocCache] = useState<Record<string, DocumentStatus>>({})
   const [uploading, setUploading] = useState(false)
   const [showSidebar, setShowSidebar] = useState(() => window.innerWidth >= 900)
-  const [overrideLeft, setOverrideLeft] = useState<OverridePdf>(null)
-  const [overrideRight, setOverrideRight] = useState<OverridePdf>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [theme, setTheme] = useState<UserSettings['theme']>(settings.theme)
   const [favorites, setFavorites] = useState<string[]>(settings.favorites)
@@ -59,17 +55,13 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
   const [annotations, setAnnotations] = useState<AnnotationItem[]>([])
   const [structureOutline, setStructureOutline] = useState<OutlineItem[] | null>(null)
   const [structureFigures, setStructureFigures] = useState<FigureItem[]>([])
-  const [translatedFigures, setTranslatedFigures] = useState<FigureItem[]>([])
-  const [syncScroll, setSyncScroll] = useState(true)
   const [pendingLocate, setPendingLocate] = useState<PendingLocate>(null)
-  const [activePane, setActivePane] = useState<PaneSide>('original')
 
   const pollTimerRef = useRef<number | null>(null)
-  const originalPaneRef = useRef<PdfPaneHandle | null>(null)
-  const translatedPaneRef = useRef<PdfPaneHandle | null>(null)
+  const paneRef = useRef<PdfPaneHandle | null>(null)
   const emptyUploadRef = useRef<HTMLInputElement | null>(null)
-  const syncLockRef = useRef<{ side: PaneSide; until: number }>({ side: 'original', until: 0 })
   const annotatedRequestRef = useRef<string | null>(null)
+  const mergedRequestRef = useRef<string | null>(null)
 
   useEffect(() => {
     setTheme(settings.theme)
@@ -169,11 +161,11 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
   }, [activeId, pollRevision])
 
   const activeDoc: DocumentStatus | undefined = activeId ? docCache[activeId] : undefined
-  const originalPdfUrl = activeDoc?.original_pdf_url ? makeDataUrl(activeDoc.original_pdf_url) : undefined
   const translatedPdfUrl = activeDoc?.translated_pdf_url ? makeDataUrl(activeDoc.translated_pdf_url) : undefined
   const annotatedPdfUrl = activeDoc?.annotated_pdf_url ? makeDataUrl(activeDoc.annotated_pdf_url) : undefined
+  const mergedPdfUrl = activeDoc?.merged_pdf_url ? makeDataUrl(activeDoc.merged_pdf_url) : undefined
   const showAnnotated = settings.show_annotated_pdf && Boolean(annotatedPdfUrl)
-  const leftPdfUrl = showAnnotated ? annotatedPdfUrl : originalPdfUrl
+  const panePdfUrl = showAnnotated ? annotatedPdfUrl : mergedPdfUrl
 
   // Documents parsed before annotation existed have no artifact yet; build it
   // once from their cached parse when the preference is on.
@@ -191,6 +183,22 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
       })
       .catch((error) => console.error(error))
   }, [settings.show_annotated_pdf, activeId, activeDoc?.status, activeDoc?.annotated_pdf_url])
+
+  // Documents translated before the merged PDF existed get it built once from
+  // their stored original + translation when they are opened.
+  useEffect(() => {
+    if (!activeId || activeDoc?.status !== 'done' || activeDoc.merged_pdf_url) return
+    if (mergedRequestRef.current === activeId) return
+    mergedRequestRef.current = activeId
+    void ensureMergedPdf(activeId)
+      .then((url) => {
+        setDocCache((cache) => {
+          const current = cache[activeId]
+          return current ? { ...cache, [activeId]: { ...current, merged_pdf_url: url } } : cache
+        })
+      })
+      .catch((error) => console.error(error))
+  }, [activeId, activeDoc?.status, activeDoc?.merged_pdf_url])
 
   const handleRetry = useCallback(async () => {
     if (!activeId || retrying) return
@@ -247,12 +255,9 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
   }, [activeId])
 
   useEffect(() => {
-    setOverrideLeft(null)
-    setOverrideRight(null)
     setAnnotations([])
     setStructureOutline(null)
     setStructureFigures([])
-    setTranslatedFigures([])
     setPendingLocate(null)
   }, [activeId])
 
@@ -269,9 +274,6 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
         setStructureOutline(structure.outline?.length ? structure.outline : null)
         setStructureFigures(
           (structure.figures || []).map((figure) => ({ ...figure, url: makeDataUrl(figure.url) }))
-        )
-        setTranslatedFigures(
-          (structure.translated_figures || []).map((figure) => ({ ...figure, url: makeDataUrl(figure.url) }))
         )
       })
       .catch((e) => console.error(e))
@@ -320,50 +322,48 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
     void updateReadingProgress(activeId, page, ratio).catch(() => {})
   }, [activeId])
 
-  const handlePaneScrollRatio = useCallback((side: PaneSide, ratio: number) => {
-    if (!syncScroll) return
-    const now = Date.now()
-    if (syncLockRef.current.side === side && now < syncLockRef.current.until) return
-    const target = side === 'original' ? translatedPaneRef.current : originalPaneRef.current
-    if (!target) return
-    syncLockRef.current = { side: side === 'original' ? 'translated' : 'original', until: now + 600 }
-    target.scrollToRatio(ratio)
-  }, [syncScroll])
-
-  // Ctrl/Cmd+F opens in-document search on the pane the user last touched.
+  // Ctrl/Cmd+F opens in-document search.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'f') return
       event.preventDefault()
-      const pane = activePane === 'original' ? originalPaneRef.current : translatedPaneRef.current
-      pane?.openSearch()
+      paneRef.current?.openSearch()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [activePane])
+  }, [])
 
+  // The merged page holds both languages, so a selection can be either side:
+  // try the requested direction first, then the opposite one.
   const handleLocateCounterpart = useCallback(async (
     sourceSide: 'original' | 'translated',
     payload: { selectedText: string; page: number; pageCount: number }
   ) => {
     if (!activeId) return
+    const fallbackSide = sourceSide === 'original' ? 'translated' : 'original'
+    const locate = (side: 'original' | 'translated') => locateCounterpart({
+      documentId: activeId,
+      source_side: side,
+      selected_text: payload.selectedText,
+      source_page: payload.page,
+      source_page_count: payload.pageCount,
+    })
+    let located
     try {
-      const located = await locateCounterpart({
-        documentId: activeId,
-        source_side: sourceSide,
-        selected_text: payload.selectedText,
-        source_page: payload.page,
-        source_page_count: payload.pageCount,
-      })
-      const target = sourceSide === 'original' ? translatedPaneRef.current : originalPaneRef.current
-      await target?.locateAndHighlight({
-        text: located.target_text,
-        highlightText: located.highlight_text,
-        positionRatio: located.position_ratio,
-      })
-    } catch (e: any) {
-      alert(`未能定位对应内容：${e?.message ?? String(e)}`)
+      located = await locate(sourceSide)
+    } catch {
+      try {
+        located = await locate(fallbackSide)
+      } catch (e: any) {
+        alert(`未能定位对应内容：${e?.message ?? String(e)}`)
+        return
+      }
     }
+    await paneRef.current?.locateAndHighlight({
+      text: located.target_text,
+      highlightText: located.highlight_text,
+      positionRatio: located.position_ratio,
+    })
   }, [activeId])
 
   // A library-search hit opens its document and highlights the matched text
@@ -372,7 +372,7 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
     if (!pendingLocate || !activeDoc || activeDoc.status !== 'done') return
     const { text, side } = pendingLocate
     setPendingLocate(null)
-    void handleLocateCounterpart(side === 'original' ? 'translated' : 'original', {
+    void handleLocateCounterpart(side, {
       selectedText: text,
       page: 1,
       pageCount: 1,
@@ -444,11 +444,6 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
     }
   }, [refreshSummaries])
 
-  const handleOpenInPane = useCallback((artifact: ArtifactItem) => {
-    if (!artifact.url) return
-    setOverrideRight({ url: makeDataUrl(artifact.url), name: artifact.name })
-  }, [])
-
   // Reprocessing from the sidebar targets records that are not necessarily the
   // active one, so keep the list itself fresh while anything is queued.
   const hasQueuedDocuments = summaries.some(
@@ -461,14 +456,7 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
     return () => window.clearInterval(timer)
   }, [hasQueuedDocuments, refreshSummaries])
 
-  const artifacts = activeDoc?.artifacts ?? []
-  const logs = activeDoc?.logs ?? []
   const stages = activeDoc?.stages ?? []
-
-  const sourceTitle = useMemo(() => {
-    if (!activeDoc) return '原始 PDF'
-    return `原始 · ${activeDoc.source_filename || activeDoc.document_id}`
-  }, [activeDoc])
 
   const annotatedTitle = useMemo(() => {
     if (!activeDoc) return '原文标注'
@@ -476,7 +464,8 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
   }, [activeDoc])
 
   const translatedName = translatedPdfName(activeDoc?.source_filename || 'document.pdf')
-  const annotatedName = annotatedPdfName(activeDoc?.source_filename || 'document.pdf')
+  const mergedName = mergedPdfName(activeDoc?.source_filename || 'document.pdf')
+  const mergedTitle = `对照 · ${mergedName}`
 
   return (
     <div className="app-shell">
@@ -487,8 +476,6 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
           activeDocumentId={activeId}
           favorites={favorites}
           uploading={uploading}
-          artifacts={artifacts}
-          logs={logs}
           theme={theme}
           activeStatus={activeDoc?.status}
           onUpload={handleIncomingFile}
@@ -498,7 +485,6 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
           onRename={(id, name) => void handleRename(id, name)}
           onReprocess={(id) => void handleReprocess(id)}
           onCollapse={() => setShowSidebar(false)}
-          onOpenInPane={handleOpenInPane}
           onOpenSettings={() => setSettingsOpen(true)}
           onToggleTheme={() => {
             const next = theme === 'dark' ? 'light' : 'dark'
@@ -547,61 +533,25 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
             {!settings.api_key_configured && <button className="config-callout" onClick={() => setSettingsOpen(true)}><AlertCircle size={16} />开始前需要配置 AI 服务</button>}
           </div>
         ) : (
-          <PanelGroup direction="horizontal" autoSaveId="paperreader.layout">
-            <Panel defaultSize={50} minSize={20}>
-              <PdfPane
-                ref={originalPaneRef}
-                title={showAnnotated ? annotatedTitle : sourceTitle}
-                pdfUrl={leftPdfUrl}
-                overrideUrl={overrideLeft?.url}
-                overrideTitle={overrideLeft ? `产物 · ${overrideLeft.name}` : undefined}
-                onAcceptDrop={({ url, name }) => setOverrideLeft({ url, name })}
-                onClearOverride={() => setOverrideLeft(null)}
-                downloadName={showAnnotated ? annotatedName : activeDoc?.source_filename}
-                counterpartLabel="右侧译文"
-                onLocateCounterpart={(payload) => void handleLocateCounterpart('original', payload)}
-                annotations={annotations}
-                onCreateAnnotation={handleCreateAnnotation}
-                onDeleteAnnotation={handleDeleteAnnotation}
-                onExportNotes={handleExportNotes}
-                initialPosition={activeDoc ? { page: activeDoc.last_read_page, ratio: activeDoc.last_read_ratio } : null}
-                onProgressChange={handleProgressChange}
-                onUserScrollRatio={(ratio) => handlePaneScrollRatio('original', ratio)}
-                syncEnabled={syncScroll}
-                onToggleSync={() => setSyncScroll((v) => !v)}
-                figures={structureFigures}
-                outline={structureOutline}
-                onActivate={() => setActivePane('original')}
-              />
-            </Panel>
-            <PanelResizeHandle className="resize-handle" />
-            <Panel defaultSize={50} minSize={20}>
-              <PdfPane
-                ref={translatedPaneRef}
-                title={`译文 · ${translatedName}`}
-                pdfUrl={translatedPdfUrl}
-                overrideUrl={overrideRight?.url}
-                overrideTitle={overrideRight ? `产物 · ${overrideRight.name}` : undefined}
-                onAcceptDrop={({ url, name }) => setOverrideRight({ url, name })}
-                onClearOverride={() => setOverrideRight(null)}
-                downloadName={translatedName}
-                counterpartLabel="左侧原文"
-                onLocateCounterpart={(payload) => void handleLocateCounterpart('translated', payload)}
-                annotations={annotations}
-                onCreateAnnotation={handleCreateAnnotation}
-                onDeleteAnnotation={handleDeleteAnnotation}
-                onExportNotes={handleExportNotes}
-                initialPosition={activeDoc ? { page: activeDoc.last_read_page, ratio: activeDoc.last_read_ratio } : null}
-                onProgressChange={handleProgressChange}
-                onUserScrollRatio={(ratio) => handlePaneScrollRatio('translated', ratio)}
-                syncEnabled={syncScroll}
-                onToggleSync={() => setSyncScroll((v) => !v)}
-                figures={translatedFigures}
-                outline={structureOutline}
-                onActivate={() => setActivePane('translated')}
-              />
-            </Panel>
-          </PanelGroup>
+          <PdfPane
+            ref={paneRef}
+            title={showAnnotated ? annotatedTitle : mergedTitle}
+            pdfUrl={panePdfUrl}
+            downloads={[
+              { title: '下载译文 PDF', label: '译文', href: translatedPdfUrl, name: translatedName },
+              { title: '下载左右对照合并 PDF', label: '合并', href: mergedPdfUrl, name: mergedName }
+            ]}
+            counterpartLabel="对应内容"
+            onLocateCounterpart={(payload) => void handleLocateCounterpart('original', payload)}
+            annotations={annotations}
+            onCreateAnnotation={handleCreateAnnotation}
+            onDeleteAnnotation={handleDeleteAnnotation}
+            onExportNotes={handleExportNotes}
+            initialPosition={activeDoc ? { page: activeDoc.last_read_page, ratio: activeDoc.last_read_ratio } : null}
+            onProgressChange={handleProgressChange}
+            figures={structureFigures}
+            outline={structureOutline}
+          />
         )}
       </main>
 
