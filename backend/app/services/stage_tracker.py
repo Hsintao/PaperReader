@@ -23,10 +23,10 @@ from app.models.store import DocumentRecord, StageEntry, save_document
 PDF_STAGES: list[tuple[str, str, float]] = [
     ("upload", "接收文件", 1.0),
     ("parse", "解析 PDF", 45.0),
-    ("clean", "清洗与对齐", 3.0),
-    ("vision_check", "视觉模型校验", 10.0),
     ("translate", "翻译", 35.0),
     ("render", "版式合成", 6.0),
+    ("clean", "清洗与对齐", 3.0),
+    ("vision_check", "视觉模型校验", 10.0),
 ]
 
 
