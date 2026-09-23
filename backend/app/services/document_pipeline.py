@@ -323,14 +323,37 @@ def _stage_key(group: str) -> str:
     return group if group in {"parse", "translate", "render"} else "parse"
 
 
+# User-facing names for the worker's internal (BabelDOC) progress stages.
+_SUB_STAGE_LABELS = {
+    "Parse PDF and Create Intermediate Representation": "读取文档结构",
+    "DetectScannedFile": "检测扫描件",
+    "Parse Page Layout": "分析页面布局",
+    "Parse Table": "识别表格",
+    "Parse Paragraphs": "解析段落",
+    "Parse Formulas and Styles": "解析公式与样式",
+    "Remove Char Descent": "清理字符",
+    "Automatic Term Extraction": "提取术语",
+    "Translate Paragraphs": "翻译段落",
+    "Typesetting": "合成版式",
+    "Add Fonts": "嵌入字体",
+    "Generate drawing instructions": "生成绘图指令",
+    "Subset font": "子集化字体",
+    "Save PDF": "保存文件",
+}
+
+
 def _stage_label(group: str, event: dict) -> str:
     name = str(event.get("stage") or "")
-    label = {"parse": "解析", "translate": "翻译", "render": "排版"}.get(group, "处理")
+    label = _SUB_STAGE_LABELS.get(name) or {
+        "parse": "解析",
+        "translate": "翻译",
+        "render": "排版",
+    }.get(group, "处理")
     total = int(event.get("total") or 0)
     current = int(event.get("current") or 0)
     if total:
-        return f"{label} {name} {current}/{total}".strip()
-    return f"{label} {name}".strip()
+        return f"{label} {current}/{total}"
+    return label
 
 
 # ---------------------------------------------------------------------------

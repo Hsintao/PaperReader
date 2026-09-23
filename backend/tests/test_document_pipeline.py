@@ -200,7 +200,7 @@ def test_worker_progress_events_drive_the_document_stages(isolated_storage, tmp_
     assert statuses["render"] == "done"
     assert statuses["clean"] == "pending"
     translate = next(stage for stage in record.stages if stage.key == "translate")
-    assert "Translate Paragraphs" in translate.label
+    assert translate.label == "翻译段落 2/4"
     assert record.progress > 0
 
 
