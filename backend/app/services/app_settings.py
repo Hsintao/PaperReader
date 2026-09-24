@@ -24,6 +24,7 @@ from app.services.translation_prompts import normalize_domain
 
 _LOCK = threading.RLock()
 _THEMES = {"light", "dark"}
+_PROVIDERS = {"deepseek", "siliconflow", "custom"}
 
 # Fields removed when SoMark / MinerU parsing was replaced by the
 # PDFMathTranslate-next worker, and the vision-check settings retired with
@@ -53,6 +54,7 @@ def settings_path() -> Path:
 @dataclass
 class AppSettings:
     api_key: str = ""
+    provider: str = "custom"
     base_url: str = ""
     model: str = ""
     theme: str = "light"
@@ -142,6 +144,7 @@ def update_settings(
     *,
     api_key: str | None = None,
     clear_api_key: bool = False,
+    provider: str | None = None,
     base_url: str | None = None,
     model: str | None = None,
     theme: str | None = None,
@@ -154,6 +157,8 @@ def update_settings(
         current.api_key = ""
     elif (api_key or "").strip():
         current.api_key = api_key.strip()
+    if provider is not None:
+        current.provider = provider if provider in _PROVIDERS else "custom"
     if base_url is not None:
         current.base_url = base_url.strip()
     if model is not None:
@@ -195,6 +200,7 @@ def serialize_settings(value: AppSettings) -> dict:
     """Never expose the stored key; report only whether it is present."""
     return {
         "api_key_configured": bool(value.api_key),
+        "provider": value.provider,
         "base_url": value.base_url,
         "model": value.model,
         "theme": value.theme,

@@ -12,6 +12,7 @@ router = APIRouter()
 class UpdateSettingsRequest(BaseModel):
     # Kept for clients from PaperReader 2.0; new clients use /providers.
     api_key: str | None = None
+    provider: str | None = None
     base_url: str | None = None
     model: str | None = None
     theme: str | None = None
@@ -23,6 +24,7 @@ class UpdateSettingsRequest(BaseModel):
 class UpdateProviderSettingsRequest(BaseModel):
     api_key: str | None = None
     clear_api_key: bool = False
+    provider: str | None = None
     base_url: str | None = None
     model: str | None = None
 
@@ -42,6 +44,7 @@ def put_settings(payload: UpdateSettingsRequest) -> dict:
         show_annotated_pdf=payload.show_annotated_pdf,
         translation_domain=payload.translation_domain,
         favorites=payload.favorites,
+        provider=payload.provider,
     )
     return serialize_settings(values)
 
@@ -51,6 +54,7 @@ def put_provider_settings(payload: UpdateProviderSettingsRequest) -> dict:
     values = update_settings(
         api_key=payload.api_key,
         clear_api_key=payload.clear_api_key,
+        provider=payload.provider,
         base_url=payload.base_url,
         model=payload.model,
     )

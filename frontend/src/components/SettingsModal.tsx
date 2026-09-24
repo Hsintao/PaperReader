@@ -3,6 +3,7 @@ import { Bot, BookOpen, Languages, X } from 'lucide-react'
 import {
   updateProviderSettings,
   updateSettings,
+  PROVIDER_PRESETS,
   type ProviderSettingsDraft,
   type TranslationDomain,
   type UserSettings
@@ -20,8 +21,13 @@ type Props = {
 type Tab = 'providers' | 'translation' | 'reading'
 
 function providerDraft(settings: UserSettings): ProviderSettingsDraft {
+  // Settings saved before providers existed report "custom"; match the stored
+  // endpoint against a preset so the dropdown still shows what is in use.
+  const provider = settings.provider !== 'custom'
+    ? settings.provider
+    : PROVIDER_PRESETS.find((item) => item.base_url === settings.base_url)?.id || 'custom'
   return {
-    api_key: '', base_url: settings.base_url, model: settings.model
+    api_key: '', provider, base_url: settings.base_url, model: settings.model
   }
 }
 

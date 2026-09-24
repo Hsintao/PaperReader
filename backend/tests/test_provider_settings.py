@@ -8,6 +8,7 @@ from app.services.app_settings import load_settings, settings_path
 
 _SETTINGS_KEYS = {
     "api_key_configured",
+    "provider",
     "base_url",
     "model",
     "theme",
@@ -114,6 +115,27 @@ def test_provider_validation_rejects_bad_urls(isolated_storage):
             json={"base_url": "llm.example.com", "model": "m"},
         )
         assert response.status_code == 400, response.text
+
+
+def test_provider_roundtrip_and_unknown_falls_back_to_custom(isolated_storage):
+    with TestClient(app) as client:
+        response = client.put(
+            "/api/settings/me/providers",
+            json={
+                "provider": "siliconflow",
+                "base_url": "https://api.siliconflow.cn/v1",
+                "model": "Qwen/Qwen2.5-7B-Instruct",
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["provider"] == "siliconflow"
+
+        stored = json.loads(settings_path().read_text(encoding="utf-8"))
+        assert stored["provider"] == "siliconflow"
+
+        fallback = client.put("/api/settings/me/providers", json={"provider": "unknown-llm"})
+        assert fallback.status_code == 200, fallback.text
+        assert fallback.json()["provider"] == "custom"
 
 
 def test_preferences_persist_across_clients(isolated_storage):

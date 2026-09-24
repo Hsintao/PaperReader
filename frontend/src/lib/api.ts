@@ -95,6 +95,7 @@ export type LibrarySearchHit = {
 
 export type UserSettings = {
   api_key_configured: boolean
+  provider: string
   base_url: string
   model: string
   theme: 'light' | 'dark'
@@ -140,9 +141,45 @@ export type GlossarySnapshot = {
 export type ProviderSettingsDraft = {
   api_key: string
   clear_api_key?: boolean
+  provider: string
   base_url: string
   model: string
 }
+
+export type ProviderPreset = {
+  id: string
+  label: string
+  base_url: string
+  model: string
+  models: string[]
+  key_hint: string
+}
+
+// OpenAI-compatible providers. Selecting one prefills the endpoint fields;
+// "custom" leaves them untouched for any other compatible service.
+export const PROVIDER_PRESETS: ProviderPreset[] = [
+  {
+    id: 'deepseek',
+    label: 'DeepSeek',
+    base_url: 'https://api.deepseek.com',
+    model: 'deepseek-flash',
+    models: ['deepseek-flash', 'deepseek-chat', 'deepseek-reasoner'],
+    key_hint: 'platform.deepseek.com 申请'
+  },
+  {
+    id: 'siliconflow',
+    label: '硅基流动 SiliconFlow',
+    base_url: 'https://api.siliconflow.cn/v1',
+    model: 'Qwen/Qwen2.5-7B-Instruct',
+    models: [
+      'Qwen/Qwen2.5-7B-Instruct',
+      'Qwen/Qwen2.5-72B-Instruct',
+      'deepseek-ai/DeepSeek-V3',
+      'THUDM/GLM-4-9B-0414'
+    ],
+    key_hint: 'cloud.siliconflow.cn 申请'
+  }
+]
 
 
 // Production (including the portable app) serves the frontend and the API from

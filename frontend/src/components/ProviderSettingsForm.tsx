@@ -1,5 +1,5 @@
 import { CheckCircle2, CircleAlert, KeyRound } from 'lucide-react'
-import type { ProviderSettingsDraft } from '../lib/api'
+import { PROVIDER_PRESETS, type ProviderSettingsDraft } from '../lib/api'
 
 type Props = {
   value: ProviderSettingsDraft
@@ -18,6 +18,17 @@ export function ProviderSettingsForm({
     onChange({ ...value, [key]: next })
   }
 
+  const preset = PROVIDER_PRESETS.find((item) => item.id === value.provider)
+
+  const selectProvider = (id: string) => {
+    const next = PROVIDER_PRESETS.find((item) => item.id === id)
+    if (next) {
+      onChange({ ...value, provider: id, base_url: next.base_url, model: next.model })
+    } else {
+      set('provider', 'custom')
+    }
+  }
+
   return (
     <div className="provider-form">
       <div className="settings-section-heading">
@@ -33,6 +44,15 @@ export function ProviderSettingsForm({
 
       <div className="field-grid two">
         <label className="field field-span-2">
+          <span>服务提供商</span>
+          <select value={preset ? preset.id : 'custom'} onChange={(e) => selectProvider(e.target.value)}>
+            {PROVIDER_PRESETS.map((item) => (
+              <option key={item.id} value={item.id}>{item.label}</option>
+            ))}
+            <option value="custom">自定义（OpenAI 兼容接口）</option>
+          </select>
+        </label>
+        <label className="field field-span-2">
           <span>API Key {apiKeyConfigured && '（留空则保持不变）'}</span>
           <div className="secret-field">
             <KeyRound size={15} />
@@ -41,7 +61,7 @@ export function ProviderSettingsForm({
               autoComplete="off"
               value={value.api_key}
               onChange={(e) => set('api_key', e.target.value)}
-              placeholder={apiKeyConfigured ? '••••••••••••••••' : '输入你的 API Key'}
+              placeholder={apiKeyConfigured ? '••••••••••••••••' : `输入你的 API Key${preset ? `（${preset.key_hint}）` : ''}`}
             />
           </div>
         </label>
@@ -51,7 +71,18 @@ export function ProviderSettingsForm({
         </label>
         <label className="field">
           <span>模型名称</span>
-          <input value={value.model} onChange={(e) => set('model', e.target.value)} />
+          <input
+            value={value.model}
+            onChange={(e) => set('model', e.target.value)}
+            list={preset ? `provider-models-${preset.id}` : undefined}
+          />
+          {preset && (
+            <datalist id={`provider-models-${preset.id}`}>
+              {preset.models.map((name) => (
+                <option key={name} value={name} />
+              ))}
+            </datalist>
+          )}
         </label>
       </div>
       {allowClear && apiKeyConfigured && (
