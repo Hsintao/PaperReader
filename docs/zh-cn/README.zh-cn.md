@@ -46,6 +46,7 @@ PaperReader 是一款全栈双语论文阅读应用。上传 PDF 后，PaperRead
 | 文档 | 内容 |
 | --- | --- |
 | [用户说明书](../user_instruction.md) | 安装、配置与使用，下载前必读 |
+| [环境配置与编译指南](环境配置.md) | macOS / Windows 环境配置与源码编译 |
 | [开发者文档](../DEVELOPMENT.md) | 源码构建、打包与发布流程、项目结构、环境变量、API 参考 |
 | [升级指南](../UPGRADING.md) | 版本间数据迁移 |
 | [发布说明](releases/)（[English](../releases/)） | 各版本变更 |
