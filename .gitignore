@@ -36,3 +36,6 @@ PaperReader-v*.zip
 PaperReader-v*.tar.gz
 PaperReader-v*/
 *.sha256
+.scratch/
+desktop/worker-runtime/
+backend/cb95*
