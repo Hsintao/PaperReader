@@ -110,6 +110,42 @@ import time
 time.sleep(60)
 """
 
+# Speaks UTF-8 on both pipes, the way the real worker does: BabelDOC logs
+# with typographic characters on stderr and EventWriter serializes events
+# with ensure_ascii=False, so any CJK in an event lands on stdout raw.
+_UTF8_SPEAKING_WORKER = """
+import json
+import os
+import shutil
+import sys
+
+from workers.pdfmathtranslate.events import EventWriter
+from workers.pdfmathtranslate.job import load_job
+
+writer = EventWriter()
+for line in sys.stdin:
+    job_path = line.strip()
+    if not job_path:
+        continue
+    job = load_job(job_path)
+    print("BabelDOC: 排版引擎已加载 — 渲染中 …", file=sys.stderr)
+    print("排版引擎：注意力机制 — 渲染 50%", flush=True)
+    writer.progress("progress_update", "Translate Paragraphs", {"stage_progress": 100.0, "stage_total": 2, "stage_current": 2})
+    output = job.output_dir
+    extraction = output / "extraction"
+    extraction.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(job.input_pdf, output / "translated.pdf")
+    manifest = extraction / "manifest.json"
+    manifest.write_text(json.dumps({"schema_version": "paperreader-manifest-v1", "pages": []}), encoding="utf-8")
+    writer.finish({
+        "translated_pdf": str(output / "translated.pdf"),
+        "manifest_path": str(manifest),
+        "extraction_dir": str(extraction),
+        "page_count": 0,
+        "mode_label": "fake 1.0 · mono · 注意力机制",
+    })
+"""
+
 # Reports the proxy variables it inherited, so the test can check what the
 # backend handed the translator's HTTP client.
 _ENV_REPORTING_WORKER = """
@@ -510,6 +546,29 @@ def test_a_run_reports_the_stage_a_failing_worker_named(monkeypatch, tmp_path):
 
     assert str(excinfo.value) == "no translation API key in the job"
     assert excinfo.value.stage == "translate"
+
+
+def test_worker_pipes_are_opened_as_utf8_with_lenient_errors(monkeypatch, tmp_path):
+    # A Finder-launched app has no LANG in its environment, leaving the
+    # backend's locale encoding at ASCII; the worker still speaks UTF-8, so
+    # the pipes must be decoded explicitly and never raise on a stray byte.
+    popen_kwargs: dict = {}
+    real_popen = subprocess.Popen
+
+    def popen_spy(*args, **kwargs):
+        popen_kwargs.update(kwargs)
+        return real_popen(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", popen_spy)
+    _fake_worker(monkeypatch, tmp_path, _UTF8_SPEAKING_WORKER)
+    events: list[dict] = []
+
+    products = _run(tmp_path, on_event=events.append)
+
+    assert products.translated_pdf.exists()
+    assert "注意力机制" in products.mode_label
+    assert popen_kwargs["encoding"] == "utf-8"
+    assert popen_kwargs["errors"] == "replace"
 
 
 def test_consecutive_runs_share_one_worker_process(monkeypatch, tmp_path):

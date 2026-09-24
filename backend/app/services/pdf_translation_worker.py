@@ -302,6 +302,8 @@ def _worker_handle() -> _WorkerHandle:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         bufsize=1,
         env=worker_environment(),
     )
