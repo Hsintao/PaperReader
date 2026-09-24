@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from app.core.config import Settings, settings
+from app.services import pdf_translation_worker
 from app.services.pdf_translation_worker import (
     WorkerCancelled,
     WorkerError,
@@ -24,14 +25,24 @@ from app.services.pdf_translation_worker import (
     _job_payload,
     _products_from_finish,
     _read_events,
+    _read_job_events,
     cancel_worker,
     require_worker_ready,
     run_worker,
     worker_command,
 )
 
+
+@pytest.fixture(autouse=True)
+def _no_leftover_worker():
+    # A persistent worker outlives its run; never let one leak across tests.
+    yield
+    pdf_translation_worker.shutdown_worker()
+
+
 _FAKE_WORKER = """
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -39,33 +50,38 @@ from pathlib import Path
 from workers.pdfmathtranslate.events import EventWriter
 from workers.pdfmathtranslate.job import load_job
 
-job = load_job(sys.argv[1])
 writer = EventWriter()
-writer.emit("job_started", job=job.redacted())
-writer.stage_summary([{"name": "Parse Page Layout", "percent": 45.0}])
-writer.progress("progress_update", "Parse Page Layout", {"stage_progress": 100.0, "stage_total": 2, "stage_current": 2})
-writer.progress("progress_update", "Translate Paragraphs", {"stage_progress": 50.0, "stage_total": 4, "stage_current": 2})
-writer.progress("progress_end", "Typesetting", {"stage_progress": 100.0})
+for line in sys.stdin:
+    job_path = line.strip()
+    if not job_path:
+        continue
+    job = load_job(job_path)
+    writer.emit("job_started", job=job.redacted())
+    writer.stage_summary([{"name": "Parse Page Layout", "percent": 45.0}])
+    writer.progress("progress_update", "Parse Page Layout", {"stage_progress": 100.0, "stage_total": 2, "stage_current": 2})
+    writer.progress("progress_update", "Translate Paragraphs", {"stage_progress": 50.0, "stage_total": 4, "stage_current": 2})
+    writer.progress("progress_end", "Typesetting", {"stage_progress": 100.0})
 
-output = job.output_dir
-extraction = output / "extraction"
-extraction.mkdir(parents=True, exist_ok=True)
-translated = output / "translated.pdf"
-shutil.copyfile(job.input_pdf, translated)
-manifest = extraction / "manifest.json"
-manifest.write_text(
-    json.dumps({"schema_version": "paperreader-manifest-v1", "pages": [{"index": 0}]}),
-    encoding="utf-8",
-)
-writer.finish({
-    "job_id": job.job_id,
-    "translated_pdf": str(translated),
-    "manifest_path": str(manifest),
-    "extraction_dir": str(extraction),
-    "page_count": 1,
-    "mode_label": "fake 1.0 · mono",
-    "glossary_path": "",
-})
+    output = job.output_dir
+    extraction = output / "extraction"
+    extraction.mkdir(parents=True, exist_ok=True)
+    translated = output / "translated.pdf"
+    shutil.copyfile(job.input_pdf, translated)
+    manifest = extraction / "manifest.json"
+    manifest.write_text(
+        json.dumps({"schema_version": "paperreader-manifest-v1", "pages": [{"index": 0}]}),
+        encoding="utf-8",
+    )
+    writer.finish({
+        "job_id": job.job_id,
+        "translated_pdf": str(translated),
+        "manifest_path": str(manifest),
+        "extraction_dir": str(extraction),
+        "page_count": 1,
+        "mode_label": "fake 1.0 · mono",
+        "glossary_path": "",
+        "worker_pid": os.getpid(),
+    })
 """
 
 _FAILING_WORKER = """
@@ -73,8 +89,11 @@ import sys
 from workers.pdfmathtranslate.events import EventWriter
 
 writer = EventWriter()
-writer.error("no translation API key in the job", stage="translate")
-raise SystemExit(1)
+for line in sys.stdin:
+    if not line.strip():
+        continue
+    writer.error("no translation API key in the job", stage="translate")
+    break
 """
 
 _CRASHING_WORKER = """
@@ -102,24 +121,29 @@ from pathlib import Path
 from workers.pdfmathtranslate.events import EventWriter
 from workers.pdfmathtranslate.job import load_job
 
-job = load_job(sys.argv[1])
-output = job.output_dir
-extraction = output / "extraction"
-extraction.mkdir(parents=True, exist_ok=True)
-shutil.copyfile(job.input_pdf, output / "translated.pdf")
-manifest = extraction / "manifest.json"
-manifest.write_text(json.dumps({"schema_version": "paperreader-manifest-v1", "pages": []}), encoding="utf-8")
-(job.work_dir / "env.json").write_text(json.dumps({
-    "NO_PROXY": os.environ.get("NO_PROXY", ""),
-    "no_proxy": os.environ.get("no_proxy", ""),
-    "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
-}), encoding="utf-8")
-EventWriter().finish({
-    "translated_pdf": str(output / "translated.pdf"),
-    "manifest_path": str(manifest),
-    "extraction_dir": str(extraction),
-    "page_count": 0,
-})
+writer = EventWriter()
+for line in sys.stdin:
+    job_path = line.strip()
+    if not job_path:
+        continue
+    job = load_job(job_path)
+    output = job.output_dir
+    extraction = output / "extraction"
+    extraction.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(job.input_pdf, output / "translated.pdf")
+    manifest = extraction / "manifest.json"
+    manifest.write_text(json.dumps({"schema_version": "paperreader-manifest-v1", "pages": []}), encoding="utf-8")
+    (job.work_dir / "env.json").write_text(json.dumps({
+        "NO_PROXY": os.environ.get("NO_PROXY", ""),
+        "no_proxy": os.environ.get("no_proxy", ""),
+        "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
+    }), encoding="utf-8")
+    writer.finish({
+        "translated_pdf": str(output / "translated.pdf"),
+        "manifest_path": str(manifest),
+        "extraction_dir": str(extraction),
+        "page_count": 0,
+    })
 """
 
 # Reports the paths it was handed, so the test can check they mean the same
@@ -134,26 +158,31 @@ from pathlib import Path
 from workers.pdfmathtranslate.events import EventWriter
 from workers.pdfmathtranslate.job import load_job
 
-job = load_job(sys.argv[1])
-output = job.output_dir
-extraction = output / "extraction"
-extraction.mkdir(parents=True, exist_ok=True)
-shutil.copyfile(job.input_pdf, output / "translated.pdf")
-manifest = extraction / "manifest.json"
-manifest.write_text(json.dumps({"schema_version": "paperreader-manifest-v1", "pages": []}), encoding="utf-8")
-(job.work_dir / "paths.json").write_text(json.dumps({
-    "argv": sys.argv[1],
-    "cwd": os.getcwd(),
-    "input_pdf": str(job.input_pdf),
-    "output_dir": str(job.output_dir),
-    "work_dir": str(job.work_dir),
-}), encoding="utf-8")
-EventWriter().finish({
-    "translated_pdf": str(output / "translated.pdf"),
-    "manifest_path": str(manifest),
-    "extraction_dir": str(extraction),
-    "page_count": 0,
-})
+writer = EventWriter()
+for line in sys.stdin:
+    job_path = line.strip()
+    if not job_path:
+        continue
+    job = load_job(job_path)
+    output = job.output_dir
+    extraction = output / "extraction"
+    extraction.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(job.input_pdf, output / "translated.pdf")
+    manifest = extraction / "manifest.json"
+    manifest.write_text(json.dumps({"schema_version": "paperreader-manifest-v1", "pages": []}), encoding="utf-8")
+    (job.work_dir / "paths.json").write_text(json.dumps({
+        "job_path": job_path,
+        "cwd": os.getcwd(),
+        "input_pdf": str(job.input_pdf),
+        "output_dir": str(job.output_dir),
+        "work_dir": str(job.work_dir),
+    }), encoding="utf-8")
+    writer.finish({
+        "translated_pdf": str(output / "translated.pdf"),
+        "manifest_path": str(manifest),
+        "extraction_dir": str(extraction),
+        "page_count": 0,
+    })
 """
 
 
@@ -282,6 +311,23 @@ def test_event_reading_survives_a_reporter_that_raises():
     events = _read_events(lines, explode)
 
     assert [event["type"] for event in events] == ["progress_update", "finish"]
+
+
+def test_job_event_reading_stops_at_the_jobs_own_end():
+    """A persistent worker's stream stays open; the finish event ends the job."""
+    lines = iter(
+        [
+            json.dumps({"type": "progress_update"}) + "\n",
+            json.dumps({"type": "finish", "translated_pdf": "/tmp/out.pdf"}) + "\n",
+            json.dumps({"type": "progress_update"}) + "\n",
+        ]
+    )
+
+    events = _read_job_events(lines, None)
+
+    assert [event["type"] for event in events] == ["progress_update", "finish"]
+    # The next job's output was not consumed.
+    assert json.loads(next(lines))["type"] == "progress_update"
 
 
 def test_products_require_a_translated_pdf_that_exists(tmp_path):
@@ -459,6 +505,22 @@ def test_a_run_reports_the_stage_a_failing_worker_named(monkeypatch, tmp_path):
     assert excinfo.value.stage == "translate"
 
 
+def test_consecutive_runs_share_one_worker_process(monkeypatch, tmp_path):
+    """The interpreter and model startup is paid once, not once per document."""
+    _fake_worker(monkeypatch, tmp_path, _FAKE_WORKER)
+    first_events: list[dict] = []
+    second_events: list[dict] = []
+
+    _run(tmp_path, document_id="doc-1", on_event=first_events.append)
+    _run(tmp_path, document_id="doc-2", on_event=second_events.append)
+
+    def reported_pid(events: list[dict]) -> int:
+        finish = next(event for event in events if event["type"] == "finish")
+        return finish["worker_pid"]
+
+    assert reported_pid(first_events) == reported_pid(second_events)
+
+
 def test_a_run_reports_a_worker_that_exits_without_events(monkeypatch, tmp_path):
     _fake_worker(monkeypatch, tmp_path, _CRASHING_WORKER)
 
@@ -545,9 +607,9 @@ def test_the_job_file_and_the_paths_it_names_are_absolute(monkeypatch, tmp_path)
     products = _run(tmp_path, work_dir=work_dir)
 
     report = json.loads((work_dir / "paths.json").read_text(encoding="utf-8"))
-    assert Path(report["argv"]).is_absolute()
-    assert Path(report["argv"]) == work_dir / "job.json"
-    assert Path(report["argv"]).is_file()
+    assert Path(report["job_path"]).is_absolute()
+    assert Path(report["job_path"]) == work_dir / "job.json"
+    assert Path(report["job_path"]).is_file()
     assert Path(report["input_pdf"]).is_absolute()
     assert Path(report["output_dir"]).is_absolute()
     assert Path(report["work_dir"]).is_absolute()

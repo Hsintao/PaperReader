@@ -10,6 +10,7 @@ and reading progress.
 import csv
 import re
 import shutil
+import threading
 import uuid
 from pathlib import Path
 
@@ -258,6 +259,16 @@ def _enrich_metadata(record: DocumentRecord, display_title: str) -> None:
     record.logs.append(f"Metadata enriched: {str(metadata.get('title', ''))[:80]}")
 
 
+def _enrich_metadata_later(record: DocumentRecord, display_title: str) -> None:
+    """Run the metadata lookup off the wait path; it is a network call."""
+    threading.Thread(
+        target=_enrich_metadata,
+        args=(record, display_title),
+        name=f"metadata-enrich-{record.document_id[:8]}",
+        daemon=True,
+    ).start()
+
+
 # ---------------------------------------------------------------------------
 # Glossary
 # ---------------------------------------------------------------------------
@@ -320,11 +331,14 @@ class _StageSwitcher:
 
 def _event_reporter(record: DocumentRecord, switcher: _StageSwitcher):
     """Map worker events onto the document's stage list."""
-    state = {"stage": "", "fraction": -1.0}
+    state = {"stage": "", "name": "", "fraction": -1.0}
 
     def report(event: dict) -> None:
         kind = str(event.get("type") or "")
-        if kind == "stage_summary":
+        # Only progress events move stages. A finish or error event carries no
+        # group; treating it as one would reopen the parse stage at the end of
+        # the run and overwrite its measured duration.
+        if kind not in {"progress_start", "progress_update", "progress_end"}:
             return
         # The worker names the BabelDOC stage it is in through ``stage`` and the
         # pipeline stage that belongs to through ``group``.
@@ -332,17 +346,22 @@ def _event_reporter(record: DocumentRecord, switcher: _StageSwitcher):
         stage = _stage_key(group or str(event.get("stage") or ""))
         if stage != state["stage"]:
             state["stage"] = stage
-            state["fraction"] = -1.0
             switcher.switch(stage)
+        name = str(event.get("stage") or "")
+        if name != state["name"]:
+            # A new BabelDOC sub-stage restarts at 0% even within the same
+            # pipeline stage; without the reset its updates would all look
+            # smaller than the previous sub-stage's 100% and be dropped.
+            state["name"] = name
+            state["fraction"] = -1.0
         if kind == "progress_start":
             return
-        if kind in {"progress_update", "progress_end"}:
-            fraction = float(event.get("progress") or 0.0)
-            # The worker reports every 0.1s; a write per event would serialize
-            # the pipeline on SQLite.
-            if kind == "progress_end" or fraction - state["fraction"] >= 0.01:
-                state["fraction"] = fraction
-                set_stage_progress(record, stage, fraction, _stage_label(stage, event))
+        fraction = float(event.get("progress") or 0.0)
+        # The worker reports every 0.1s; a write per event would serialize
+        # the pipeline on SQLite.
+        if kind == "progress_end" or fraction - state["fraction"] >= 0.01:
+            state["fraction"] = fraction
+            set_stage_progress(record, stage, fraction, _stage_label(stage, event))
 
     return report
 
@@ -492,7 +511,7 @@ def process_document(
 
         manifest = result.manifest()
         with with_stage(record, "clean"):
-            _build_reader_state(record, manifest, translation_domain, output_dir)
+            display_title = _build_reader_state(record, manifest, translation_domain, output_dir)
 
         record.status = "done"
         record.failure = None
@@ -508,6 +527,7 @@ def process_document(
             base_url=override_base_url or settings.openai_base_url,
             model=override_model or settings.openai_model,
         )
+        _enrich_metadata_later(record, display_title)
     except WorkerCancelled as exc:
         switcher.fail()
         _cancel(record, str(exc))
@@ -549,8 +569,8 @@ def _build_reader_state(
     manifest: DocumentManifest,
     domain: str,
     output_dir: Path,
-) -> None:
-    """Turn the manifest into everything the reader reads."""
+) -> str:
+    """Turn the manifest into everything the reader reads. Returns the title."""
     record.logs.append(
         f"Parsed {len(manifest.blocks)} block(s) across {manifest.page_count} page(s)"
     )
@@ -575,7 +595,6 @@ def _build_reader_state(
 
     record.references = manifest.references
     record.logs.append(f"References extracted: {len(record.references)}")
-    _enrich_metadata(record, display_title)
 
     pairs = manifest.alignment_pairs()
     if pairs:
@@ -590,3 +609,4 @@ def _build_reader_state(
 
     _publish_annotated_pdf(record, manifest.blocks, manifest.pages, output_dir)
     save_document(record)
+    return display_title

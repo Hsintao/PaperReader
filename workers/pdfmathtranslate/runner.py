@@ -19,8 +19,11 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import shutil
 import sys
+import threading
+import time
 import traceback
 from pathlib import Path
 from typing import Any
@@ -355,18 +358,11 @@ def _configure_logging() -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="pdfmathtranslate-worker",
-        description="Translate one PDF and publish a PaperReader manifest.",
-    )
-    parser.add_argument("job", help="path to the job JSON file")
-    args = parser.parse_args(argv)
-
-    _configure_logging()
+def _run_job(job_path: str) -> int:
+    """Run one job file, reporting on stdout. Returns a process-style code."""
     writer = EventWriter()
     try:
-        job = load_job(args.job)
+        job = load_job(job_path)
     except JobError as exc:
         writer.error(str(exc))
         return 2
@@ -389,6 +385,63 @@ def main(argv: list[str] | None = None) -> int:
 
     writer.finish(payload)
     return 0
+
+
+# An idle worker exits on its own, so an unused one does not hold the models
+# resident forever; the backend simply starts a new one when a job arrives.
+_SERVE_IDLE_SECONDS = 900
+
+
+def _serve() -> int:
+    """Run jobs arriving on stdin, one job-file path per line, until EOF.
+
+    Staying alive between jobs skips the interpreter and model startup on
+    every run after the first — a sizable fraction of a short paper's wait.
+    """
+    state = {"busy": False, "touched": time.monotonic()}
+
+    def exit_when_idle() -> None:
+        while True:
+            time.sleep(30)
+            idle_for = time.monotonic() - state["touched"]
+            if not state["busy"] and idle_for > _SERVE_IDLE_SECONDS:
+                os._exit(0)
+
+    threading.Thread(target=exit_when_idle, daemon=True).start()
+
+    logger.info("worker ready (serve mode)")
+    for line in sys.stdin:
+        job_path = line.strip()
+        if not job_path:
+            continue
+        state["busy"] = True
+        try:
+            _run_job(job_path)
+        finally:
+            state["busy"] = False
+            state["touched"] = time.monotonic()
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="pdfmathtranslate-worker",
+        description="Translate one PDF and publish a PaperReader manifest.",
+    )
+    parser.add_argument("job", nargs="?", help="path to the job JSON file")
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        help="keep running and read job JSON paths from stdin, one per line",
+    )
+    args = parser.parse_args(argv)
+
+    _configure_logging()
+    if args.serve:
+        return _serve()
+    if not args.job:
+        parser.error("a job file is required unless --serve is given")
+    return _run_job(args.job)
 
 
 if __name__ == "__main__":

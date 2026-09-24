@@ -368,3 +368,55 @@ def test_a_failed_run_schedules_no_term_extraction(
 
     assert result.status == "failed"
     assert scheduled == []
+
+
+def test_a_finish_event_does_not_reopen_a_completed_stage(isolated_storage, tmp_path):
+    """The finish event carries no group; it must not be read as a parse event."""
+    record = create_document_record(_write_pdf(tmp_path / "paper.pdf"))
+    init_stages(record)
+    switcher = document_pipeline._StageSwitcher(record)
+    report = _event_reporter(record, switcher)
+
+    report({"type": "progress_start", "stage": "Parse Page Layout", "group": "parse"})
+    report({"type": "progress_end", "stage": "Parse Page Layout", "group": "parse", "progress": 1.0})
+    report({"type": "progress_start", "stage": "Translate Paragraphs", "group": "translate"})
+
+    parse = next(stage for stage in record.stages if stage.key == "parse")
+    assert parse.status == "done"
+    ended_at = parse.ended_at
+
+    report({"type": "finish", "status": "finished", "job_id": record.document_id})
+
+    assert parse.status == "done"
+    assert parse.ended_at == ended_at
+    assert record.current_stage == "translate"
+    switcher.close()
+
+
+def test_a_new_sub_stage_in_the_same_group_updates_the_label(isolated_storage, tmp_path):
+    """Term extraction ends at 100%; translation restarts at 0% — both translate."""
+    record = create_document_record(_write_pdf(tmp_path / "paper.pdf"))
+    init_stages(record)
+    switcher = document_pipeline._StageSwitcher(record)
+    report = _event_reporter(record, switcher)
+
+    report({
+        "type": "progress_end",
+        "stage": "Automatic Term Extraction",
+        "group": "translate",
+        "progress": 1.0,
+        "current": 32,
+        "total": 32,
+    })
+    report({
+        "type": "progress_update",
+        "stage": "Translate Paragraphs",
+        "group": "translate",
+        "progress": 0.03125,
+        "current": 1,
+        "total": 32,
+    })
+
+    translate = next(stage for stage in record.stages if stage.key == "translate")
+    assert translate.label == "翻译段落 1/32"
+    switcher.close()

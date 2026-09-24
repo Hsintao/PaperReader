@@ -79,9 +79,12 @@ class Settings(BaseSettings):
     pdfmathtranslate_output_mode: str = Field(
         default="mono", alias="PDFMATHTRANSLATE_OUTPUT_MODE"
     )
-    # Paragraphs translated concurrently. The translator is the only slow stage
-    # of a run, and its wall time scales with this; 4 is the library default.
-    pdfmathtranslate_qps: int = Field(default=4, alias="PDFMATHTRANSLATE_QPS")
+    # Paragraphs translated concurrently; the worker's thread pool is sized by
+    # this. The translator is the only slow stage of a run and its wall time
+    # scales with it. Measured per-request latency is ~7s, so 4 workers left
+    # most of the budget idle; 12 keeps the pipeline full without nearing any
+    # provider's rate limit.
+    pdfmathtranslate_qps: int = Field(default=12, alias="PDFMATHTRANSLATE_QPS")
 
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
 

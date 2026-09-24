@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-`backend/app` contains the FastAPI service. Keep API routes in `backend/app/api`, shared settings and DB bootstrapping in `backend/app/core`, persistence models in `backend/app/models`, and pipeline logic in `backend/app/services`. Put Python tests in `backend/tests` using the existing `test_*.py` pattern. `frontend/src` contains the React/Vite app: page-level containers live in `pages`, reusable UI in `components`, and HTTP helpers in `lib`. `workers/pdfmathtranslate` is a separate top-level package that runs as its own process (`python -m workers.pdfmathtranslate <job.json>`); the backend only starts it, maps its event stream onto document stages and reads the manifest it publishes. Its dependencies (PDFMathTranslate-next, BabelDOC, ONNX, OpenCV, scikit-image, HuggingFace Hub, the model and font caches) are installed into their own runtime from `desktop/requirements-worker.txt` and must never be added to `requirements.txt`, which the backend shares. Runtime data and generated artifacts are stored under `data/`; do not commit temporary outputs from local runs.
+`backend/app` contains the FastAPI service. Keep API routes in `backend/app/api`, shared settings and DB bootstrapping in `backend/app/core`, persistence models in `backend/app/models`, and pipeline logic in `backend/app/services`. Put Python tests in `backend/tests` using the existing `test_*.py` pattern. `frontend/src` contains the React/Vite app: page-level containers live in `pages`, reusable UI in `components`, and HTTP helpers in `lib`. `workers/pdfmathtranslate` is a separate top-level package that runs as its own process; the backend starts it once with `--serve` and hands it job-file paths on stdin (so the interpreter and model startup is paid only on the first translation), maps its event stream onto document stages and reads the manifest it publishes. Its dependencies (PDFMathTranslate-next, BabelDOC, ONNX, OpenCV, scikit-image, HuggingFace Hub, the model and font caches) are installed into their own runtime from `desktop/requirements-worker.txt` and must never be added to `requirements.txt`, which the backend shares. Runtime data and generated artifacts are stored under `data/`; do not commit temporary outputs from local runs.
 
 ## Build, Test, and Development Commands
 Use the project environment first: `conda activate pt`.
@@ -11,7 +11,7 @@ Use the project environment first: `conda activate pt`.
 - `make worker`: start the optional Celery worker.
 - `pytest`: run backend tests in `backend/tests`.
 - `python -m compileall backend/app`: quick Python syntax check.
-- `python -m workers.pdfmathtranslate <job.json>`: run one PDF translation job by hand from the repository root; this is the command the backend starts, and it needs an interpreter with the worker runtime installed.
+- `python -m workers.pdfmathtranslate <job.json>`: run one PDF translation job by hand from the repository root (the backend instead keeps the worker alive with `--serve`); it needs an interpreter with the worker runtime installed.
 - `npm --prefix frontend install`: install frontend dependencies.
 - `npm --prefix frontend run build`: type-check and build the frontend bundle.
 

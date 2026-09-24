@@ -1,9 +1,11 @@
 """Process boundary around the PDFMathTranslate-next worker.
 
-The backend never imports the translator. It writes a job file, starts the
-worker as a child process, and reads newline-delimited JSON events from its
-stdout. Everything the pipeline needs afterwards — the translated PDF, the
-stable manifest, the glossary — is a file the worker published.
+The backend never imports the translator. It writes a job file and hands its
+path to a long-lived worker process (started once, reused across jobs so the
+interpreter and model startup is paid only on the first run), reading
+newline-delimited JSON events from its stdout. Everything the pipeline needs
+afterwards — the translated PDF, the stable manifest — is a file the worker
+published.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import shlex
 import subprocess
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
@@ -209,26 +212,155 @@ def cancel_worker(document_id: str) -> bool:
     return True
 
 
+def _parse_event(line: str) -> dict | None:
+    line = line.strip()
+    if not line.startswith("{"):
+        return None
+    try:
+        event = json.loads(line)
+    except ValueError:
+        return None
+    return event if isinstance(event, dict) else None
+
+
+def _deliver(events: list[dict], event: dict, sink: EventSink | None) -> None:
+    events.append(event)
+    if sink is not None:
+        try:
+            sink(event)
+        except Exception:  # noqa: BLE001 - reporting never fails a job
+            pass
+
+
 def _read_events(stream, sink: EventSink | None) -> list[dict]:
     """Drain the worker's event stream. Never raises: the exit code decides."""
     events: list[dict] = []
     for line in stream:
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            event = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(event, dict):
-            continue
-        events.append(event)
-        if sink is not None:
-            try:
-                sink(event)
-            except Exception:  # noqa: BLE001 - reporting never fails a job
-                pass
+        event = _parse_event(line)
+        if event is not None:
+            _deliver(events, event, sink)
     return events
+
+
+def _read_job_events(stream, sink: EventSink | None) -> list[dict]:
+    """Read one job's events off a persistent worker's stream.
+
+    The stream stays open for the next job, so a job ends at its own
+    ``finish`` or ``error`` event, not at EOF.
+    """
+    events: list[dict] = []
+    for line in stream:
+        event = _parse_event(line)
+        if event is None:
+            continue
+        _deliver(events, event, sink)
+        if event.get("type") in {"finish", "error"}:
+            break
+    return events
+
+
+class _WorkerHandle:
+    """A persistent worker process plus the bookkeeping reuse decisions need."""
+
+    def __init__(self, process: subprocess.Popen) -> None:
+        self.process = process
+        self.jobs_done = 0
+        self.stderr_tail: deque[str] = deque(maxlen=200)
+        self.drainer = threading.Thread(target=self._drain_stderr, daemon=True)
+        self.drainer.start()
+
+    def _drain_stderr(self) -> None:
+        # stderr must be read continuously: a worker that fills its pipe
+        # buffer blocks mid-job. The tail is kept for crash reports.
+        stream = self.process.stderr
+        if stream is None:
+            return
+        for line in stream:
+            self.stderr_tail.append(line)
+
+
+_SERVE_LOCK = threading.Lock()
+_HANDLE: _WorkerHandle | None = None
+
+
+def _serve_command() -> list[str]:
+    return [*worker_command(), "--serve"]
+
+
+def _worker_handle() -> _WorkerHandle:
+    """The live worker, starting one when none is running."""
+    global _HANDLE
+    if _HANDLE is not None and _HANDLE.process.poll() is None:
+        return _HANDLE
+    process = subprocess.Popen(
+        _serve_command(),
+        cwd=str(bundle_root()),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        env=worker_environment(),
+    )
+    _HANDLE = _WorkerHandle(process)
+    return _HANDLE
+
+
+def _drop_worker(handle: _WorkerHandle) -> None:
+    """Stop reusing a worker: forget it and kill the process."""
+    global _HANDLE
+    if _HANDLE is handle:
+        _HANDLE = None
+    WorkerRun(handle.process).kill()
+
+
+def shutdown_worker() -> None:
+    """Stop the persistent worker, if one is running."""
+    global _HANDLE
+    handle = _HANDLE
+    _HANDLE = None
+    if handle is not None:
+        WorkerRun(handle.process).kill()
+
+
+def _worker_crash_error(handle: _WorkerHandle) -> WorkerError:
+    """The error reported when the worker died without describing why."""
+    try:
+        code = handle.process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        code = handle.process.poll()
+    handle.drainer.join(timeout=2)
+    tail = [line.strip() for line in handle.stderr_tail if line.strip()][-3:]
+    detail = f": {' | '.join(tail)}" if tail else ""
+    return WorkerError(f"worker exited with code {code}{detail}", stage="parse")
+
+
+def _send_job(
+    handle: _WorkerHandle,
+    run: WorkerRun,
+    job_path: Path,
+    on_event: EventSink | None,
+) -> tuple[_WorkerHandle, list[dict]]:
+    """Hand the job to the worker and read its events.
+
+    A worker that died between jobs is only noticed when the write fails; one
+    retry on a fresh process keeps that race invisible to the caller. A worker
+    that has never completed a job is not retried — it never worked at all.
+    """
+    try:
+        assert handle.process.stdin is not None
+        handle.process.stdin.write(f"{job_path}\n")
+        handle.process.stdin.flush()
+    except (BrokenPipeError, OSError):
+        if handle.jobs_done == 0:
+            raise _worker_crash_error(handle)
+        _drop_worker(handle)
+        handle = _worker_handle()
+        run.process = handle.process
+        assert handle.process.stdin is not None
+        handle.process.stdin.write(f"{job_path}\n")
+        handle.process.stdin.flush()
+    return handle, _read_job_events(handle.process.stdout, on_event)
 
 
 def run_worker(
@@ -270,70 +402,60 @@ def run_worker(
     )
 
     started = time.monotonic()
-    process = subprocess.Popen(
-        worker_command(job_path),
-        cwd=str(bundle_root()),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-        env=worker_environment(),
-    )
-    run = WorkerRun(process)
-    with _ACTIVE_RUNS_LOCK:
-        _ACTIVE_RUNS[document_id] = run
-    if on_start is not None:
-        on_start(run)
-
     budget = settings.pdfmathtranslate_timeout if timeout is None else timeout
-    stderr_chunks: list[str] = []
-    stderr_thread = threading.Thread(
-        target=lambda: stderr_chunks.append(process.stderr.read() or ""),
-        daemon=True,
-    )
-    stderr_thread.start()
 
-    def _deadline() -> None:
-        run.timed_out = True
-        run.kill()
-
-    watchdog = threading.Timer(budget, _deadline)
-    watchdog.daemon = True
-    watchdog.start()
-
-    try:
-        events = _read_events(process.stdout, on_event)
-        code = process.wait()
-    finally:
-        watchdog.cancel()
-        stderr_thread.join(timeout=5)
+    # The persistent worker runs one job at a time, so the lock is held for
+    # the whole job: handing two jobs to one stdin would interleave events.
+    with _SERVE_LOCK:
+        handle = _worker_handle()
+        run = WorkerRun(handle.process)
         with _ACTIVE_RUNS_LOCK:
-            if _ACTIVE_RUNS.get(document_id) is run:
-                del _ACTIVE_RUNS[document_id]
-        for stream in (process.stdout, process.stderr):
-            if stream is not None:
-                stream.close()
+            _ACTIVE_RUNS[document_id] = run
+        if on_start is not None:
+            on_start(run)
 
-    if run.timed_out:
-        raise WorkerError(
-            f"worker exceeded its {int(budget)}s budget", stage="translate"
-        )
-    if run.cancelled:
-        raise WorkerCancelled("worker cancelled", stage="translate")
+        def _deadline() -> None:
+            run.timed_out = True
+            run.kill()
 
-    failure = _last_error(events)
-    if failure is not None:
-        raise WorkerError(failure[0], stage=failure[1])
+        watchdog = threading.Timer(budget, _deadline)
+        watchdog.daemon = True
+        watchdog.start()
 
-    if code != 0:
-        tail = "".join(stderr_chunks).strip().splitlines()[-3:]
-        detail = f": {' | '.join(tail)}" if tail else ""
-        raise WorkerError(f"worker exited with code {code}{detail}", stage="parse")
+        try:
+            handle, events = _send_job(handle, run, job_path, on_event)
+        finally:
+            watchdog.cancel()
+            with _ACTIVE_RUNS_LOCK:
+                if _ACTIVE_RUNS.get(document_id) is run:
+                    del _ACTIVE_RUNS[document_id]
 
-    finish = _last_finish(events)
-    if finish is None:
-        raise WorkerError("worker reported no result", stage="render")
+        if run.timed_out:
+            _drop_worker(handle)
+            raise WorkerError(
+                f"worker exceeded its {int(budget)}s budget", stage="translate"
+            )
+        if run.cancelled:
+            _drop_worker(handle)
+            raise WorkerCancelled("worker cancelled", stage="translate")
+
+        failure = _last_error(events)
+        if failure is not None:
+            # A job-level error leaves a healthy worker usable for the next
+            # job; a dead one is dropped either way.
+            if handle.process.poll() is not None:
+                _drop_worker(handle)
+            else:
+                handle.jobs_done += 1
+            raise WorkerError(failure[0], stage=failure[1])
+
+        finish = _last_finish(events)
+        if finish is None:
+            error = _worker_crash_error(handle)
+            _drop_worker(handle)
+            raise error
+
+        handle.jobs_done += 1
 
     products = _products_from_finish(finish, output_dir)
     elapsed = time.monotonic() - started

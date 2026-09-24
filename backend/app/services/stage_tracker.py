@@ -20,11 +20,14 @@ from app.models.store import DocumentRecord, StageEntry, save_document
 
 
 # stage_key -> (label, weight)
+# Weights double as the fallback ETA seconds before history accumulates, so
+# they follow the measured profile: a ~10-page paper spends most of its time
+# in the LLM translation stage.
 PDF_STAGES: list[tuple[str, str, float]] = [
     ("upload", "接收文件", 1.0),
-    ("parse", "解析 PDF", 45.0),
-    ("translate", "翻译", 35.0),
-    ("render", "版式合成", 6.0),
+    ("parse", "解析 PDF", 25.0),
+    ("translate", "翻译", 100.0),
+    ("render", "版式合成", 8.0),
     ("clean", "清洗与对齐", 3.0),
 ]
 
