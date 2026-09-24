@@ -370,6 +370,25 @@ def test_a_failed_run_schedules_no_term_extraction(
     assert scheduled == []
 
 
+def test_a_failed_run_still_publishes_the_original_pdf(
+    isolated_storage, monkeypatch, tmp_path
+):
+    from app.services.pdf_translation_worker import WorkerError
+
+    def broken_worker(_kwargs):
+        raise WorkerError("boom", stage="translate")
+
+    _stub_worker(monkeypatch, tmp_path, on_call=broken_worker)
+    record = create_document_record(_write_pdf(tmp_path / "paper.pdf"))
+
+    result = _run(record)
+
+    assert result.status == "failed"
+    assert result.original_pdf_url == f"/data/outputs/{record.document_id}/original.pdf"
+    original = tmp_path / "outputs" / record.document_id / "original.pdf"
+    assert original.is_file() and original.read_bytes()[:4] == b"%PDF"
+
+
 def test_a_finish_event_does_not_reopen_a_completed_stage(isolated_storage, tmp_path):
     """The finish event carries no group; it must not be read as a parse event."""
     record = create_document_record(_write_pdf(tmp_path / "paper.pdf"))

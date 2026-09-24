@@ -477,6 +477,9 @@ def process_document(
         if not resume_from:
             with with_stage(record, "upload"):
                 pass
+        # The original is published up front so a failed run still leaves the
+        # paper readable from the history list.
+        _register_source_artifacts(record, output_dir)
         _drop_artifacts(
             record, MANIFEST_KIND, GLOSSARY_KIND, "annotated_pdf", "dual_pdf", "merged_pdf"
         )
@@ -504,7 +507,6 @@ def process_document(
         if result.dual_pdf is not None:
             _publish_dual_pdf(record, result.dual_pdf, output_dir)
         _publish_merged_pdf(record, translated_output, output_dir)
-        _register_source_artifacts(record, output_dir)
         _register_extraction_artifacts(record, result)
         record.logs.append(f"Extraction model: {result.mode_label}")
         record.logs.append(f"Extraction dir: {result.extraction_dir}")
