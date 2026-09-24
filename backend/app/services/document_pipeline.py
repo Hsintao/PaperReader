@@ -34,7 +34,7 @@ from app.services.document_manifest import (
     PageGeometry,
     load_document_manifest,
 )
-from app.services.glossary_service import glossary_terms_for_prompt, record_candidate_terms
+from app.services.glossary_service import glossary_terms_for_prompt
 from app.services.pdf_extraction import PdfTranslationResult
 from app.services.pdf_ops import build_side_by_side_pdf
 from app.services.pdf_translation_worker import WorkerCancelled, WorkerError, run_worker
@@ -44,6 +44,7 @@ from app.services.stage_tracker import (
     set_stage_progress,
     with_stage,
 )
+from app.services.term_extraction import schedule_extraction
 from app.services.translation_prompts import DOMAINS, normalize_domain
 
 _TITLE_H1_PATTERN = re.compile(r"(?m)^#\s+(.+)$")
@@ -283,19 +284,6 @@ def _write_domain_glossary(domain: str, work_dir: Path) -> Path | None:
     return target
 
 
-def _absorb_worker_glossary(record: DocumentRecord, manifest: DocumentManifest, domain: str) -> int:
-    """Fold the translator's extracted terms into the domain's pending pool."""
-    pairs = [
-        (entry.get("source", ""), entry.get("target", ""))
-        for entry in manifest.glossary
-        if entry.get("source") and entry.get("target")
-    ]
-    if not pairs:
-        return 0
-    record_candidate_terms(domain, pairs, record.document_id)
-    return len(pairs)
-
-
 # ---------------------------------------------------------------------------
 # Stage reporting across the worker's own stages
 # ---------------------------------------------------------------------------
@@ -502,12 +490,24 @@ def process_document(
         record.logs.append(f"Extraction model: {result.mode_label}")
         record.logs.append(f"Extraction dir: {result.extraction_dir}")
 
+        manifest = result.manifest()
         with with_stage(record, "clean"):
-            _build_reader_state(record, result.manifest(), translation_domain, output_dir)
+            _build_reader_state(record, manifest, translation_domain, output_dir)
 
         record.status = "done"
         record.failure = None
         record.logs.append("Processing done")
+        # Terminology is learned off the wait path: the worker already
+        # translated with the curated glossary, and a background pass now
+        # extracts candidates from the manifest into the pending pool.
+        schedule_extraction(
+            document_id=record.document_id,
+            manifest=manifest,
+            domain=translation_domain,
+            api_key=override_api_key or "",
+            base_url=override_base_url or settings.openai_base_url,
+            model=override_model or settings.openai_model,
+        )
     except WorkerCancelled as exc:
         switcher.fail()
         _cancel(record, str(exc))
@@ -576,10 +576,6 @@ def _build_reader_state(
     record.references = manifest.references
     record.logs.append(f"References extracted: {len(record.references)}")
     _enrich_metadata(record, display_title)
-
-    terms = _absorb_worker_glossary(record, manifest, domain)
-    if terms:
-        record.logs.append(f"Glossary: {terms} term(s) learned from this translation")
 
     pairs = manifest.alignment_pairs()
     if pairs:

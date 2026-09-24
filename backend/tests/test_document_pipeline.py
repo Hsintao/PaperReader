@@ -324,3 +324,47 @@ def test_a_cancelled_run_publishes_no_products(
     assert any("Cancelled" in line for line in result.logs)
     # Nothing is left holding the document back from a reprocess.
     assert result.status not in {"queued", "processing"}
+
+
+def test_a_finished_run_schedules_background_term_extraction(
+    isolated_storage, monkeypatch, tmp_path
+):
+    _stub_worker(monkeypatch, tmp_path)
+    scheduled = []
+    monkeypatch.setattr(
+        document_pipeline, "schedule_extraction", lambda **kwargs: scheduled.append(kwargs)
+    )
+    record = create_document_record(_write_pdf(tmp_path / "paper.pdf"))
+
+    result = _run(record)
+
+    assert result.status == "done"
+    assert len(scheduled) == 1
+    call = scheduled[0]
+    assert call["document_id"] == record.document_id
+    assert call["domain"] == "general"
+    assert call["api_key"] == "test-key"
+    assert call["base_url"] == "https://llm.example/v1"
+    assert call["model"] == "test-model"
+    assert call["manifest"].page_count == 1
+
+
+def test_a_failed_run_schedules_no_term_extraction(
+    isolated_storage, monkeypatch, tmp_path
+):
+    from app.services.pdf_translation_worker import WorkerError
+
+    def broken_worker(_kwargs):
+        raise WorkerError("boom", stage="translate")
+
+    _stub_worker(monkeypatch, tmp_path, on_call=broken_worker)
+    scheduled = []
+    monkeypatch.setattr(
+        document_pipeline, "schedule_extraction", lambda **kwargs: scheduled.append(kwargs)
+    )
+    record = create_document_record(_write_pdf(tmp_path / "paper.pdf"))
+
+    result = _run(record)
+
+    assert result.status == "failed"
+    assert scheduled == []

@@ -15,7 +15,6 @@ BABELDOC_VERSION = "0.6.2"
 
 MANIFEST_SCHEMA_VERSION = "paperreader-manifest-v1"
 MANIFEST_FILENAME = "manifest.json"
-GLOSSARY_FILENAME = "glossary.csv"
 EXTRACTION_DIR_NAME = "extraction"
 
 __all__ = [
@@ -23,6 +22,5 @@ __all__ = [
     "BABELDOC_VERSION",
     "MANIFEST_SCHEMA_VERSION",
     "MANIFEST_FILENAME",
-    "GLOSSARY_FILENAME",
     "EXTRACTION_DIR_NAME",
 ]

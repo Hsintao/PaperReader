@@ -8,7 +8,11 @@ the stable manifest PaperReader reads, and publish:
 * ``<output_dir>/translated.dual.pdf``                the bilingual PDF, in dual mode
 * ``<output_dir>/extraction/manifest.json``           the stable manifest
 * ``<output_dir>/extraction/debug/*.json``            the parse output it came from
-* ``<output_dir>/extraction/glossary.csv``            the worker's glossary, if any
+
+Terminology is not extracted here: BabelDOC's automatic pass runs its LLM
+sweep before translating and costs more than the translation itself, so the
+worker translates with the operator's glossary only, and the backend learns
+terms from the finished manifest in the background instead.
 """
 
 from __future__ import annotations
@@ -23,7 +27,6 @@ from typing import Any
 
 from workers.pdfmathtranslate import (
     BABELDOC_VERSION,
-    GLOSSARY_FILENAME,
     PDFMATHTRANSLATE_VERSION,
 )
 from workers.pdfmathtranslate.events import EventWriter, stage_group
@@ -93,6 +96,10 @@ def _build_settings(job: Job):
             output=str(job.output_dir),
             qps=job.qps,
             glossaries=str(job.glossary_path) if job.glossary_path else None,
+            # The extractor's LLM sweep runs before translating and costs more
+            # than the translation itself; the backend learns terms from the
+            # finished manifest instead, off the operator's wait path.
+            no_auto_extract_glossary=True,
         ),
         pdf=PDFSettings(
             no_mono=no_mono,
@@ -142,7 +149,6 @@ def _translate(job: Job, writer: EventWriter):
 
     config = _build_config(job)
     _suppress_debug_annotations()
-    _keep_user_glossary_in_translation()
 
     def on_progress(**event: Any) -> None:
         kind = str(event.get("type") or "")
@@ -210,35 +216,6 @@ def _suppress_debug_annotations() -> None:
     AddDebugInformation.process = turn_debug_off
 
 
-def _keep_user_glossary_in_translation() -> None:
-    """Translate with the operator's glossary AND the auto-extracted one.
-
-    BabelDOC 0.6.2 replaces every user glossary with the auto-extracted one
-    whenever term extraction succeeds, so the curated CSV the job carries
-    would never reach the translator. The patch makes translation see both:
-    the operator's glossary always, plus the auto-extracted entries it does
-    not already define — on a conflict the curated rendering wins.
-    """
-    from babeldoc.format.pdf.translation_config import SharedContextCrossSplitPart
-    from babeldoc.glossary import Glossary
-
-    def user_glossary_wins(self, auto_extract_enabled: bool) -> list:
-        with self._lock:
-            glossaries = list(self.user_glossaries)
-            auto = self.auto_extracted_glossary
-            if auto:
-                extra = [
-                    entry
-                    for entry in auto.entries
-                    if Glossary.normalize_source(entry.source) not in self.norm_terms
-                ]
-                if extra:
-                    glossaries.append(Glossary(name=auto.name, entries=extra))
-            return glossaries
-
-    SharedContextCrossSplitPart.get_glossaries_for_translation = user_glossary_wins
-
-
 def _mono_pdf(result) -> Path:
     """The translated PDF to publish, preferring the watermark-free output."""
     for attribute in ("no_watermark_mono_pdf_path", "mono_pdf_path"):
@@ -294,44 +271,6 @@ def _publish_debug(job: Job, debug_dir: Path) -> dict:
     return {"debug_files": copied}
 
 
-def _publish_glossary(job: Job, result, config) -> Path | None:
-    """Persist the terms the translator extracted, when it extracted any."""
-    source = getattr(result, "auto_extracted_glossary_path", None)
-    if source and Path(source).is_file():
-        target = job.extraction_dir / GLOSSARY_FILENAME
-        shutil.copyfile(Path(source), target)
-        return target
-    glossary = getattr(
-        getattr(config, "shared_context_cross_split_part", None),
-        "auto_extracted_glossary",
-        None,
-    )
-    if glossary is None or not getattr(glossary, "entries", None):
-        return None
-    target = job.extraction_dir / GLOSSARY_FILENAME
-    target.write_text(glossary.to_csv(), encoding="utf-8-sig")
-    return target
-
-
-def _read_glossary(path: Path | None) -> list[dict]:
-    """The manifest carries the glossary as rows, not as a file reference."""
-    if path is None or not path.is_file():
-        return []
-    import csv
-
-    entries: list[dict] = []
-    try:
-        with path.open(encoding="utf-8-sig", newline="") as handle:
-            for row in csv.DictReader(handle):
-                source = str(row.get("source") or "").strip()
-                target = str(row.get("target") or "").strip()
-                if source and target:
-                    entries.append({"source": source, "target": target})
-    except (OSError, UnicodeError, ValueError):
-        return []
-    return entries
-
-
 def run(job: Job, writer: EventWriter) -> dict:
     """Execute the job and return the payload of the ``finish`` event."""
     if not job.input_pdf.is_file():
@@ -343,7 +282,7 @@ def run(job: Job, writer: EventWriter) -> dict:
 
     logger.info("worker job %s: %s", job.job_id, job.input_pdf.name)
     try:
-        result, config = _translate(job, writer)
+        result, _config = _translate(job, writer)
 
         translated = _mono_pdf(result)
         target = job.translated_pdf
@@ -353,8 +292,6 @@ def run(job: Job, writer: EventWriter) -> dict:
         dual_target = _publish_dual(job, result)
 
         debug_dir = job.babeldoc_work_dir / job.input_pdf.stem
-
-        glossary_path = _publish_glossary(job, result, config)
 
         mode_label = (
             f"PDFMathTranslate-next {PDFMATHTRANSLATE_VERSION} · "
@@ -376,7 +313,6 @@ def run(job: Job, writer: EventWriter) -> dict:
                 "output_mode": job.output_mode,
                 "no_watermark": job.no_watermark,
             },
-            glossary=_read_glossary(glossary_path),
         )
         write_manifest(job.manifest_path, manifest)
         debug_info = _publish_debug(job, debug_dir)
@@ -390,7 +326,6 @@ def run(job: Job, writer: EventWriter) -> dict:
         "no_watermark_mono_pdf_path": str(
             getattr(result, "no_watermark_mono_pdf_path", "") or ""
         ),
-        "glossary_path": str(glossary_path) if glossary_path else "",
         "dual_pdf": str(dual_target) if dual_target else "",
         "manifest_path": str(job.manifest_path),
         "debug_dir": str(job.extraction_dir / "debug"),

@@ -57,3 +57,11 @@ def configure_provider(monkeypatch):
         app_settings.update_settings(**values)
 
     return _configure
+
+
+@pytest.fixture(autouse=True)
+def no_background_term_extraction(monkeypatch):
+    """A finished document spawns a background LLM pass; tests stay offline."""
+    from app.services import document_pipeline
+
+    monkeypatch.setattr(document_pipeline, "schedule_extraction", lambda **kwargs: None)
