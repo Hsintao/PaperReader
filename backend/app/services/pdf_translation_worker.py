@@ -87,6 +87,9 @@ def _unbracket_ipv6(value: str) -> str:
 def worker_environment() -> dict[str, str]:
     """The environment a worker process is started with."""
     environment = {**os.environ, "PYTHONPATH": str(bundle_root())}
+    # A frozen app boots with PYTHONHOME aimed at its own bundled stdlib; the
+    # worker is a different interpreter and would die looking for ``encodings``.
+    environment.pop("PYTHONHOME", None)
     for name in ("NO_PROXY", "no_proxy"):
         value = environment.get(name)
         if value:

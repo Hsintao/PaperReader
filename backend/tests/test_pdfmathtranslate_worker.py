@@ -30,6 +30,7 @@ from app.services.pdf_translation_worker import (
     require_worker_ready,
     run_worker,
     worker_command,
+    worker_environment,
 )
 
 
@@ -280,6 +281,12 @@ def test_a_configured_interpreter_passes_the_readiness_check(monkeypatch):
     monkeypatch.setattr(settings, "pdfmathtranslate_python", sys.executable)
 
     require_worker_ready()
+
+
+def test_worker_environment_drops_a_frozen_apps_pythonhome(monkeypatch, tmp_path):
+    monkeypatch.setenv("PYTHONHOME", str(tmp_path))
+
+    assert "PYTHONHOME" not in worker_environment()
 
 
 def test_event_reading_keeps_json_objects_and_skips_everything_else():
