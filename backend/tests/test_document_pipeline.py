@@ -172,6 +172,42 @@ def test_a_run_without_a_worker_glossary_registers_only_the_manifest(
     assert any(item.kind == MANIFEST_KIND for item in result.artifacts)
 
 
+def test_a_finished_run_publishes_no_annotated_pdf_by_default(
+    isolated_storage, monkeypatch, tmp_path
+):
+    _stub_worker(monkeypatch, tmp_path)
+    record = create_document_record(_write_pdf(tmp_path / "paper.pdf"))
+
+    result = _run(record)
+
+    assert result.status == "done"
+    assert [item.kind for item in result.artifacts if item.kind == "annotated_pdf"] == []
+    assert any("reading preference off" in line for line in result.logs)
+
+
+def test_a_finished_run_publishes_the_annotated_pdf_when_the_preference_is_on(
+    isolated_storage, monkeypatch, tmp_path
+):
+    from app.services import app_settings
+
+    app_settings.update_settings(
+        api_key="test-key",
+        base_url="https://llm.example/v1",
+        model="test-model",
+        show_annotated_pdf=True,
+    )
+    _stub_worker(monkeypatch, tmp_path)
+    record = create_document_record(_write_pdf(tmp_path / "paper.pdf"))
+
+    result = _run(record)
+
+    annotated = next(
+        (item for item in result.artifacts if item.kind == "annotated_pdf"), None
+    )
+    assert annotated is not None
+    assert Path(annotated.path).is_file()
+
+
 def test_worker_progress_events_drive_the_document_stages(isolated_storage, tmp_path):
     record = create_document_record(_write_pdf(tmp_path / "paper.pdf"))
     init_stages(record)

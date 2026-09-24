@@ -28,7 +28,7 @@ from app.models.store import (
 )
 from app.services.alignment_service import save_exact_alignment
 from app.services.annotation_render import ANNOTATION_REVISION, render_annotated_pdf
-from app.services.app_settings import AppSettings
+from app.services.app_settings import AppSettings, load_settings
 from app.services.document_ir import Block, Title
 from app.services.document_manifest import (
     DocumentManifest,
@@ -609,6 +609,12 @@ def _build_reader_state(
                 f"Saved {len(pairs)} exact bilingual alignment segments"
             )
 
-    _publish_annotated_pdf(record, manifest.blocks, manifest.pages, output_dir)
+    # Annotation is opt-in: rendering it for every document would slow the
+    # pipeline for a view most readers never open. Turning the preference on
+    # later builds the file on demand in the reader.
+    if load_settings().show_annotated_pdf:
+        _publish_annotated_pdf(record, manifest.blocks, manifest.pages, output_dir)
+    else:
+        record.logs.append("Annotated PDF skipped: reading preference off")
     save_document(record)
     return display_title

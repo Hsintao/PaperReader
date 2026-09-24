@@ -1167,7 +1167,7 @@ cp .env.example .env
 
 manifest 契约：worker 把 BabelDOC 的调试布局（`paragraph_finder.json`、`add_debug_information.json`、`il_translated.json`）转换成 `extraction/manifest.json`，schema 为 `paperreader-manifest-v1`，并用 `boxes_normalized: false` 声明坐标是 PDF 用户空间的点（原点在页面左下角）。内容包括：每页的 `width` / `height` 与按阅读顺序排列的区块；区块的 `kind`（`title` / `paragraph` / `list` / `formula` / `figure` / `table`）、`bbox`、`layout_label`、`source_text`、`translated_text`、`protected_spans`（URL、引用、行内公式、数字）、`fragment_id` / `logical_id` / `fragments`，图/表的 `captions` 与 `caption_bbox`，表格的 `table_html` 与单元格；顶层的 `figures`、`tables`、`references`、`logical_objects`（逻辑对象 id → 片段 id 列表，按阅读顺序）与 `glossary`（翻译器抽取的术语）。每个区块是一个物理片段，`logical_id` 指向它所属的上游布局区域；BabelDOC 的布局区域编号逐页从 1 开始，因此逻辑对象 id 带页码前缀（如 `p0-l7`），跨页重号不会被合并。`app/services/document_manifest.py` 是唯一读取方，由它生成 IR、页面几何、目录、图表、参考文献与对齐对；下游不读 BabelDOC 的内部 JSON。
 
-产物布局：`outputs/<document_id>/` 下是译文 PDF `<源文件名>_Chinese_ver.pdf`、dual 模式下的 `<源文件名>_双语对照.pdf`、`original.pdf`、`<源文件名>_原文标注.pdf`、`alignment.json`，以及 `extraction/manifest.json`、`extraction/glossary.csv`（术语表非空时才有）和可选的 `extraction/debug/`。
+产物布局：`outputs/<document_id>/` 下是译文 PDF `<源文件名>_Chinese_ver.pdf`、dual 模式下的 `<源文件名>_双语对照.pdf`、`original.pdf`、`alignment.json`，以及 `extraction/manifest.json`、`extraction/glossary.csv`（术语表非空时才有）和可选的 `extraction/debug/`。`<源文件名>_原文标注.pdf` 只在「阅读偏好」开启原文标注时生成；偏好默认关闭，开启后阅读器会在打开旧文档时按需补建。
 
 ## 19.4 本地运行
 

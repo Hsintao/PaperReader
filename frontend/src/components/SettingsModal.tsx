@@ -43,10 +43,11 @@ export function SettingsModal({ open, settings, onClose, onSettingsChange }: Pro
 
   // Seed the working copies when the dialog opens. Saving updates `settings`
   // too, so depending on it here would reset the active tab and drop the
-  // confirmation right after a save.
+  // confirmation right after a save. The dialog always opens on the provider
+  // settings, which is where model configuration lives.
   useEffect(() => {
     if (!open) return
-    setTab(settings.api_key_configured ? 'reading' : 'providers')
+    setTab('providers')
     setReading(settings)
     setDomain(settings.translation_domain)
     setProviders(providerDraft(settings))
