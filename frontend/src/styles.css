@@ -1293,6 +1293,9 @@ textarea { resize: vertical; }
 .profile-section.borderless { border: 0; background: transparent; padding: 0; }
 .align-start { align-self: flex-start; }
 .eyebrow { color: var(--accent); font-size: 11px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field > span { font-size: 12px; font-weight: 500; color: var(--text-soft); }
+.field > input, .field > select { width: 100%; }
 .field-grid { display: grid; gap: 12px; }
 .field-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .field-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
