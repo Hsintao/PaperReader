@@ -52,7 +52,7 @@ RUNTIME_PACKAGES=(pypdfium2 pypdfium2_raw)
 for RUNTIME_PACKAGE in "${RUNTIME_PACKAGES[@]}"; do
   cp -R "$PYTHON_SITE/$RUNTIME_PACKAGE" "$PYTHON_LIB/$RUNTIME_PACKAGE"
 done
-RUNTIME_LIBS=(libffi.8.dylib libbz2.dylib libcrypto.3.dylib libexpat.1.dylib libncursesw.6.dylib libsqlite3.0.dylib libssl.3.dylib libz.1.dylib libicudata.78.dylib libicui18n.78.dylib libicuuc.78.dylib)
+RUNTIME_LIBS=(libffi.8.dylib libbz2.dylib libcrypto.3.dylib libexpat.1.dylib libncursesw.6.dylib libsqlite3.0.dylib libsqlite3.dylib libssl.3.dylib libz.1.dylib libicudata.78.dylib libicui18n.78.dylib libicuuc.78.dylib)
 for RUNTIME_LIB in "${RUNTIME_LIBS[@]}"; do
   if [[ -f "$PYTHON_PREFIX/lib/$RUNTIME_LIB" ]]; then
     cp "$PYTHON_PREFIX/lib/$RUNTIME_LIB" "$FRAMEWORKS/$RUNTIME_LIB"
