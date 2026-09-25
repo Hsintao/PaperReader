@@ -87,6 +87,31 @@ if (Test-Path -LiteralPath $Target) { Remove-Item -LiteralPath $Target -Recurse 
 Copy-Item -LiteralPath $WorkerRuntime -Destination $Target -Recurse -Force
 Write-Host "Bundled standalone worker runtime"
 
+# Slim the bundled copy. The worker only ever runs `python -m
+# workers.pdfmathtranslate`, so this drops what that entry point never loads:
+# pdf2zh_next's gradio GUI (which also pulls in pandas), pip and the console
+# scripts, debug symbols, bytecode caches, tkinter, the OpenCV video backend,
+# compiler headers/import libraries, and test suites shipped inside packages.
+$SitePackages = Join-Path $Target "Lib\site-packages"
+foreach ($Name in @("gradio", "gradio_client", "gradio_pdf", "pandas", "pip")) {
+    Get-ChildItem -Path $SitePackages -Directory -Filter "$Name*" |
+        Where-Object { $_.Name -eq $Name -or $_.Name -like "$Name-*.dist-info" } |
+        Remove-Item -Recurse -Force
+}
+foreach ($Rel in @("Scripts", "tcl", "include", "libs", "share",
+        "Lib\tkinter", "Lib\turtledemo", "Lib\turtle.py",
+        "DLLs\_tkinter.pyd", "DLLs\tcl86t.dll", "DLLs\tk86t.dll")) {
+    Remove-Item -LiteralPath (Join-Path $Target $Rel) -Recurse -Force -ErrorAction SilentlyContinue
+}
+Get-ChildItem -Path (Join-Path $SitePackages "cv2") -Filter "opencv_videoio_ffmpeg*.dll" | Remove-Item -Force
+Get-ChildItem -Path $Target -Recurse -Force -Filter "*.pdb" | Remove-Item -Force
+Get-ChildItem -Path $Target -Recurse -Force -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
+Get-ChildItem -Path $SitePackages -Recurse -Force -Directory |
+    Where-Object { $_.Name -in @("tests", "test") } |
+    Sort-Object { $_.FullName.Length } -Descending |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+Write-Host "Pruned bundled worker runtime"
+
 $ReleaseDir = Join-Path $ProjectRoot "release"
 New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
 $ZipPath = Join-Path $ReleaseDir "PaperReader-v$Version-Windows-x64.zip"
