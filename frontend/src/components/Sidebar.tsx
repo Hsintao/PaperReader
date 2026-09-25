@@ -19,6 +19,7 @@ import type {
   LibrarySearchHit,
 } from '../lib/api'
 import { getDocumentBibtex, searchLibrary } from '../lib/api'
+import { PdfFileIcon } from './PdfFileIcon'
 
 type Tab = 'tasks' | 'favorites'
 
@@ -226,7 +227,7 @@ export function Sidebar({
                   onClick={() => onSearchLocate(hit)}
                   title={hit.snippet}
                 >
-                  <div className="doc-icon"><FileText size={18} /></div>
+                  <div className="doc-icon"><PdfFileIcon size={18} /></div>
                   <div className="doc-meta">
                     <div className="doc-name">{hit.document_title}</div>
                     <div className="doc-sub">
@@ -262,7 +263,7 @@ export function Sidebar({
                 }}
               >
                 <div className="doc-icon">
-                  <FileText size={20} />
+                  <PdfFileIcon size={20} />
                 </div>
                 <div className="doc-meta">
                   <div className="doc-name" title={doc.source_filename}>{displayName}</div>
