@@ -40,7 +40,8 @@ export type DownloadItem = {
   name?: string
 }
 
-type Props = {
+export type PdfPaneProps = {
+  active?: boolean
   title: string
   pdfUrl?: string
   downloads?: DownloadItem[]
@@ -92,7 +93,8 @@ const OVERLAY_CLASSES = [
 
 const ANNOTATION_COLORS = ['yellow', 'green', 'blue', 'pink']
 
-export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
+export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane({
+  active = true,
   title,
   pdfUrl,
   downloads,
@@ -105,7 +107,8 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
   initialPosition,
   onProgressChange,
   onActivate
-}: Props, ref) {
+}: PdfPaneProps, ref) {
+  const loadTimingRef = useRef({ start: performance.now(), loaded: 0, rendered: false })
   const containerRef = useRef<HTMLDivElement | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const pageRefs = useRef<Array<HTMLDivElement | null>>([])
@@ -175,11 +178,15 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
     return () => observer.disconnect()
   }, [])
 
+  useEffect(() => {
+    if (!active) setSelectionMenu(null)
+  }, [active])
+
   const { getPageText } = usePageText({ docRef: pdfDocumentRef, activeKey: pdfUrl || '' })
 
   const updateRenderRange = () => {
     const scroller = scrollRef.current
-    if (!scroller || mode !== 'scroll' || !numPages) return
+    if (!active || !scroller || mode !== 'scroll' || !numPages) return
     const top = scroller.scrollTop - 700
     const bottom = scroller.scrollTop + scroller.clientHeight + 700
     let first = numPages
@@ -201,6 +208,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
   }
 
   const search = usePdfSearch({
+    active,
     getPageText,
     numPages,
     goto: (page) => {
@@ -220,6 +228,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
   })
 
   useEffect(() => {
+    loadTimingRef.current = { start: performance.now(), loaded: 0, rendered: false }
     setPageNumber(1)
     setNumPages(0)
     setScale(1.0)
@@ -247,10 +256,10 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
 
   useEffect(() => {
     const el = containerRef.current
-    if (!el) return
+    if (!el || !active) return
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        setContainerWidth(Math.max(200, entry.contentRect.width - 24))
+        if (entry.contentRect.width > 0) setContainerWidth(Math.max(200, entry.contentRect.width - 24))
       }
     })
     ro.observe(el)
@@ -258,7 +267,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
     // The .pdf-body element only exists once a URL is set; on a fresh load the
     // first mount renders the empty branch, so the observer must re-attach
     // when the PDF actually appears (otherwise fit-width stays broken).
-  }, [pdfUrl])
+  }, [pdfUrl, active])
 
   useEffect(() => {
     scaleRef.current = scale
@@ -270,6 +279,9 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
   const fileOpts = useMemo(() => (pdfUrl ? { url: pdfUrl, withCredentials: true } : null), [pdfUrl])
 
   async function onDocumentLoadSuccess(doc: any) {
+    loadTimingRef.current.loaded = performance.now()
+    performance.clearMeasures('paperreader:pdf-load')
+    performance.measure('paperreader:pdf-load', { start: loadTimingRef.current.start, end: loadTimingRef.current.loaded })
     pdfDocumentRef.current = doc
     setNumPages(doc.numPages)
     pageRefs.current = new Array(doc.numPages).fill(null)
@@ -455,9 +467,9 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
   }
 
   async function handleCanvasRendered(page: number, pdfPage: PDFPageProxy) {
-    if (!darkModeRef.current) return
     const canvas = pageRefs.current[page - 1]?.querySelector('canvas')
     if (!canvas) return
+    if (darkModeRef.current) {
     const { width, height } = canvas
     const baseViewport = pdfPage.getViewport({ scale: 1 })
     const renderScale = scale * (containerWidth ? containerWidth / baseViewport.width : 1)
@@ -466,6 +478,13 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
     if (!darkModeRef.current || pageRefs.current[page - 1]?.querySelector('canvas') !== canvas
       || canvas.width !== width || canvas.height !== height) return
     applyDarkPageFilter(canvas, getImageTransforms(operators, viewport.transform))
+    }
+    const timing = loadTimingRef.current
+    if (active && page === pageNumber && timing.loaded && !timing.rendered) {
+      timing.rendered = true
+      performance.clearMeasures('paperreader:first-page-render')
+      performance.measure('paperreader:first-page-render', { start: timing.loaded })
+    }
   }
 
   function whenPageRendered(page: number): Promise<void> {
@@ -622,7 +641,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
   // top; the same handler drives virtualization and reading-progress
   // reporting.
   useEffect(() => {
-    if (mode !== 'scroll' || !numPages) return
+    if (!active || mode !== 'scroll' || !numPages) return
     const scroller = scrollRef.current
     if (!scroller) return
 
@@ -665,19 +684,19 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, numPages, onProgressChange])
+  }, [active, mode, numPages, onProgressChange])
 
   // Recompute the rendered window when layout geometry changes without a
   // user scroll (document load, zoom, pane resize).
   useLayoutEffect(() => {
     updateRenderRange()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [numPages, mode, scale, containerWidth, ratioTick])
+  }, [active, numPages, mode, scale, containerWidth, ratioTick])
 
   // Restore the saved reading position once, after the page wrappers have
   // deterministic sizes.
   useLayoutEffect(() => {
-    if (restoredPositionRef.current || !numPages || !initialPosition) return
+    if (!active || restoredPositionRef.current || !numPages || !initialPosition) return
     if (!initialPosition.page && !initialPosition.ratio) {
       restoredPositionRef.current = true
       return
@@ -702,7 +721,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
       isProgrammaticScrollRef.current = false
     }, 400)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [numPages, mode, initialPosition, ratioTick])
+  }, [active, numPages, mode, initialPosition, ratioTick])
 
   // Repaint overlays when the annotation set changes (create/delete/sync).
   useEffect(() => {
@@ -737,7 +756,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
 
   if (!pdfUrl) {
     return (
-      <div className="pdf-pane">
+      <div className="pdf-pane" hidden={!active}>
         <div className="pdf-toolbar">
           <div className="pdf-title">{title}</div>
         </div>
@@ -786,6 +805,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
   return (
     <div
       className="pdf-pane"
+      hidden={!active}
       onMouseDownCapture={() => onActivate?.()}
     >
       <div className="pdf-toolbar">

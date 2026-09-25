@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertCircle, PanelLeftOpen, UploadCloud } from 'lucide-react'
-import { PdfPane } from '../components/PdfPane'
-import type { AnnotationItem, PdfPaneHandle } from '../components/PdfPane'
+import { PdfPaneCache, type CachedPane } from '../components/PdfPaneCache'
+import type { AnnotationItem, PdfPaneHandle, PdfPaneProps } from '../components/PdfPane'
 import type { UserSettings } from '../lib/api'
 import { ProgressBar } from '../components/ProgressBar'
 import { SettingsModal } from '../components/SettingsModal'
@@ -52,12 +52,15 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
   const [pollRevision, setPollRevision] = useState(0)
   const [annotations, setAnnotations] = useState<AnnotationItem[]>([])
   const [pendingLocate, setPendingLocate] = useState<PendingLocate>(null)
+  const [visitOrder, setVisitOrder] = useState<string[]>([])
+  const [revisions, setRevisions] = useState<Record<string, number>>({})
 
   const pollTimerRef = useRef<number | null>(null)
   const paneRef = useRef<PdfPaneHandle | null>(null)
   const emptyUploadRef = useRef<HTMLInputElement | null>(null)
   const annotatedRequestRef = useRef<string | null>(null)
   const mergedRequestRef = useRef<string | null>(null)
+  const prewarmRequestedRef = useRef<Set<string>>(new Set())
 
   useEffect(() => {
     setTheme(settings.theme)
@@ -157,11 +160,12 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
   }, [activeId, pollRevision])
 
   const activeDoc: DocumentStatus | undefined = activeId ? docCache[activeId] : undefined
-  const translatedPdfUrl = activeDoc?.translated_pdf_url ? makeDataUrl(activeDoc.translated_pdf_url) : undefined
-  const annotatedPdfUrl = activeDoc?.annotated_pdf_url ? makeDataUrl(activeDoc.annotated_pdf_url) : undefined
-  const mergedPdfUrl = activeDoc?.merged_pdf_url ? makeDataUrl(activeDoc.merged_pdf_url) : undefined
-  const showAnnotated = settings.show_annotated_pdf && Boolean(annotatedPdfUrl)
-  const panePdfUrl = showAnnotated ? annotatedPdfUrl : mergedPdfUrl
+
+  // Most-recently-used order drives which readers stay mounted in the cache.
+  useEffect(() => {
+    if (!activeId) return
+    setVisitOrder((prev) => [...prev.filter((id) => id !== activeId), activeId])
+  }, [activeId])
 
   // Documents parsed before annotation existed have no artifact yet; build it
   // once from their cached parse when the preference is on.
@@ -211,6 +215,7 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
         item.document_id === activeId ? { ...item, status: 'queued' } : item
       )))
       setPollRevision((value) => value + 1)
+      setRevisions((prev) => ({ ...prev, [activeId]: (prev[activeId] || 0) + 1 }))
     } catch (error: any) {
       setNotice(`重试失败：${error?.message ?? String(error)}`)
     } finally {
@@ -245,6 +250,7 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
           : cache[documentId]
       }))
       if (documentId === activeId) setPollRevision((value) => value + 1)
+      setRevisions((prev) => ({ ...prev, [documentId]: (prev[documentId] || 0) + 1 }))
     } catch (error: any) {
       setNotice(`重新处理失败：${error?.message ?? String(error)}`)
     }
@@ -299,11 +305,6 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
   const handleExportNotes = useCallback(() => {
     if (!activeId) return
     void downloadNotes(activeId).catch((e: any) => setNotice(`导出笔记失败：${e?.message ?? String(e)}`))
-  }, [activeId])
-
-  const handleProgressChange = useCallback((page: number, ratio: number) => {
-    if (!activeId) return
-    void updateReadingProgress(activeId, page, ratio).catch(() => {})
   }, [activeId])
 
   // Ctrl/Cmd+F opens in-document search.
@@ -362,6 +363,69 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
       pageCount: 1,
     })
   }, [pendingLocate, activeDoc, handleLocateCounterpart])
+
+  // Every document with fetched status gets renderable pane props; the cache
+  // below keeps the active one plus the most recent retained ones mounted.
+  // Callbacks close over their own document id, so an inactive pane still
+  // reports reading progress to the right document.
+  const buildPane = useCallback((doc: DocumentStatus): PdfPaneProps => {
+    const docId = doc.document_id
+    const filename = doc.source_filename || 'document.pdf'
+    const annotatedUrl = doc.annotated_pdf_url ? makeDataUrl(doc.annotated_pdf_url) : undefined
+    const mergedUrl = doc.merged_pdf_url ? makeDataUrl(doc.merged_pdf_url) : undefined
+    const showAnnotated = settings.show_annotated_pdf && Boolean(annotatedUrl)
+    const isActive = docId === activeId
+    return {
+      title: showAnnotated ? `原文标注 · ${doc.source_filename || docId}` : `对照 · ${mergedPdfName(filename)}`,
+      pdfUrl: showAnnotated ? annotatedUrl : mergedUrl,
+      downloads: [
+        { title: '下载译文 PDF', label: '译文', href: doc.translated_pdf_url ? makeDataUrl(doc.translated_pdf_url) : undefined, name: translatedPdfName(filename) },
+        { title: '下载双语对照 PDF', label: '双语', href: mergedUrl, name: mergedPdfName(filename) }
+      ],
+      counterpartLabel: '对应内容',
+      onLocateCounterpart: isActive ? (payload) => void handleLocateCounterpart('original', payload) : undefined,
+      annotations: isActive ? annotations : [],
+      onCreateAnnotation: isActive ? handleCreateAnnotation : undefined,
+      onDeleteAnnotation: isActive ? handleDeleteAnnotation : undefined,
+      onExportNotes: isActive ? handleExportNotes : undefined,
+      initialPosition: { page: doc.last_read_page, ratio: doc.last_read_ratio },
+      onProgressChange: (page, ratio) => { void updateReadingProgress(docId, page, ratio).catch(() => {}) }
+    }
+  }, [activeId, annotations, settings.show_annotated_pdf, handleLocateCounterpart, handleCreateAnnotation, handleDeleteAnnotation, handleExportNotes])
+
+  const panes = useMemo(() => {
+    const map: Record<string, CachedPane> = {}
+    for (const [id, doc] of Object.entries(docCache)) {
+      map[id] = { revision: revisions[id] || 0, pane: buildPane(doc) }
+    }
+    if (activeId && !map[activeId]) {
+      map[activeId] = { revision: revisions[activeId] || 0, pane: { title: '', counterpartLabel: '对应内容' } }
+    }
+    return map
+  }, [docCache, buildPane, revisions, activeId])
+
+  const retainedIds = useMemo(() => {
+    const visited = visitOrder.filter((id) => id !== activeId && panes[id]).slice(-2)
+    const prewarm = summaries
+      .filter((s) => s.status === 'done' && s.document_id !== activeId && !visited.includes(s.document_id) && panes[s.document_id]?.pane.pdfUrl)
+      .slice(0, Math.max(0, 2 - visited.length))
+      .map((s) => s.document_id)
+    return [...prewarm, ...visited]
+  }, [visitOrder, activeId, panes, summaries])
+
+  // Warm the pane cache for the first few finished papers: once their status
+  // is fetched they become renderable, get mounted hidden, and the first
+  // switch to them is already warm.
+  useEffect(() => {
+    for (const s of summaries) {
+      if (prewarmRequestedRef.current.size >= 3) return
+      if (s.status !== 'done' || s.document_id === activeId || prewarmRequestedRef.current.has(s.document_id)) continue
+      prewarmRequestedRef.current.add(s.document_id)
+      void getDocumentStatus(s.document_id)
+        .then((d) => setDocCache((c) => ({ ...c, [d.document_id]: d })))
+        .catch((e) => console.error(e))
+    }
+  }, [summaries, activeId])
 
   const handleUpload = useCallback(async (file: File) => {
     setUploading(true)
@@ -442,15 +506,6 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
 
   const stages = activeDoc?.stages ?? []
 
-  const annotatedTitle = useMemo(() => {
-    if (!activeDoc) return '原文标注'
-    return `原文标注 · ${activeDoc.source_filename || activeDoc.document_id}`
-  }, [activeDoc])
-
-  const translatedName = translatedPdfName(activeDoc?.source_filename || 'document.pdf')
-  const mergedName = mergedPdfName(activeDoc?.source_filename || 'document.pdf')
-  const mergedTitle = `对照 · ${mergedName}`
-
   return (
     <div className="app-shell">
       {notice && <div className="app-notice" role="alert"><AlertCircle size={16} /><span>{notice}</span><button aria-label="关闭提示" onClick={() => setNotice(null)}>×</button></div>}
@@ -517,22 +572,11 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
             {!settings.api_key_configured && <button className="config-callout" onClick={() => setSettingsOpen(true)}><AlertCircle size={16} />开始前需要配置 AI 服务</button>}
           </div>
         ) : (
-          <PdfPane
+          <PdfPaneCache
             ref={paneRef}
-            title={showAnnotated ? annotatedTitle : mergedTitle}
-            pdfUrl={panePdfUrl}
-            downloads={[
-              { title: '下载译文 PDF', label: '译文', href: translatedPdfUrl, name: translatedName },
-              { title: '下载双语对照 PDF', label: '双语', href: mergedPdfUrl, name: mergedName }
-            ]}
-            counterpartLabel="对应内容"
-            onLocateCounterpart={(payload) => void handleLocateCounterpart('original', payload)}
-            annotations={annotations}
-            onCreateAnnotation={handleCreateAnnotation}
-            onDeleteAnnotation={handleDeleteAnnotation}
-            onExportNotes={handleExportNotes}
-            initialPosition={activeDoc ? { page: activeDoc.last_read_page, ratio: activeDoc.last_read_ratio } : null}
-            onProgressChange={handleProgressChange}
+            activeId={activeId}
+            panes={panes}
+            retainedIds={retainedIds}
           />
         )}
       </main>

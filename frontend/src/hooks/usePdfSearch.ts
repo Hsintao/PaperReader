@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { normalized, type Match } from '../lib/pdfText'
 
 type Options = {
+  active?: boolean
   getPageText: (page: number) => Promise<string>
   numPages: number
   goto: (page: number) => void
@@ -13,7 +14,7 @@ const MAX_MATCHES = 500
 // Whole-document find (Ctrl+F).  Matches are computed over the cached page
 // texts and painted by the pane's overlay pass; navigation jumps to the page
 // holding the current match.
-export function usePdfSearch({ getPageText, numPages, goto, onRepaint }: Options) {
+export function usePdfSearch({ active = true, getPageText, numPages, goto, onRepaint }: Options) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [matches, setMatches] = useState<Match[]>([])
@@ -96,7 +97,7 @@ export function usePdfSearch({ getPageText, numPages, goto, onRepaint }: Options
   // Escape closes; the browser find is suppressed by the ReaderPage-level
   // Ctrl/Cmd+F handler, so no extra interception here.
   useEffect(() => {
-    if (!open) return
+    if (!active || !open) return
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.stopPropagation()
@@ -111,7 +112,7 @@ export function usePdfSearch({ getPageText, numPages, goto, onRepaint }: Options
     }
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
-  }, [closeSearch, open, step])
+  }, [active, closeSearch, open, step])
 
   return {
     open,

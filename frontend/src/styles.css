@@ -552,7 +552,9 @@ textarea { resize: vertical; }
   box-shadow: var(--shadow-sm);
   border: 1px solid var(--border);
 }
-/* The reader's single pane is a direct child of the workspace column. */
+.pdf-pane[hidden] { display: none; }
+
+/* Cached readers keep the same workspace sizing when activated. */
 .workspace > .pdf-pane {
   flex: 1 1 auto;
   min-height: 0;
