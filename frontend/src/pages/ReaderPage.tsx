@@ -6,6 +6,7 @@ import type { UserSettings } from '../lib/api'
 import { ProgressBar } from '../components/ProgressBar'
 import { SettingsModal } from '../components/SettingsModal'
 import { Sidebar } from '../components/Sidebar'
+import { isCurrentDocument } from '../lib/requestGuard'
 import type { DocumentStatus, DocumentSummary } from '../lib/api'
 import {
   cancelDocument,
@@ -30,7 +31,7 @@ import {
   uploadFile
 } from '../lib/api'
 
-type PendingLocate = { text: string; side: 'original' | 'translated' } | null
+type PendingLocate = { documentId: string; text: string; side: 'original' | 'translated' } | null
 
 type Props = {
   settings: UserSettings
@@ -61,6 +62,10 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
   const annotatedRequestRef = useRef<string | null>(null)
   const mergedRequestRef = useRef<string | null>(null)
   const prewarmRequestedRef = useRef<Set<string>>(new Set())
+  // Async handlers compare against the document that is active when they
+  // resolve, not the one their callback was created with.
+  const activeIdRef = useRef(activeId)
+  activeIdRef.current = activeId
 
   useEffect(() => {
     setTheme(settings.theme)
@@ -258,7 +263,9 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
 
   useEffect(() => {
     setAnnotations([])
-    setPendingLocate(null)
+    // A search hit sets the new active id and its pending locate together, so
+    // only a locate naming another document is dropped when the reader switches.
+    setPendingLocate((prev) => (prev && prev.documentId !== activeId ? null : prev))
   }, [activeId])
 
   // Annotations are per-document; reload them whenever the active document
@@ -277,30 +284,38 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
     note: string
     positionRatio: number
   }) => {
-    if (!activeId) return
+    const docId = activeIdRef.current
+    if (!docId) return
     try {
-      await createAnnotation(activeId, {
+      await createAnnotation(docId, {
         page: payload.page,
         quote: payload.quote,
         color: payload.color,
         note: payload.note,
         position_ratio: payload.positionRatio
       })
-      setAnnotations(await listAnnotations(activeId))
+      if (!isCurrentDocument(docId, activeIdRef.current)) return
+      const items = await listAnnotations(docId)
+      if (!isCurrentDocument(docId, activeIdRef.current)) return
+      setAnnotations(items)
     } catch (e: any) {
+      if (!isCurrentDocument(docId, activeIdRef.current)) return
       setNotice(`批注保存失败：${e?.message ?? String(e)}`)
     }
-  }, [activeId])
+  }, [])
 
   const handleDeleteAnnotation = useCallback(async (id: string) => {
-    if (!activeId) return
+    const docId = activeIdRef.current
+    if (!docId) return
     try {
-      await deleteAnnotation(activeId, id)
+      await deleteAnnotation(docId, id)
+      if (!isCurrentDocument(docId, activeIdRef.current)) return
       setAnnotations((prev) => prev.filter((item) => item.id !== id))
     } catch (e: any) {
+      if (!isCurrentDocument(docId, activeIdRef.current)) return
       setNotice(`批注删除失败：${e?.message ?? String(e)}`)
     }
-  }, [activeId])
+  }, [])
 
   const handleExportNotes = useCallback(() => {
     if (!activeId) return
@@ -324,10 +339,11 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
     sourceSide: 'original' | 'translated',
     payload: { selectedText: string; page: number; pageCount: number }
   ) => {
-    if (!activeId) return
+    const docId = activeIdRef.current
+    if (!docId) return
     const fallbackSide = sourceSide === 'original' ? 'translated' : 'original'
     const locate = (side: 'original' | 'translated') => locateCounterpart({
-      documentId: activeId,
+      documentId: docId,
       source_side: side,
       selected_text: payload.selectedText,
       source_page: payload.page,
@@ -340,21 +356,27 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
       try {
         located = await locate(fallbackSide)
       } catch (e: any) {
-        alert(`未能定位对应内容：${e?.message ?? String(e)}`)
+        if (isCurrentDocument(docId, activeIdRef.current)) {
+          alert(`未能定位对应内容：${e?.message ?? String(e)}`)
+        }
         return
       }
     }
+    // The highlight belongs to the document the locate was requested for; the
+    // pane ref points at whatever is active now.
+    if (!isCurrentDocument(docId, activeIdRef.current)) return
     await paneRef.current?.locateAndHighlight({
       text: located.target_text,
       highlightText: located.highlight_text,
       positionRatio: located.position_ratio,
     })
-  }, [activeId])
+  }, [])
 
   // A library-search hit opens its document and highlights the matched text
-  // once the document is available.
+  // once that document is available.
   useEffect(() => {
-    if (!pendingLocate || !activeDoc || activeDoc.status !== 'done') return
+    if (!pendingLocate || pendingLocate.documentId !== activeId) return
+    if (!activeDoc || activeDoc.status !== 'done') return
     const { text, side } = pendingLocate
     setPendingLocate(null)
     void handleLocateCounterpart(side, {
@@ -362,7 +384,7 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
       page: 1,
       pageCount: 1,
     })
-  }, [pendingLocate, activeDoc, handleLocateCounterpart])
+  }, [pendingLocate, activeId, activeDoc, handleLocateCounterpart])
 
   // Every document with fetched status gets renderable pane props; the cache
   // below keeps the active one plus the most recent retained ones mounted.
@@ -464,7 +486,11 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
       return
     try {
       const result = await deleteDocument(docId)
+      // Only the deleted document's status is dropped; the document the reader
+      // is on now keeps its cached status even if the switch happened while the
+      // delete was in flight.
       setDocCache((prev) => {
+        if (!(docId in prev)) return prev
         const next = { ...prev }
         delete next[docId]
         return next
@@ -473,6 +499,7 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
       setFavorites(nextFavorites)
       void persistPreferences({ favorites: nextFavorites })
       setSummaries((prev) => prev.filter((item) => item.document_id !== docId))
+      // Clear the selection only while it still points at the deleted document.
       setActiveId((prev) => (prev === docId ? undefined : prev))
       // Surface a cleanup that could not finish instead of failing silently.
       const problems = (result?.removed ?? []).filter((line) => line.startsWith('could not'))
@@ -533,7 +560,7 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
           onRefreshStatus={refreshActive}
           onSearchLocate={(hit) => {
             if (hit.document_id !== activeId) setActiveId(hit.document_id)
-            setPendingLocate({ text: hit.snippet, side: hit.side })
+            setPendingLocate({ documentId: hit.document_id, text: hit.snippet, side: hit.side })
           }}
         />
       ) : (

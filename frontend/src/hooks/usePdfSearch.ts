@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { collectMatches } from '../lib/pdfSearch'
+import { isCurrentRequest, nextRequestId } from '../lib/requestGuard'
 import { normalized, type Match } from '../lib/pdfText'
 
 type Options = {
@@ -8,8 +10,6 @@ type Options = {
   goto: (page: number) => void
   onRepaint: () => void
 }
-
-const MAX_MATCHES = 500
 
 // Whole-document find (Ctrl+F).  Matches are computed over the cached page
 // texts and painted by the pane's overlay pass; navigation jumps to the page
@@ -22,35 +22,43 @@ export function usePdfSearch({ active = true, getPageText, numPages, goto, onRep
   const [searching, setSearching] = useState(false)
   const stateRef = useRef({ open, query, matches, current })
   stateRef.current = { open, query, matches, current }
+  // Every scan takes a fresh id; only the newest one may publish results, so a
+  // slow query can never overwrite the matches of the one typed after it.
+  const requestIdRef = useRef(0)
+
+  // A document change (page count reload) invalidates whatever is in flight.
+  useEffect(() => {
+    requestIdRef.current = nextRequestId(requestIdRef.current)
+    setSearching(false)
+  }, [numPages, getPageText])
+
+  useEffect(() => () => {
+    requestIdRef.current = nextRequestId(requestIdRef.current)
+  }, [])
 
   const run = useCallback(
     async (rawQuery: string) => {
       const needle = normalized(rawQuery)
+      const requestId = nextRequestId(requestIdRef.current)
+      requestIdRef.current = requestId
       if (!needle || !numPages) {
         setMatches([])
         setCurrent(0)
+        setSearching(false)
         onRepaint()
         return
       }
       setSearching(true)
-      try {
-        const found: Match[] = []
-        for (let page = 1; page <= numPages && found.length < MAX_MATCHES; page += 1) {
-          const text = await getPageText(page)
-          if (!text) continue
-          let at = text.indexOf(needle)
-          while (at >= 0 && found.length < MAX_MATCHES) {
-            found.push({ page, start: at, length: needle.length })
-            at = text.indexOf(needle, at + 1)
-          }
-        }
-        setMatches(found)
-        setCurrent(0)
-        onRepaint()
-        if (found.length) goto(found[0].page)
-      } finally {
-        setSearching(false)
-      }
+      const found = await collectMatches(needle, numPages, getPageText, () =>
+        isCurrentRequest(requestId, requestIdRef.current)
+      )
+      // A newer run (or an invalidation) owns the search state now.
+      if (!found) return
+      setMatches(found)
+      setCurrent(0)
+      setSearching(false)
+      onRepaint()
+      if (found.length) goto(found[0].page)
     },
     [getPageText, goto, numPages, onRepaint]
   )
@@ -60,6 +68,7 @@ export function usePdfSearch({ active = true, getPageText, numPages, goto, onRep
   }, [])
 
   const closeSearch = useCallback(() => {
+    requestIdRef.current = nextRequestId(requestIdRef.current)
     setOpen(false)
     setQuery('')
     setMatches([])
@@ -84,8 +93,11 @@ export function usePdfSearch({ active = true, getPageText, numPages, goto, onRep
     (value: string) => {
       setQuery(value)
       if (!value.trim()) {
+        // Clearing the query drops any in-flight scan with it.
+        requestIdRef.current = nextRequestId(requestIdRef.current)
         setMatches([])
         setCurrent(0)
+        setSearching(false)
         onRepaint()
         return
       }

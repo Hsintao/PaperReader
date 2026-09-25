@@ -163,6 +163,8 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
   )
   const darkModeRef = useRef(darkMode)
   darkModeRef.current = darkMode
+  const progressHandlerRef = useRef(onProgressChange)
+  progressHandlerRef.current = onProgressChange
   const canvasRenderedRef = useRef(handleCanvasRendered)
   canvasRenderedRef.current = handleCanvasRendered
   const canvasCallbacks = useMemo(
@@ -213,7 +215,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
     numPages,
     goto: (page) => {
       centerCurrentMatchRef.current = true
-      gotoPage(page)
+      gotoPage(page, true)
     },
     onRepaint: () => repaintRenderedPages()
   })
@@ -304,7 +306,34 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
     }).catch(() => {})
   }
 
-  function gotoPage(p: number) {
+  // Reading progress is debounced and reported once the reader settles; both
+  // view modes emit through it, so a reported position means the same thing in
+  // either one.
+  function emitProgress(page: number, ratio: number) {
+    progressValueRef.current = { page, ratio }
+    if (progressTimerRef.current) clearTimeout(progressTimerRef.current)
+    progressTimerRef.current = setTimeout(() => {
+      progressTimerRef.current = 0
+      if (progressValueRef.current) {
+        progressHandlerRef.current?.(progressValueRef.current.page, progressValueRef.current.ratio)
+      }
+    }, 2000)
+  }
+
+  function flushProgress() {
+    if (!progressTimerRef.current) return
+    clearTimeout(progressTimerRef.current)
+    progressTimerRef.current = 0
+    if (progressValueRef.current) {
+      progressHandlerRef.current?.(progressValueRef.current.page, progressValueRef.current.ratio)
+    }
+  }
+
+  // `programmatic` marks navigation the reader did not ask for — a search hit
+  // or a counterpart locate — so it moves the pane without being recorded as
+  // reading progress.  Scroll mode keeps that distinction in its scroll handler
+  // (isProgrammaticScrollRef); the saved-position restore never comes here.
+  function gotoPage(p: number, programmatic = false) {
     if (!numPages) return
     const target = Math.max(1, Math.min(numPages, p))
     setPageNumber(target)
@@ -319,7 +348,10 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
           isProgrammaticScrollRef.current = false
         }, 600)
       }
+      return
     }
+    if (programmatic) return
+    emitProgress(target, numPages > 1 ? (target - 1) / (numPages - 1) : 0)
   }
 
   function clearOverlayClasses(pageEl: HTMLElement) {
@@ -564,7 +596,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
       counterpartRef.current = next
       centerCounterpartRef.current = true
       setCounterpart(next)
-      gotoPage(bestPage)
+      gotoPage(bestPage, true)
       await whenPageRendered(bestPage)
       applyOverlays(bestPage)
   }
@@ -652,17 +684,6 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
     const scroller = scrollRef.current
     if (!scroller) return
 
-    const emitProgress = (page: number, ratio: number) => {
-      progressValueRef.current = { page, ratio }
-      if (progressTimerRef.current) clearTimeout(progressTimerRef.current)
-      progressTimerRef.current = setTimeout(() => {
-        progressTimerRef.current = 0
-        if (progressValueRef.current) {
-          onProgressChange?.(progressValueRef.current.page, progressValueRef.current.ratio)
-        }
-      }, 2000)
-    }
-
     const handler = () => {
       const top = scroller.scrollTop + 40
       let current = 1
@@ -682,16 +703,13 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
     scroller.addEventListener('scroll', handler, { passive: true })
     return () => {
       scroller.removeEventListener('scroll', handler)
-      if (progressTimerRef.current) {
-        clearTimeout(progressTimerRef.current)
-        progressTimerRef.current = 0
-        if (progressValueRef.current) {
-          onProgressChange?.(progressValueRef.current.page, progressValueRef.current.ratio)
-        }
-      }
+      flushProgress()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, mode, numPages, onProgressChange])
+
+  // Single-page mode has no scroll listener to flush through on the way out.
+  useEffect(() => () => flushProgress(), [])
 
   // Recompute the rendered window when layout geometry changes without a
   // user scroll (document load, zoom, pane resize).
