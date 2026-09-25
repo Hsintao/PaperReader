@@ -17,6 +17,7 @@ from app.core.config import settings
 from app.core.database import init_database
 from app.services.app_settings import purge_removed_keys
 from app.services.glossary_service import start_refresh_scheduler
+from app.services.pdf_translation_worker import prewarm_worker
 
 
 # Windows' MIME registry can classify ES module files as text/plain. PDF.js
@@ -38,6 +39,9 @@ app.add_middleware(
 init_database()
 purge_removed_keys()
 start_refresh_scheduler()
+# Warm the translation worker's interpreter and model startup while the
+# operator is still settling in, not inside the first translation.
+prewarm_worker()
 
 app.include_router(settings_router, prefix="/api", tags=["settings"])
 app.include_router(glossary_router, prefix="/api", tags=["glossary"])

@@ -1,9 +1,9 @@
 """Process boundary around the PDFMathTranslate-next worker.
 
 The backend never imports the translator. It writes a job file and hands its
-path to a long-lived worker process (started once, reused across jobs so the
-interpreter and model startup is paid only on the first run), reading
-newline-delimited JSON events from its stdout. Everything the pipeline needs
+path to a long-lived worker process (prewarmed with the backend and reused
+across jobs, so the interpreter and model startup is off every job's path),
+reading newline-delimited JSON events from its stdout. Everything the pipeline needs
 afterwards — the translated PDF, the stable manifest — is a file the worker
 published.
 """
@@ -341,6 +341,40 @@ def shutdown_worker() -> None:
     _HANDLE = None
     if handle is not None:
         WorkerRun(handle.process).kill()
+
+
+def worker_runtime_configured() -> bool:
+    """Whether the operator pointed the worker at a real runtime.
+
+    The fallback interpreter is a bare ``python3`` with none of the worker's
+    dependencies; prewarming it would spawn a process that only idles.
+    """
+    if settings.pdfmathtranslate_worker.strip():
+        return True
+    return settings.pdfmathtranslate_python != "python3"
+
+
+def prewarm_worker() -> threading.Thread | None:
+    """Start the persistent worker ahead of the first job, in the background.
+
+    The worker pays its interpreter and model startup while the operator is
+    still settling in, instead of inside the first translation. Best-effort:
+    a worker that cannot start raises the same error again when a real job
+    asks for one, where it is reported properly.
+    """
+    if not worker_runtime_configured():
+        return None
+
+    def _start() -> None:
+        try:
+            with _SERVE_LOCK:
+                _worker_handle()
+        except Exception:  # noqa: BLE001 - the first real job reports it
+            pass
+
+    thread = threading.Thread(target=_start, daemon=True, name="worker-prewarm")
+    thread.start()
+    return thread
 
 
 def _worker_crash_error(handle: _WorkerHandle) -> WorkerError:

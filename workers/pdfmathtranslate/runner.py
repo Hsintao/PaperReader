@@ -224,6 +224,62 @@ def _suppress_debug_annotations() -> None:
     AddDebugInformation.process = turn_debug_off
 
 
+_LAYOUT_MODEL = None
+_LAYOUT_MODEL_LOCK = threading.Lock()
+
+
+def _shared_layout_model():
+    """The one layout model every job in this process shares.
+
+    BabelDOC loads the ONNX layout model each time it builds a translation
+    config — seconds per job even in an otherwise warm worker. The model is
+    stateless and serializes inference behind its own lock, so it is loaded
+    once per process here.
+    """
+    global _LAYOUT_MODEL
+    with _LAYOUT_MODEL_LOCK:
+        if _LAYOUT_MODEL is None:
+            from babeldoc.docvision.base_doclayout import DocLayoutModel
+
+            _LAYOUT_MODEL = DocLayoutModel.load_onnx()
+    return _LAYOUT_MODEL
+
+
+def _share_layout_model() -> None:
+    """Route BabelDOC's per-job model load through the shared instance."""
+    from babeldoc.docvision.base_doclayout import DocLayoutModel
+
+    DocLayoutModel.load_available = staticmethod(_shared_layout_model)
+
+
+def _warmup() -> None:
+    """Pay the worker's startup costs before the first job arrives.
+
+    The heavy imports live inside the functions that use them, so a freshly
+    spawned worker has paid nothing; running them here moves that cost to
+    worker startup, and sharing the layout model drops a per-job model load.
+    """
+    from babeldoc.format.pdf.high_level import (  # noqa: F401
+        do_translate,
+        get_translation_stage,
+    )
+    from babeldoc.progress_monitor import ProgressMonitor  # noqa: F401
+    from pdf2zh_next.config.model import (  # noqa: F401
+        BasicSettings,
+        PDFSettings,
+        SettingsModel,
+        TranslationSettings,
+    )
+    from pdf2zh_next.config.translate_engine_model import (  # noqa: F401
+        OpenAISettings,
+    )
+    from pdf2zh_next.high_level import create_babeldoc_config  # noqa: F401
+
+    _suppress_debug_annotations()
+    _share_layout_model()
+    _shared_layout_model()
+
+
 def _mono_pdf(result) -> Path:
     """The translated PDF to publish, preferring the watermark-free output."""
     for attribute in ("no_watermark_mono_pdf_path", "mono_pdf_path"):
@@ -413,6 +469,11 @@ def _serve() -> int:
                 os._exit(0)
 
     threading.Thread(target=exit_when_idle, daemon=True).start()
+
+    try:
+        _warmup()
+    except Exception:  # noqa: BLE001 - the job that retries this reports why
+        logger.exception("worker warmup failed; the first job pays full startup")
 
     logger.info("worker ready (serve mode)")
     for line in sys.stdin:

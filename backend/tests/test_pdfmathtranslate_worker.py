@@ -1098,3 +1098,74 @@ def test_a_dual_product_is_read_from_the_finish_event(tmp_path):
         )
 
     assert "bilingual" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# Prewarming the worker
+# ---------------------------------------------------------------------------
+
+
+def test_prewarm_starts_the_configured_worker_before_any_job(monkeypatch, tmp_path):
+    _fake_worker(monkeypatch, tmp_path, _SLEEPING_WORKER)
+
+    thread = pdf_translation_worker.prewarm_worker()
+
+    assert thread is not None
+    thread.join(timeout=10)
+    handle = pdf_translation_worker._HANDLE
+    assert handle is not None
+    assert handle.process.poll() is None
+
+
+def test_prewarm_skips_the_fallback_interpreter(monkeypatch):
+    """A bare python3 has no worker dependencies; warming it would only idle."""
+    monkeypatch.setattr(settings, "pdfmathtranslate_worker", "")
+    monkeypatch.setattr(settings, "pdfmathtranslate_python", "python3")
+
+    assert pdf_translation_worker.prewarm_worker() is None
+    assert pdf_translation_worker._HANDLE is None
+
+
+def test_prewarm_survives_a_worker_that_cannot_start(monkeypatch, tmp_path):
+    """A misconfigured runtime is reported by the first real job, not here."""
+    monkeypatch.setattr(
+        settings, "pdfmathtranslate_worker", str(tmp_path / "gone" / "worker")
+    )
+
+    thread = pdf_translation_worker.prewarm_worker()
+
+    assert thread is not None
+    thread.join(timeout=10)
+    assert pdf_translation_worker._HANDLE is None
+
+
+def test_the_layout_model_is_loaded_once_and_shared_between_jobs(monkeypatch):
+    """BabelDOC builds a TranslationConfig per job; its model load is routed
+    through one process-wide instance instead."""
+    from workers.pdfmathtranslate import runner
+
+    loads = []
+
+    class _DocLayoutModel:
+        @staticmethod
+        def load_onnx():
+            loads.append(1)
+            return object()
+
+        @staticmethod
+        def load_available():
+            return _DocLayoutModel.load_onnx()
+
+    base = types.ModuleType("babeldoc.docvision.base_doclayout")
+    base.DocLayoutModel = _DocLayoutModel
+    monkeypatch.setitem(sys.modules, "babeldoc.docvision.base_doclayout", base)
+    monkeypatch.setattr(runner, "_LAYOUT_MODEL", None)
+
+    runner._share_layout_model()
+
+    # TranslationConfig takes its model from load_available once per job.
+    first = _DocLayoutModel.load_available()
+    second = _DocLayoutModel.load_available()
+
+    assert first is second
+    assert len(loads) == 1
