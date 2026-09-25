@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$NpmPath = "",
     [string]$PythonPath = ""
 )
@@ -10,7 +10,7 @@ $Version = (Get-Content (Join-Path $ProjectRoot "frontend\package.json") -Raw | 
 
 # A portable app still running from a previous build keeps files in
 # dist\PaperReader locked, which breaks both PyInstaller COLLECT and
-# Compress-Archive ("...正由另一进程使用").
+# zip creation ("...正由另一进程使用").
 Get-Process -Name "PaperReader" -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 500
 
@@ -35,10 +35,16 @@ if (-not $PythonPath) {
     }
     $PythonPath = $PythonCommand.Source
 }
+# The backend uses 3.10+ syntax (`str | None`); freezing with an older Python
+# produces a package that crashes on startup.
+& $PythonPath -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"
+if ($LASTEXITCODE -ne 0) {
+    throw "$PythonPath is older than Python 3.10. Run scripts\setup_build_env.ps1 or pass -PythonPath to a 3.10+ interpreter."
+}
 
 Push-Location (Join-Path $ProjectRoot "frontend")
 try {
-    & $NpmPath ci
+    & $NpmPath ci --prefer-offline --no-audit --no-fund
     if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
     & $NpmPath run build
     if ($LASTEXITCODE -ne 0) { throw "Frontend build failed" }
@@ -53,7 +59,7 @@ $PortableDir = Join-Path $ProjectRoot "dist\PaperReader"
 # Write with a UTF-8 BOM: without one, Notepad on Chinese Windows reads the
 # file as GBK and shows mojibake.
 $ReadmeText = [IO.File]::ReadAllText((Join-Path $ProjectRoot "desktop\README_zh.md"), [Text.UTF8Encoding]::new($false))
-[IO.File]::WriteAllText((Join-Path $PortableDir "使用说明.txt"), $ReadmeText, [Text.UTF8Encoding]::new($true))
+[IO.File]::WriteAllText((Join-Path $PortableDir "README.txt"), $ReadmeText, [Text.UTF8Encoding]::new($true))
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "desktop\create_shortcut.ps1") -Destination $PortableDir -Force
 
 # The PDF translation worker's dependencies stay out of the frozen app; a
@@ -84,7 +90,10 @@ if (-not (Test-Path -LiteralPath $WorkerPython)) {
 if ($LASTEXITCODE -ne 0) { throw "The standalone worker runtime cannot import pdf2zh_next and babeldoc." }
 $Target = Join-Path $PortableDir "worker-runtime"
 if (Test-Path -LiteralPath $Target) { Remove-Item -LiteralPath $Target -Recurse -Force }
-Copy-Item -LiteralPath $WorkerRuntime -Destination $Target -Recurse -Force
+# robocopy copies the 1+ GB runtime multithreaded; exit codes below 8 are success.
+robocopy "$WorkerRuntime" "$Target" /E /MT:16 /NFL /NDL /NJH /NJS /NP | Out-Null
+if ($LASTEXITCODE -ge 8) { throw "robocopy failed with exit code $LASTEXITCODE" }
+$global:LASTEXITCODE = 0
 Write-Host "Bundled standalone worker runtime"
 
 # Slim the bundled copy. The worker only ever runs `python -m
@@ -104,10 +113,18 @@ foreach ($Rel in @("Scripts", "tcl", "include", "libs", "share",
     Remove-Item -LiteralPath (Join-Path $Target $Rel) -Recurse -Force -ErrorAction SilentlyContinue
 }
 Get-ChildItem -Path (Join-Path $SitePackages "cv2") -Filter "opencv_videoio_ffmpeg*.dll" | Remove-Item -Force
-Get-ChildItem -Path $Target -Recurse -Force -Filter "*.pdb" | Remove-Item -Force
-Get-ChildItem -Path $Target -Recurse -Force -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
-Get-ChildItem -Path $SitePackages -Recurse -Force -Directory |
-    Where-Object { $_.Name -in @("tests", "test") } |
+# One recursive walk instead of three: .pdb files and __pycache__ anywhere,
+# tests/test directories only inside site-packages (Lib\test is the stdlib
+# test suite and stays).
+Get-ChildItem -Path $Target -Recurse -Force |
+    Where-Object {
+        if ($_.PSIsContainer) {
+            $_.Name -eq "__pycache__" -or
+            ($_.FullName.StartsWith($SitePackages) -and $_.Name -in @("tests", "test"))
+        } else {
+            $_.Extension -eq ".pdb"
+        }
+    } |
     Sort-Object { $_.FullName.Length } -Descending |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host "Pruned bundled worker runtime"
@@ -115,12 +132,17 @@ Write-Host "Pruned bundled worker runtime"
 $ReleaseDir = Join-Path $ProjectRoot "release"
 New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
 $ZipPath = Join-Path $ReleaseDir "PaperReader-v$Version-Windows-x64.zip"
+# ZipFile.CreateFromDirectory is ~8x faster than Compress-Archive at the same
+# compression level; the zips are byte-comparable.
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 for ($Attempt = 1; $Attempt -le 3; $Attempt++) {
     try {
         if (Test-Path -LiteralPath $ZipPath) {
             Remove-Item -LiteralPath $ZipPath -Force
         }
-        Compress-Archive -Path (Join-Path $PortableDir "*") -DestinationPath $ZipPath -CompressionLevel Optimal
+        [System.IO.Compression.ZipFile]::CreateFromDirectory(
+            $PortableDir, $ZipPath,
+            [System.IO.Compression.CompressionLevel]::Fastest, $false)
         break
     }
     catch {

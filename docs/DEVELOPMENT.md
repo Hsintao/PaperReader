@@ -485,7 +485,7 @@ powershell -ExecutionPolicy Bypass -File ./desktop/build_portable.ps1 \
 2. `npm run build`
 3. 使用 PyInstaller（`desktop/PaperReader.spec`）打包 `PaperReader.exe`，并打入 `workers/` 包
 4. 若存在 `desktop\worker-runtime`，把它复制到可移植目录下的 `worker-runtime`
-5. 把 `desktop/README_zh.md` 复制为包内 `使用说明.txt`，并放入 `create_shortcut.ps1`
+5. 把 `desktop/README_zh.md` 复制为包内 `README.txt`，并放入 `create_shortcut.ps1`
 6. 压缩为 ZIP 并生成 SHA-256 文件
 
 应用版本同样来自 `frontend/package.json -> version`。例如版本为 `2.1.2` 时，主要输出为：
