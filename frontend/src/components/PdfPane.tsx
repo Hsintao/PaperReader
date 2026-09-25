@@ -13,7 +13,8 @@ import 'react-pdf/dist/Page/TextLayer.css'
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { PDF_DOCUMENT_OPTIONS } from '../lib/pdfDocumentOptions'
 import { buildSpanIndex, locateNeedle, normalized, paintRange, prefixMatchScore, type SpanIndex } from '../lib/pdfText'
-import { applyDarkPageFilter } from '../lib/pdfDarkMode'
+import type { PDFPageProxy } from 'pdfjs-dist'
+import { applyDarkPageFilter, getImageTransforms } from '../lib/pdfDarkMode'
 import type { AnnotationItem as ApiAnnotationItem } from '../lib/api'
 import { usePageText } from '../hooks/usePageText'
 import { usePdfZoom } from '../hooks/usePdfZoom'
@@ -162,7 +163,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
   const canvasRenderedRef = useRef(handleCanvasRendered)
   canvasRenderedRef.current = handleCanvasRendered
   const canvasCallbacks = useMemo(
-    () => Array.from({ length: numPages }, (_, index) => () => canvasRenderedRef.current(index + 1)),
+    () => Array.from({ length: numPages }, (_, index) => (pdfPage: PDFPageProxy) => { void canvasRenderedRef.current(index + 1, pdfPage) }),
     [numPages]
   )
 
@@ -453,10 +454,18 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
     applyOverlays(page)
   }
 
-  function handleCanvasRendered(page: number) {
+  async function handleCanvasRendered(page: number, pdfPage: PDFPageProxy) {
     if (!darkModeRef.current) return
     const canvas = pageRefs.current[page - 1]?.querySelector('canvas')
-    if (canvas) applyDarkPageFilter(canvas)
+    if (!canvas) return
+    const { width, height } = canvas
+    const baseViewport = pdfPage.getViewport({ scale: 1 })
+    const renderScale = scale * (containerWidth ? containerWidth / baseViewport.width : 1)
+    const viewport = pdfPage.getViewport({ scale: renderScale * window.devicePixelRatio })
+    const operators = await pdfPage.getOperatorList()
+    if (!darkModeRef.current || pageRefs.current[page - 1]?.querySelector('canvas') !== canvas
+      || canvas.width !== width || canvas.height !== height) return
+    applyDarkPageFilter(canvas, getImageTransforms(operators, viewport.transform))
   }
 
   function whenPageRendered(page: number): Promise<void> {
