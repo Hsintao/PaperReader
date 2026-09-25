@@ -793,23 +793,25 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
           {title}
         </div>
         <div className="pdf-controls">
-          <button className="icon-btn" title="上一页" onClick={() => gotoPage(pageNumber - 1)}>
-            <ChevronLeft size={16} />
-          </button>
-          <input
-            className="page-input"
-            type="text"
-            inputMode="numeric"
-            value={pageNumber}
-            onChange={(e) => {
-              const value = e.target.value.replace(/[^0-9]/g, '')
-              if (value) gotoPage(parseInt(value, 10))
-            }}
-          />
-          <span className="muted small">/ {numPages || '—'}</span>
-          <button className="icon-btn" title="下一页" onClick={() => gotoPage(pageNumber + 1)}>
-            <ChevronRight size={16} />
-          </button>
+          <div className="pdf-pager">
+            <button className="icon-btn" title="上一页" onClick={() => gotoPage(pageNumber - 1)}>
+              <ChevronLeft size={16} />
+            </button>
+            <input
+              className="page-input"
+              type="text"
+              inputMode="numeric"
+              value={pageNumber}
+              onChange={(e) => {
+                const value = e.target.value.replace(/[^0-9]/g, '')
+                if (value) gotoPage(parseInt(value, 10))
+              }}
+            />
+            <span className="muted small">/ {numPages || '—'}</span>
+            <button className="icon-btn" title="下一页" onClick={() => gotoPage(pageNumber + 1)}>
+              <ChevronRight size={16} />
+            </button>
+          </div>
           <span className="sep" />
           <button className="icon-btn" title="缩小" onClick={() => setScale((s) => Math.max(0.4, s - 0.1))}>
             <ZoomOut size={16} />

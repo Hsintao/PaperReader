@@ -601,9 +601,15 @@ textarea { resize: vertical; }
   font-size: 12px;
 }
 .icon-btn.download-btn.disabled { opacity: 0.4; cursor: default; }
+.pdf-pager {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
 .page-input {
-  width: 50px;
-  padding: 4px 6px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
   text-align: center;
   font-size: 12px;
 }
