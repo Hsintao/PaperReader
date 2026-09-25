@@ -33,16 +33,7 @@ export function ProgressBar({
   cancelling = false,
   onCancel
 }: Props) {
-  if (status === 'done') {
-      return (
-        <div className="progress-bar done">
-          <div className="progress-track"><div className="progress-fill" style={{ width: '100%' }} /></div>
-          <div className="progress-meta">
-            <span className="muted small">已完成</span>
-          </div>
-        </div>
-      )
-  }
+  if (status === 'done') return null
   if (status === 'failed') {
       return (
         <div className="progress-bar failed">

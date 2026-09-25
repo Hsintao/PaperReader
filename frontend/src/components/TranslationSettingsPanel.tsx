@@ -83,7 +83,7 @@ export function TranslationSettingsPanel({ domain, onDomainChange }: Props) {
           <h3>术语库</h3>
           <p>术语从已翻译的内容中自动积累，每 {snapshot?.interval_minutes ?? 30} 分钟合并一次；对应英文出现时按此译法强制翻译。</p>
         </div>
-        <button className="btn" onClick={() => void refreshNow()} disabled={busy}>
+        <button className="btn small-btn" onClick={() => void refreshNow()} disabled={busy}>
           <RefreshCw size={14} />{busy ? '处理中…' : '立即更新'}
         </button>
       </div>
