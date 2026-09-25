@@ -33,7 +33,7 @@ export function ProviderSettingsForm({
     <div className="provider-form">
       <div className="settings-section-heading">
         <div>
-          <h3>大模型服务</h3>
+          <h3>模型设置</h3>
           <p>用于论文翻译与问答。密钥只加密保存在本机。</p>
         </div>
         <span className={`config-status ${apiKeyConfigured ? 'ready' : 'missing'}`}>

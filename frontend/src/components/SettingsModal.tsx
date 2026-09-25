@@ -96,9 +96,9 @@ export function SettingsModal({ open, settings, onClose, onSettingsChange }: Pro
         </div>
         <div className="profile-layout">
           <nav className="profile-tabs" aria-label="设置导航">
-            <button className={tab === 'providers' ? 'active' : ''} onClick={() => setTab('providers')}><Bot size={16} />AI 服务{!settings.api_key_configured && <span className="attention-dot" />}</button>
+            <button className={tab === 'providers' ? 'active' : ''} onClick={() => setTab('providers')}><Bot size={16} />模型设置{!settings.api_key_configured && <span className="attention-dot" />}</button>
             <button className={tab === 'translation' ? 'active' : ''} onClick={() => setTab('translation')}><Languages size={16} />翻译设置</button>
-            <button className={tab === 'reading' ? 'active' : ''} onClick={() => setTab('reading')}><BookOpen size={16} />阅读偏好</button>
+            <button className={tab === 'reading' ? 'active' : ''} onClick={() => setTab('reading')}><BookOpen size={16} />界面设置</button>
           </nav>
           <div className="modal-body profile-body">
             {tab === 'providers' && <ProviderSettingsForm value={providers} onChange={setProviders} apiKeyConfigured={settings.api_key_configured} allowClear />}
