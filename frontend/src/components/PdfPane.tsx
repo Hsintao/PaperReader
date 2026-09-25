@@ -12,31 +12,25 @@ import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { PDF_DOCUMENT_OPTIONS } from '../lib/pdfDocumentOptions'
-import { buildSyntheticOutline, type OutlineItem } from '../lib/pdfOutline'
 import { buildSpanIndex, locateNeedle, normalized, paintRange, prefixMatchScore, type SpanIndex } from '../lib/pdfText'
-import type { AnnotationItem as ApiAnnotationItem, FigureItem as ApiFigureItem } from '../lib/api'
+import { applyDarkPageFilter } from '../lib/pdfDarkMode'
+import type { AnnotationItem as ApiAnnotationItem } from '../lib/api'
 import { usePageText } from '../hooks/usePageText'
 import { usePdfZoom } from '../hooks/usePdfZoom'
 import { usePdfSearch } from '../hooks/usePdfSearch'
 import {
-  BookMarked,
   ChevronLeft,
   ChevronRight,
   Download,
   FileText,
-  Images,
-  List,
   Maximize2,
   Rows3,
-  Search,
   X,
   ZoomIn,
   ZoomOut
 } from 'lucide-react'
 
 export type AnnotationItem = ApiAnnotationItem
-
-export type FigureItem = ApiFigureItem
 
 export type DownloadItem = {
   title: string
@@ -67,8 +61,6 @@ type Props = {
   onExportNotes?: () => void
   initialPosition?: { page: number; ratio: number } | null
   onProgressChange?: (page: number, ratio: number) => void
-  figures?: FigureItem[]
-  outline?: OutlineItem[] | null
   onActivate?: () => void
 }
 
@@ -111,8 +103,6 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
   onExportNotes,
   initialPosition,
   onProgressChange,
-  figures = [],
-  outline = null,
   onActivate
 }: Props, ref) {
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -129,11 +119,6 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
   const [scale, setScale] = useState(1.0)
   const [zoomInput, setZoomInput] = useState('100')
   const [containerWidth, setContainerWidth] = useState<number | undefined>(undefined)
-  const [outlineState, setOutlineState] = useState<OutlineItem[]>([])
-  const [outlineOpen, setOutlineOpen] = useState(false)
-  const [outlineLoading, setOutlineLoading] = useState(false)
-  const [outlineReady, setOutlineReady] = useState(false)
-  const [outlineSource, setOutlineSource] = useState<'native' | 'generated' | null>(null)
   const [mode, setMode] = useState<ViewMode>('scroll')
   const [selectionMenu, setSelectionMenu] = useState<{
     x: number
@@ -150,10 +135,10 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
     highlight: string
   } | null>(null)
   const [renderRange, setRenderRange] = useState<{ start: number; end: number }>({ start: 1, end: 1 })
-  const [figuresOpen, setFiguresOpen] = useState(false)
   const [notesOpen, setNotesOpen] = useState(false)
   const [activeAnnotationId, setActiveAnnotationId] = useState<string | null>(null)
   const [locateMessage, setLocateMessage] = useState('')
+  const [darkMode, setDarkMode] = useState(() => document.documentElement.dataset.theme === 'dark')
   const centerCounterpartRef = useRef(false)
 
   const annotationsRef = useRef<AnnotationItem[]>(annotations)
@@ -172,6 +157,22 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
     () => Array.from({ length: numPages }, (_, index) => () => pageRenderedRef.current(index + 1)),
     [numPages]
   )
+  const darkModeRef = useRef(darkMode)
+  darkModeRef.current = darkMode
+  const canvasRenderedRef = useRef(handleCanvasRendered)
+  canvasRenderedRef.current = handleCanvasRendered
+  const canvasCallbacks = useMemo(
+    () => Array.from({ length: numPages }, (_, index) => () => canvasRenderedRef.current(index + 1)),
+    [numPages]
+  )
+
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      setDarkMode(document.documentElement.dataset.theme === 'dark')
+    })
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+    return () => observer.disconnect()
+  }, [])
 
   const { getPageText } = usePageText({ docRef: pdfDocumentRef, activeKey: pdfUrl || '' })
 
@@ -219,11 +220,6 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
 
   useEffect(() => {
     setPageNumber(1)
-    setOutlineState([])
-    setOutlineOpen(false)
-    setOutlineLoading(false)
-    setOutlineReady(false)
-    setOutlineSource(null)
     setNumPages(0)
     setScale(1.0)
     setZoomInput('100')
@@ -238,7 +234,6 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
     setActiveAnnotationId(null)
     setLocateMessage('')
     setRenderRange({ start: 1, end: 1 })
-    setFiguresOpen(false)
     if (progressTimerRef.current) clearTimeout(progressTimerRef.current)
     progressTimerRef.current = 0
     progressValueRef.current = null
@@ -273,22 +268,6 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
 
   const fileOpts = useMemo(() => (pdfUrl ? { url: pdfUrl, withCredentials: true } : null), [pdfUrl])
 
-  async function mapOutlineItem(doc: any, item: any): Promise<OutlineItem> {
-    let pageIndex: number | null = null
-    try {
-      const dest = typeof item.dest === 'string' ? await doc.getDestination(item.dest) : item.dest
-      if (dest && dest[0]) {
-        pageIndex = await doc.getPageIndex(dest[0])
-      }
-    } catch {
-      pageIndex = null
-    }
-    const items: OutlineItem[] = item.items
-      ? await Promise.all(item.items.map((c: any) => mapOutlineItem(doc, c)))
-      : []
-    return { title: item.title, pageIndex, items }
-  }
-
   async function onDocumentLoadSuccess(doc: any) {
     pdfDocumentRef.current = doc
     setNumPages(doc.numPages)
@@ -310,53 +289,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
         }
       })
     }).catch(() => {})
-    setOutlineLoading(true)
-    setOutlineReady(false)
-    try {
-      if (outline?.length) {
-        if (pdfDocumentRef.current === doc) {
-          setOutlineState(outline)
-          setOutlineSource('native')
-        }
-      } else {
-        const raw = await doc.getOutline()
-        if (raw?.length) {
-          const built = await Promise.all(raw.map((item: any) => mapOutlineItem(doc, item)))
-          if (pdfDocumentRef.current === doc) {
-            setOutlineState(built)
-            setOutlineSource('native')
-          }
-        } else {
-          const built = await buildSyntheticOutline(doc)
-          if (pdfDocumentRef.current === doc) {
-            setOutlineState(built)
-            setOutlineSource(built.length ? 'generated' : null)
-          }
-        }
-      }
-    } catch {
-      if (pdfDocumentRef.current === doc) {
-        setOutlineState([])
-        setOutlineSource(null)
-      }
-    } finally {
-      if (pdfDocumentRef.current === doc) {
-        setOutlineLoading(false)
-        setOutlineReady(true)
-      }
-    }
   }
-
-  // A backend-provided outline (document structure endpoint) arriving after
-  // the document loaded replaces the synthetic one.
-  useEffect(() => {
-    if (outline?.length) {
-      setOutlineState(outline)
-      setOutlineSource('native')
-      setOutlineReady(true)
-      setOutlineLoading(false)
-    }
-  }, [outline])
 
   function gotoPage(p: number) {
     if (!numPages) return
@@ -518,6 +451,12 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
       for (const resolve of waiters) resolve()
     }
     applyOverlays(page)
+  }
+
+  function handleCanvasRendered(page: number) {
+    if (!darkModeRef.current) return
+    const canvas = pageRefs.current[page - 1]?.querySelector('canvas')
+    if (canvas) applyDarkPageFilter(canvas)
   }
 
   function whenPageRendered(page: number): Promise<void> {
@@ -771,26 +710,6 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchStateKey])
 
-  function renderOutline(items: OutlineItem[], depth = 0) {
-    return (
-      <ul className="outline-list">
-        {items.map((it, idx) => (
-          <li key={idx} style={{ paddingLeft: depth * 10 }}>
-            <button
-              className="outline-link"
-              onClick={() => {
-                if (it.pageIndex !== null) gotoPage(it.pageIndex + 1)
-              }}
-            >
-              {it.title}
-            </button>
-            {it.items.length > 0 && renderOutline(it.items, depth + 1)}
-          </li>
-        ))}
-      </ul>
-    )
-  }
-
   // Capture each page's intrinsic aspect ratio once (from the PDF page
   // dictionaries at load) so the page wrappers can be sized synchronously on
   // every scale change; without stable sizes the layout collapses while
@@ -836,11 +755,13 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
       >
         {shouldRender ? (
           <Page
+            key={`${page}-${darkMode ? 'dark' : 'light'}`}
             pageNumber={page}
             scale={scale}
             width={containerWidth}
             renderTextLayer
             renderAnnotationLayer
+            onRenderSuccess={canvasCallbacks[index]}
             onRenderTextLayerSuccess={textLayerCallbacks[index]}
           />
         ) : (
@@ -863,35 +784,6 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
           {title}
         </div>
         <div className="pdf-controls">
-          {onCreateAnnotation && (
-            <button
-              className="icon-btn"
-              title="批注笔记"
-              onClick={() => { setNotesOpen((v) => !v); setFiguresOpen(false) }}
-            >
-              <BookMarked size={16} />
-            </button>
-          )}
-          <button className="icon-btn" title="搜索（Ctrl+F）" onClick={() => search.openSearch()}>
-            <Search size={16} />
-          </button>
-          <button
-            className="icon-btn"
-            title="目录"
-            onClick={() => setOutlineOpen((v) => !v)}
-            disabled={!numPages}
-          >
-            <List size={16} />
-          </button>
-          {figures.length > 0 && (
-            <button
-              className={`icon-btn ${figuresOpen ? 'active' : ''}`}
-              title="图表"
-              onClick={() => { setFiguresOpen((v) => !v); setNotesOpen(false) }}
-            >
-              <Images size={16} />
-            </button>
-          )}
           <button className="icon-btn" title="上一页" onClick={() => gotoPage(pageNumber - 1)}>
             <ChevronLeft size={16} />
           </button>
@@ -973,19 +865,6 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
 
       <div className="pdf-body" ref={containerRef}>
         {locateMessage && <div className="pdf-locate-message" role="status">{locateMessage}<button className="icon-btn" title="关闭定位提示" onClick={() => setLocateMessage('')}><X size={14} /></button></div>}
-        {outlineOpen && (
-          <div className="pdf-outline">
-            <div className="pdf-outline-heading">
-              目录
-              {outlineSource === 'generated' && <span>自动生成</span>}
-            </div>
-            {outlineLoading && <div className="pdf-outline-empty muted">正在生成目录…</div>}
-            {!outlineLoading && outlineState.length > 0 && renderOutline(outlineState)}
-            {outlineReady && !outlineState.length && (
-              <div className="pdf-outline-empty muted">此 PDF 没有书签或可识别的章节文本。</div>
-            )}
-          </div>
-        )}
         {search.open && (
           <div className="pdf-search-bar">
             <input
@@ -1015,7 +894,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
           onClick={(event) => {
             if (window.getSelection()?.toString().trim()) return
             const id = (event.target as HTMLElement).closest<HTMLElement>('[data-annotation-id]')?.dataset.annotationId
-            if (id) { setActiveAnnotationId(id); setNotesOpen(true); setFiguresOpen(false) }
+            if (id) { setActiveAnnotationId(id); setNotesOpen(true) }
           }}>
           <Document
             file={fileOpts ?? undefined}
@@ -1037,11 +916,13 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
                 }}
               >
                 <Page
+                  key={`${pageNumber}-${darkMode ? 'dark' : 'light'}`}
                   pageNumber={pageNumber}
                   scale={scale}
                   width={containerWidth}
                   renderTextLayer
                   renderAnnotationLayer
+                  onRenderSuccess={canvasCallbacks[pageNumber - 1]}
                   onRenderTextLayerSuccess={textLayerCallbacks[pageNumber - 1]}
                 />
               </div>
@@ -1053,29 +934,6 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
             )}
           </Document>
         </div>
-        {figuresOpen && figures.length > 0 && (
-          <aside className="pdf-figure-strip" aria-label="图表导航">
-            <div className="pdf-overlay-heading"><strong>图表 · {figures.length}</strong><button className="icon-btn" title="关闭图表" onClick={() => setFiguresOpen(false)}><X size={14} /></button></div>
-            {figures.map((figure, index) => (
-              <button
-                key={index}
-                className="pdf-figure-card"
-                title={figure.caption}
-                onClick={() => void locateAndHighlight({
-                  text: figure.locate_text || figure.caption,
-                  highlightText: figure.locate_text || figure.caption,
-                  positionRatio: figure.page ? (figure.page - 1) / Math.max(1, numPages - 1) : index / Math.max(1, figures.length - 1)
-                })}
-              >
-                {figure.url ? <img src={figure.url} alt={figure.caption || 'figure'} loading="lazy" /> : <span className="pdf-figure-placeholder">{figure.kind === 'table' ? 'Table' : 'Figure'}</span>}
-                <span className="pdf-figure-caption">
-                  {figure.caption ? figure.caption.slice(0, 60) : (figure.kind === 'table' ? '表' : '图')}
-                  {figure.page != null && figure.page > 0 ? ` · P${figure.page}` : ''}
-                </span>
-              </button>
-            ))}
-          </aside>
-        )}
         {notesOpen && (
           <aside className="pdf-notes-panel" aria-label="批注笔记">
             <div className="pdf-overlay-heading"><strong>批注笔记 · {annotations.length}</strong><button className="icon-btn" title="关闭批注笔记" onClick={() => setNotesOpen(false)}><X size={14} /></button></div>
@@ -1147,7 +1005,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
             )}
             {selectionMenu.annotationId && onDeleteAnnotation && (
               <button className="context-menu-item" onClick={() => {
-                setActiveAnnotationId(selectionMenu.annotationId); setNotesOpen(true); setFiguresOpen(false); setSelectionMenu(null)
+                setActiveAnnotationId(selectionMenu.annotationId); setNotesOpen(true); setSelectionMenu(null)
               }}>查看批注</button>
             )}
             {selectionMenu.annotationId && onDeleteAnnotation && (

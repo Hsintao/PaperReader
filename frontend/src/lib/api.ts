@@ -1,5 +1,3 @@
-import type { OutlineItem } from './pdfOutline'
-
 export type UploadResult = { document_id: string; status: string }
 
 export type ReferenceItem = {
@@ -69,20 +67,6 @@ export type AnnotationItem = {
   note: string
   position_ratio: number
   created_at: string
-}
-
-export type FigureItem = {
-  kind: string
-  caption: string
-  page: number | null
-  url: string
-  locate_text?: string
-}
-
-export type DocumentStructure = {
-  outline: OutlineItem[]
-  figures: FigureItem[]
-  translated_figures?: FigureItem[]
 }
 
 export type LibrarySearchHit = {
@@ -376,10 +360,6 @@ export async function downloadNotes(documentId: string): Promise<void> {
   link.download = 'reading-notes.md'
   link.click()
   URL.revokeObjectURL(url)
-}
-
-export async function getDocumentStructure(documentId: string): Promise<DocumentStructure> {
-  return apiFetch(`/api/document/${documentId}/structure`)
 }
 
 export async function searchLibrary(query: string): Promise<LibrarySearchHit[]> {

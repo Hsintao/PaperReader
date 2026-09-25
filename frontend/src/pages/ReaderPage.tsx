@@ -2,8 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertCircle, PanelLeftOpen, UploadCloud } from 'lucide-react'
 import { PdfPane } from '../components/PdfPane'
 import type { AnnotationItem, PdfPaneHandle } from '../components/PdfPane'
-import type { FigureItem, UserSettings } from '../lib/api'
-import type { OutlineItem } from '../lib/pdfOutline'
+import type { UserSettings } from '../lib/api'
 import { ProgressBar } from '../components/ProgressBar'
 import { SettingsModal } from '../components/SettingsModal'
 import { Sidebar } from '../components/Sidebar'
@@ -17,7 +16,6 @@ import {
   ensureAnnotatedPdf,
   ensureMergedPdf,
   getDocumentStatus,
-  getDocumentStructure,
   listAnnotations,
   listDocuments,
   locateCounterpart,
@@ -53,8 +51,6 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
   const [cancelling, setCancelling] = useState(false)
   const [pollRevision, setPollRevision] = useState(0)
   const [annotations, setAnnotations] = useState<AnnotationItem[]>([])
-  const [structureOutline, setStructureOutline] = useState<OutlineItem[] | null>(null)
-  const [structureFigures, setStructureFigures] = useState<FigureItem[]>([])
   const [pendingLocate, setPendingLocate] = useState<PendingLocate>(null)
 
   const pollTimerRef = useRef<number | null>(null)
@@ -256,27 +252,15 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
 
   useEffect(() => {
     setAnnotations([])
-    setStructureOutline(null)
-    setStructureFigures([])
     setPendingLocate(null)
   }, [activeId])
 
-  // Annotations and the document structure (backend outline + figure gallery)
-  // are per-document; reload them whenever the active document changes and
-  // again once its pipeline finishes.
+  // Annotations are per-document; reload them whenever the active document
+  // changes and again once its pipeline finishes.
   useEffect(() => {
     if (!activeId || activeDoc?.status !== 'done') return
     let cancelled = false
     void listAnnotations(activeId).then((items) => { if (!cancelled) setAnnotations(items) }).catch((e) => console.error(e))
-    void getDocumentStructure(activeId)
-      .then((structure) => {
-        if (cancelled) return
-        setStructureOutline(structure.outline?.length ? structure.outline : null)
-        setStructureFigures(
-          (structure.figures || []).map((figure) => ({ ...figure, url: makeDataUrl(figure.url) }))
-        )
-      })
-      .catch((e) => console.error(e))
     return () => { cancelled = true }
   }, [activeId, activeDoc?.status])
 
@@ -549,8 +533,6 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
             onExportNotes={handleExportNotes}
             initialPosition={activeDoc ? { page: activeDoc.last_read_page, ratio: activeDoc.last_read_ratio } : null}
             onProgressChange={handleProgressChange}
-            figures={structureFigures}
-            outline={structureOutline}
           />
         )}
       </main>
