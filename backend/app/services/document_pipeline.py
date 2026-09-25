@@ -513,8 +513,7 @@ def process_document(
         record.logs.append(f"Extraction dir: {result.extraction_dir}")
 
         manifest = result.manifest()
-        with with_stage(record, "clean"):
-            display_title = _build_reader_state(record, manifest, translation_domain, output_dir)
+        display_title = _build_reader_state(record, manifest, translation_domain, output_dir)
 
         record.status = "done"
         record.failure = None

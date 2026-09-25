@@ -246,10 +246,41 @@ def test_worker_progress_events_drive_the_document_stages(isolated_storage, tmp_
     assert statuses["parse"] == "done"
     assert statuses["translate"] == "done"
     assert statuses["render"] == "done"
-    assert statuses["clean"] == "pending"
     translate = next(stage for stage in record.stages if stage.key == "translate")
     assert translate.label == "翻译段落 2/4"
     assert record.progress > 0
+
+
+def test_progress_never_regresses_when_a_sub_stage_restarts(isolated_storage, tmp_path):
+    """BabelDOC sub-stages restart at 0% within one pipeline stage; the overall
+    bar must not slide backwards when a new sub-stage begins."""
+    record = create_document_record(_write_pdf(tmp_path / "paper.pdf"))
+    init_stages(record)
+    switcher = document_pipeline._StageSwitcher(record)
+    report = _event_reporter(record, switcher)
+
+    report({
+        "type": "progress_end",
+        "stage": "Parse Page Layout",
+        "group": "parse",
+        "progress": 1.0,
+    })
+    peak = record.progress
+    report({
+        "type": "progress_update",
+        "stage": "Parse Table",
+        "group": "parse",
+        "progress": 0.0,
+    })
+    assert record.progress >= peak
+    report({
+        "type": "progress_update",
+        "stage": "Parse Table",
+        "group": "parse",
+        "progress": 0.5,
+    })
+    assert record.progress >= peak
+    switcher.close()
 
 
 def test_a_stage_summary_alone_leaves_the_stage_list_untouched(isolated_storage, tmp_path):

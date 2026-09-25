@@ -28,7 +28,6 @@ PDF_STAGES: list[tuple[str, str, float]] = [
     ("parse", "解析 PDF", 25.0),
     ("translate", "翻译", 100.0),
     ("render", "版式合成", 8.0),
-    ("clean", "清洗与对齐", 3.0),
 ]
 
 
@@ -155,7 +154,9 @@ def set_stage_progress(
     total_w = _total_weight(record)
     done_w = _completed_weight(record)
     running_w = entry.weight * fraction if entry.status == "running" else 0.0
-    record.progress = int(round(100 * (done_w + running_w) / total_w))
+    # BabelDOC sub-stages restart at 0% when the next one begins, so a fresh
+    # sub-stage would pull the bar backwards; progress only ever moves forward.
+    record.progress = max(record.progress, int(round(100 * (done_w + running_w) / total_w)))
     if label:
         entry.label = label
         record.current_stage_label = label
