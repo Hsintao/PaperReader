@@ -295,6 +295,13 @@ def _worker_handle() -> _WorkerHandle:
     global _HANDLE
     if _HANDLE is not None and _HANDLE.process.poll() is None:
         return _HANDLE
+    # On Windows a console-subsystem worker launched from the windowed app
+    # would get its own console window; keep it headless.
+    hidden = (
+        {"creationflags": subprocess.CREATE_NO_WINDOW}
+        if os.name == "nt"
+        else {}
+    )
     process = subprocess.Popen(
         _serve_command(),
         cwd=str(bundle_root()),
@@ -306,6 +313,7 @@ def _worker_handle() -> _WorkerHandle:
         errors="replace",
         bufsize=1,
         env=worker_environment(),
+        **hidden,
     )
     _HANDLE = _WorkerHandle(process)
     return _HANDLE
