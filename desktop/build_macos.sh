@@ -102,6 +102,50 @@ fi
 rm -rf "$PROJECT_ROOT/dist/PaperReader.app/Contents/Resources/worker-runtime"
 cp -R "$WORKER_RUNTIME" "$PROJECT_ROOT/dist/PaperReader.app/Contents/Resources/worker-runtime"
 echo "Bundled standalone worker runtime: $(du -sh "$PROJECT_ROOT/dist/PaperReader.app/Contents/Resources/worker-runtime" | cut -f1)"
+
+# Slim the bundled copy. The worker only ever runs `python -m
+# workers.pdfmathtranslate`, so this drops what that entry point never loads:
+# pdf2zh_next's gradio GUI (which also pulls in pandas), pip and the console
+# scripts, Tcl/Tk and tkinter, C headers and pkg-config files, bytecode
+# caches, and test suites shipped inside packages. Mirrors the prune step in
+# desktop/build_portable.ps1.
+BUNDLED_RUNTIME="$PROJECT_ROOT/dist/PaperReader.app/Contents/Resources/worker-runtime"
+BUNDLED_STDLIB="$(ls -d "$BUNDLED_RUNTIME"/lib/python3.* | head -n 1)"
+if [[ ! -d "$BUNDLED_STDLIB/site-packages" ]]; then
+  echo "::error title=unexpected bundle layout::no site-packages under $BUNDLED_STDLIB"
+  exit 1
+fi
+BUNDLED_SP="$BUNDLED_STDLIB/site-packages"
+
+for NAME in gradio gradio_client gradio_pdf gradio_i18n pandas pip; do
+  rm -rf "$BUNDLED_SP/$NAME" "$BUNDLED_SP/${NAME}-"*.dist-info
+done
+
+# Console scripts; keep only the python interpreters themselves.
+find "$BUNDLED_RUNTIME/bin" -mindepth 1 -maxdepth 1 ! -name 'python*' -exec rm -rf {} +
+
+# Tcl/Tk (used only by tkinter), development files, IDLE.
+rm -rf "$BUNDLED_RUNTIME"/lib/tcl* "$BUNDLED_RUNTIME"/lib/tk* "$BUNDLED_RUNTIME"/lib/itcl* \
+       "$BUNDLED_RUNTIME"/lib/thread* "$BUNDLED_RUNTIME"/lib/libtcl* \
+       "$BUNDLED_RUNTIME"/lib/pkgconfig "$BUNDLED_RUNTIME/include" "$BUNDLED_RUNTIME/share" \
+       "$BUNDLED_STDLIB/tkinter" "$BUNDLED_STDLIB/idlelib" "$BUNDLED_STDLIB/turtledemo" "$BUNDLED_STDLIB/turtle.py"
+rm -f "$BUNDLED_STDLIB"/lib-dynload/_tkinter*.so
+
+# Bytecode caches and package test suites.
+find "$BUNDLED_RUNTIME" -type d -name '__pycache__' -prune -exec rm -rf {} +
+find "$BUNDLED_SP" -depth -type d \( -name tests -o -name test \) -exec rm -rf {} +
+
+# A pruned runtime must still import the translator; fail here instead of
+# shipping an app whose worker dies on first use.
+BUNDLED_PY="$BUNDLED_RUNTIME/bin/python3"
+if [[ ! -x "$BUNDLED_PY" ]]; then
+  BUNDLED_PY="$BUNDLED_RUNTIME/bin/python"
+fi
+if ! "$BUNDLED_PY" -c 'import pdf2zh_next, babeldoc'; then
+  echo "::error title=pruned worker runtime broken::pdf2zh_next/babeldoc no longer importable after pruning"
+  exit 1
+fi
+echo "Pruned bundled worker runtime: $(du -sh "$BUNDLED_RUNTIME" | cut -f1)"
 codesign --force --deep --sign - "$PROJECT_ROOT/dist/PaperReader.app"
 
 mkdir -p "$PROJECT_ROOT/release"
