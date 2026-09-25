@@ -144,3 +144,42 @@ def test_rebuild_is_idempotent(legacy_database):
         init_database()
         assert client.get("/api/documents").json() == before
         assert client.get("/api/document/legacy-doc").status_code == 200
+
+
+def test_importing_the_database_module_recovers_nothing(isolated_storage):
+    """Schema creation and recovery belong to startup, not to importing the module."""
+    import importlib
+
+    from app.core import database
+    from app.core.config import settings
+    from app.models import store
+
+    source = settings.upload_dir / "queued.pdf"
+    source.write_bytes(b"%PDF-1.4\n")
+    store.save_document(
+        store.DocumentRecord("queued-doc", "pdf", source, status="queued")
+    )
+    store.DOCUMENTS.clear()
+
+    importlib.reload(database)
+
+    def _row() -> tuple[str, str | None]:
+        conn = sqlite3.connect(settings.data_dir / settings.sqlite_db_name)
+        try:
+            return conn.execute(
+                "SELECT status, failure_json FROM documents WHERE document_id = 'queued-doc'"
+            ).fetchone()
+        finally:
+            conn.close()
+
+    status, failure = _row()
+    assert status == "queued"
+    assert failure is None
+
+    # The explicit startup call is what turns interrupted work into a retryable
+    # failure, exactly once.
+    database.init_database()
+
+    status, failure = _row()
+    assert status == "failed"
+    assert failure is not None and "exited before" in failure

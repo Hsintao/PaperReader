@@ -3,6 +3,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 from app.core.config import settings
 
 
@@ -92,3 +94,48 @@ def test_upload_stores_the_pdf_and_queues_the_pipeline(client, configure_provide
     assert document.status_code == 200, document.text
     assert document.json()["source_filename"] == "paper.pdf"
     assert document.json()["status"] == "queued"
+
+
+def test_upload_removes_a_partial_file_when_the_write_fails(
+    client, configure_provider, monkeypatch
+):
+    launched = _capture_launches(monkeypatch)
+    configure_provider()
+    _point_at_a_runnable_worker(monkeypatch)
+
+    real_open = Path.open
+
+    class _PartialWrite:
+        """Writes the first chunk, then fails like a full disk would."""
+
+        def __init__(self, handle) -> None:
+            self._handle = handle
+
+        def write(self, chunk) -> int:
+            written = self._handle.write(chunk)
+            raise OSError("no space left on device")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info) -> bool:
+            self._handle.close()
+            return False
+
+    def failing_open(self, *args, **kwargs):
+        handle = real_open(self, *args, **kwargs)
+        if self.parent == settings.upload_dir:
+            return _PartialWrite(handle)
+        return handle
+
+    monkeypatch.setattr(Path, "open", failing_open)
+
+    with pytest.raises(OSError):
+        client.post(
+            "/api/upload",
+            files={"file": ("paper.pdf", b"%PDF-1.7\n" + b"x" * 4096, "application/pdf")},
+        )
+
+    # The partial file is gone and no document was queued for it.
+    assert _uploaded_files() == []
+    assert launched == []

@@ -45,9 +45,15 @@ async def upload(
 
     safe_name = Path(file.filename or "uploaded_file").name
     target_path = settings.upload_dir / f"{uuid.uuid4()}_{safe_name}"
-    with target_path.open("wb") as sink:
-        while chunk := await file.read(_UPLOAD_CHUNK_BYTES):
-            sink.write(chunk)
+    try:
+        with target_path.open("wb") as sink:
+            while chunk := await file.read(_UPLOAD_CHUNK_BYTES):
+                sink.write(chunk)
+    except OSError:
+        # A half-written upload is not a document and must not be left behind
+        # for the next run to trip over.
+        target_path.unlink(missing_ok=True)
+        raise
 
     record = create_document_record(target_path, "pdf")
 

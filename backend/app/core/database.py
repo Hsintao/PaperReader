@@ -185,6 +185,12 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
 
 
 def init_database() -> None:
+    """Create the schema and turn work interrupted by an exit into a retryable failure.
+
+    Called once from the application's startup path. Importing this module has
+    no side effects, so scripts and tests can use it without touching — or
+    rewriting — a live database.
+    """
     conn = sqlite3.connect(_db_path(), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     try:
@@ -226,6 +232,3 @@ def init_database() -> None:
         conn.commit()
     finally:
         conn.close()
-
-
-init_database()
