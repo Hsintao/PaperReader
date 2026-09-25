@@ -789,11 +789,13 @@ export const PdfPane = forwardRef<PdfPaneHandle, Props>(function PdfPane({
           </button>
           <input
             className="page-input"
-            type="number"
-            min={1}
-            max={numPages || 1}
+            type="text"
+            inputMode="numeric"
             value={pageNumber}
-            onChange={(e) => gotoPage(parseInt(e.target.value || '1', 10))}
+            onChange={(e) => {
+              const value = e.target.value.replace(/[^0-9]/g, '')
+              if (value) gotoPage(parseInt(value, 10))
+            }}
           />
           <span className="muted small">/ {numPages || '—'}</span>
           <button className="icon-btn" title="下一页" onClick={() => gotoPage(pageNumber + 1)}>
