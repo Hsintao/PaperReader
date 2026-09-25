@@ -955,6 +955,49 @@ def test_the_translator_does_not_extract_terms_before_translating(tmp_path, monk
     assert captured["translation"]["no_auto_extract_glossary"] is True
 
 
+@pytest.mark.parametrize("base_url, expected", [
+    ("https://api.deepseek.com", {"thinking": {"type": "disabled"}}),
+    ("https://api.deepseek.com/v1", {"thinking": {"type": "disabled"}}),
+    ("https://api.siliconflow.cn/v1", None),
+    ("https://api.openai.com/v1", None),
+])
+def test_worker_disables_thinking_for_deepseek(tmp_path, monkeypatch, base_url, expected):
+    from dataclasses import replace
+    from workers.pdfmathtranslate.runner import _build_settings
+
+    captured = _stub_translator_modules(monkeypatch)
+    job = replace(_dual_job(tmp_path, "mono"), base_url=base_url, model="deepseek-flash")
+    _build_settings(job)
+
+    engine = captured["settings"]["translate_engine_settings"]
+    assert getattr(engine, "_openai_extra_body", None) == expected
+    assert captured["engine"]["openai_base_url"] == base_url
+    assert captured["engine"]["openai_model"] == "deepseek-flash"
+
+
+@pytest.mark.parametrize("domain", ["general", "cs", "medical"])
+def test_worker_passes_domain_prompt_from_job_to_translation_settings(tmp_path, monkeypatch, domain):
+    from app.services import translation_prompts
+    from workers.pdfmathtranslate.job import job_from_mapping
+    from workers.pdfmathtranslate import runner
+
+    captured = _stub_translator_modules(monkeypatch)
+    payload = _job_payload(
+        document_id="prompt-test", input_pdf=tmp_path / "paper.pdf",
+        output_dir=tmp_path / "out", work_dir=tmp_path / "work",
+        api_key="test-key", base_url="", model="test-model", glossary_path=None,
+        translation_domain=domain,
+    )
+    runner._build_settings(job_from_mapping(json.loads(json.dumps(payload))))
+    prompt = captured["translation"]["custom_system_prompt"]
+    assert translation_prompts.DOMAINS[domain].audience in prompt
+    assert translation_prompts.DOMAINS[domain].notes in prompt
+    assert "@@SEG@@" not in prompt
+    assert "__PR_PH_0000__" not in prompt
+    assert "不要输出 JSON" not in prompt
+    assert translation_prompts.NO_GLOSSARY_NOTE not in prompt
+
+
 def test_debug_annotations_are_turned_off_before_the_pdf_is_drawn(monkeypatch):
     from workers.pdfmathtranslate.runner import _suppress_debug_annotations
 
@@ -1055,4 +1098,3 @@ def test_a_dual_product_is_read_from_the_finish_event(tmp_path):
         )
 
     assert "bilingual" in str(excinfo.value)
-

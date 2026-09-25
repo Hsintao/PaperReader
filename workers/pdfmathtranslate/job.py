@@ -32,6 +32,7 @@ class Job:
     keep_debug: bool = False
     qps: int = 4
     glossary_path: Path | None = None
+    custom_system_prompt: str | None = None
 
     @property
     def extraction_dir(self) -> Path:
@@ -133,6 +134,7 @@ def job_from_mapping(payload: dict, *, base_dir: Path | None = None) -> Job:
         api_key=str(translation.get("api_key") or ""),
         base_url=str(translation.get("base_url") or ""),
         model=str(translation.get("model") or ""),
+        custom_system_prompt=translation.get("custom_system_prompt") or None,
         source_lang=str(payload.get("source_lang") or "en"),
         target_lang=str(payload.get("target_lang") or "zh"),
         output_mode=output_mode,

@@ -27,6 +27,7 @@ import time
 import traceback
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from workers.pdfmathtranslate import (
     BABELDOC_VERSION,
@@ -88,6 +89,13 @@ def _build_settings(job: Job):
     # but it must not disable the mono output that the publish contract reads.
     no_mono = False
     no_dual = job.output_mode == "mono"
+    engine = OpenAISettings(
+        openai_model=job.model,
+        openai_base_url=job.base_url or None,
+        openai_api_key=job.api_key,
+    )
+    if urlsplit(job.base_url).hostname == "api.deepseek.com":
+        engine._openai_extra_body = {"thinking": {"type": "disabled"}}
     settings = SettingsModel(
         # The manifest is converted from BabelDOC's debug layout, so debug mode
         # is always on. Whether the worker *keeps* that output is a separate
@@ -99,6 +107,7 @@ def _build_settings(job: Job):
             output=str(job.output_dir),
             qps=job.qps,
             glossaries=str(job.glossary_path) if job.glossary_path else None,
+            custom_system_prompt=job.custom_system_prompt,
             # The extractor's LLM sweep runs before translating and costs more
             # than the translation itself; the backend learns terms from the
             # finished manifest instead, off the operator's wait path.
@@ -109,11 +118,7 @@ def _build_settings(job: Job):
             no_dual=no_dual,
             watermark_output_mode="no_watermark" if job.no_watermark else "watermarked",
         ),
-        translate_engine_settings=OpenAISettings(
-            openai_model=job.model,
-            openai_base_url=job.base_url or None,
-            openai_api_key=job.api_key,
-        ),
+        translate_engine_settings=engine,
     )
     settings.validate_settings()
     return settings

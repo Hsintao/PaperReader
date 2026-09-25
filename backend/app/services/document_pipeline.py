@@ -495,6 +495,7 @@ def process_document(
                 base_url=override_base_url or settings.openai_base_url,
                 model=override_model or settings.openai_model,
                 glossary_path=glossary_csv,
+                translation_domain=translation_domain,
                 on_event=_event_reporter(record, switcher),
             )
         except Exception:

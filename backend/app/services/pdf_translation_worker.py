@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from app.core.config import settings
+from app.services.translation_prompts import build_worker_system_prompt
 
 EventSink = Callable[[dict], None]
 
@@ -144,13 +145,19 @@ def _job_payload(
     base_url: str,
     model: str,
     glossary_path: Path | None,
+    translation_domain: str = "general",
 ) -> dict:
     payload = {
         "job_id": document_id,
         "input_pdf": str(input_pdf),
         "output_dir": str(output_dir),
         "work_dir": str(work_dir),
-        "translation": {"api_key": api_key, "base_url": base_url, "model": model},
+        "translation": {
+            "api_key": api_key,
+            "base_url": base_url,
+            "model": model,
+            "custom_system_prompt": build_worker_system_prompt(translation_domain),
+        },
         "options": {
             "output": settings.pdfmathtranslate_output_mode,
             "no_watermark": True,
@@ -386,6 +393,7 @@ def run_worker(
     base_url: str,
     model: str,
     glossary_path: Path | None = None,
+    translation_domain: str = "general",
     on_event: EventSink | None = None,
     on_start: Callable[[WorkerRun], None] | None = None,
     timeout: float | None = None,
@@ -407,6 +415,7 @@ def run_worker(
                 base_url=base_url,
                 model=model,
                 glossary_path=glossary_path,
+                translation_domain=translation_domain,
             ),
             ensure_ascii=False,
             indent=2,

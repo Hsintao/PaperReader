@@ -160,6 +160,18 @@ def test_a_finished_run_registers_its_manifest_and_glossary(isolated_storage, mo
     assert result.extracted_text.startswith("# Attention Is All You Need")
 
 
+def test_pipeline_passes_selected_translation_domain_to_worker(isolated_storage, monkeypatch, tmp_path):
+    from app.services.app_settings import AppSettings
+
+    calls = _stub_worker(monkeypatch, tmp_path)
+    record = create_document_record(_write_pdf(tmp_path / "paper.pdf"))
+    result = _run(record, provider_settings=AppSettings(
+        api_key="test-key", model="test-model", translation_domain="medical",
+    ))
+    assert result.status == "done"
+    assert calls[0]["translation_domain"] == "medical"
+
+
 def test_a_run_without_a_worker_glossary_registers_only_the_manifest(
     isolated_storage, monkeypatch, tmp_path
 ):
