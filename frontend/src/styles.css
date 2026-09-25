@@ -389,6 +389,12 @@ textarea { resize: vertical; }
 .doc-meta {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
+}
+.doc-meta > .tiny {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .doc-name {
   font-size: 13px;
@@ -405,9 +411,27 @@ textarea { resize: vertical; }
   margin-top: 2px;
   font-size: 11px;
   color: var(--muted);
+  min-width: 0;
+}
+.doc-sub > span {
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.doc-sub .badge {
+  flex: 0 0 auto;
+}
+.doc-actions {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex: 0 0 auto;
+  margin-right: 2px;
 }
 .star-btn {
-  padding: 4px;
+  padding: 3px;
   color: var(--muted);
   border-radius: 4px;
 }

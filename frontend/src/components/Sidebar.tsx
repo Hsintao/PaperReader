@@ -272,37 +272,39 @@ export function Sidebar({
                   </div>
                   <div className="muted tiny">{formatTime(doc.last_opened_at || doc.updated_at || doc.created_at)}</div>
                 </div>
-                <button
-                  className={`star-btn ${fav ? 'on' : ''}`}
-                  title={fav ? '取消收藏' : '收藏'}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onToggleFavorite(doc.document_id)
-                  }}
-                >
-                  <Star size={14} fill={fav ? 'currentColor' : 'none'} />
-                </button>
-                <button
-                  className="star-btn"
-                  title={busy ? '处理中，无法重新处理' : '重新处理（重新解析并翻译）'}
-                  disabled={busy}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onReprocess(doc.document_id)
-                  }}
-                >
-                  <RefreshCw size={14} />
-                </button>
-                <button
-                  className="star-btn"
-                  title="移除历史"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onDelete(doc.document_id)
-                  }}
-                >
-                  <Trash2 size={14} />
-                </button>
+                <div className="doc-actions">
+                  <button
+                    className={`star-btn ${fav ? 'on' : ''}`}
+                    title={fav ? '取消收藏' : '收藏'}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onToggleFavorite(doc.document_id)
+                    }}
+                  >
+                    <Star size={14} fill={fav ? 'currentColor' : 'none'} />
+                  </button>
+                  <button
+                    className="star-btn"
+                    title={busy ? '处理中，无法重新处理' : '重新处理（重新解析并翻译）'}
+                    disabled={busy}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onReprocess(doc.document_id)
+                    }}
+                  >
+                    <RefreshCw size={14} />
+                  </button>
+                  <button
+                    className="star-btn"
+                    title="移除历史"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onDelete(doc.document_id)
+                    }}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
                 <ChevronRight size={14} className="chev" />
               </div>
             )
