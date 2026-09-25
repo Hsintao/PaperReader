@@ -712,6 +712,9 @@ textarea { resize: vertical; }
   box-shadow: var(--shadow-md);
   background: var(--bg-soft);
 }
+[data-theme='dark'] .pdf-canvas-wrap .react-pdf__Page canvas {
+  filter: invert(0.93) hue-rotate(180deg) brightness(0.96) contrast(0.9);
+}
 .pdf-canvas-wrap .react-pdf__Page__textContent,
 .pdf-canvas-wrap .react-pdf__Page__textContent span {
   -webkit-user-select: text !important;
