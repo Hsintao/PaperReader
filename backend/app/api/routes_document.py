@@ -21,6 +21,8 @@ from app.models.schemas import (
 from app.models.store import (
     list_documents as store_list_documents,
     annotated_pdf_filename,
+    begin_document_delete,
+    finish_document_delete,
     mark_document_failed,
     merged_pdf_filename,
     normalized_source_filename,
@@ -28,9 +30,9 @@ from app.models.store import (
     queue_document_retry,
     require_document,
     save_document,
-    soft_delete_document,
     touch_document_opened,
     translated_pdf_filename,
+    wait_for_document_run,
 )
 from app.services.alignment_service import load_alignment_entries, locate_in_alignment, proportional_highlight
 from app.services.annotation_render import ANNOTATION_REVISION
@@ -177,6 +179,9 @@ def cancel_document(document_id: str) -> dict:
         raise HTTPException(status_code=409, detail="Document is not being processed")
     if not cancel_worker(document_id):
         raise HTTPException(status_code=409, detail="Document worker is not active")
+    # The stopped worker only ends the run; let it write its own terminal state
+    # before this reports the document cancelled, so nothing is left writing.
+    wait_for_document_run(document_id)
     record.status = "cancelled"
     record.failure = None
     record.current_stage = None
@@ -388,5 +393,11 @@ def locate_counterpart(
 def delete_document(
     document_id: str
 ) -> dict:
-    removed = soft_delete_document(document_id)
+    # Flag the document first so a run that is still translating stops
+    # publishing; then stop its worker and let the run unwind before its files
+    # are removed, so nothing it writes is left behind after the purge.
+    record = begin_document_delete(document_id)
+    cancel_worker(document_id)
+    wait_for_document_run(document_id)
+    removed = finish_document_delete(record)
     return {"ok": True, "document_id": document_id, "removed": removed}

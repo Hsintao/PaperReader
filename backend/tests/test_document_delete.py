@@ -1,8 +1,10 @@
 """Deleting a document also removes the artifacts derived from it."""
 
+import threading
 from pathlib import Path
 
 from app.core.config import settings
+from app.models import store
 from app.models.store import DocumentRecord, save_document
 
 
@@ -106,3 +108,72 @@ def test_delete_tolerates_a_missing_output_directory(client, isolated_storage):
 
     assert client.delete(f"/api/document/{document_id}").status_code == 200
     assert not source.exists()
+
+
+def test_delete_stops_a_running_pipeline_and_removes_its_output(
+    client, isolated_storage, monkeypatch
+):
+    """A run in flight must not republish into a document the operator deleted."""
+    from app.api import routes_document
+    from app.services import document_pipeline
+    from app.services.pdf_translation_worker import WorkerCancelled
+
+    document_id = "doc-running"
+    source = _source(document_id)
+    record = save_document(
+        DocumentRecord(
+            document_id=document_id,
+            source_type="pdf",
+            source_path=source,
+            source_filename="paper.pdf",
+            status="processing",
+        )
+    )
+    output_dir = settings.output_dir / document_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "paper_Chinese_ver.pdf").write_bytes(b"%PDF-1.4\n")
+
+    entered = threading.Event()
+    released = threading.Event()
+    cancelled: list[str] = []
+
+    def fake_worker(**_kwargs):
+        entered.set()
+        assert released.wait(10), "the fake worker was never stopped"
+        raise WorkerCancelled("worker cancelled")
+
+    def fake_cancel(cancelled_id: str) -> bool:
+        cancelled.append(cancelled_id)
+        released.set()
+        return True
+
+    monkeypatch.setattr(document_pipeline, "run_worker", fake_worker)
+    monkeypatch.setattr(routes_document, "cancel_worker", fake_cancel)
+
+    run = threading.Thread(
+        target=document_pipeline.process_document,
+        args=(record,),
+        kwargs={
+            "override_api_key": "test-key",
+            "override_base_url": "https://llm.example/v1",
+            "override_model": "test-model",
+        },
+    )
+    run.start()
+    try:
+        assert entered.wait(10), "the pipeline never reached the worker"
+        response = client.delete(f"/api/document/{document_id}")
+        assert response.status_code == 200, response.text
+        # The delete path stops the worker before it removes anything.
+        assert cancelled == [document_id]
+    finally:
+        released.set()
+        run.join(10)
+
+    assert not run.is_alive()
+    # The stopped run published nothing, and the purge removed the source and
+    # the previous run's output directory.
+    assert not output_dir.exists()
+    assert not source.exists()
+    assert store.get_document(document_id) is None
+    assert document_id not in store.DOCUMENTS

@@ -21,6 +21,8 @@ from app.models.store import (
     FailureEntry,
     annotated_pdf_filename,
     merged_pdf_filename,
+    register_document_run,
+    release_document_run,
     save_document,
     set_document_metadata,
     translated_pdf_filename,
@@ -91,6 +93,18 @@ def _drop_artifacts(record: DocumentRecord, *kinds: str) -> None:
     record.artifacts = [
         artifact for artifact in record.artifacts if artifact.kind not in kinds
     ]
+
+
+def _abandoned(record: DocumentRecord) -> bool:
+    """True once the document was deleted: its run owns nothing to publish."""
+    return record.deleted_at is not None
+
+
+def _persist(record: DocumentRecord) -> None:
+    """Write this run's state, unless the document was deleted while it ran."""
+    if _abandoned(record):
+        return
+    save_document(record)
 
 
 def _publish_translated_pdf(
@@ -430,6 +444,36 @@ def process_document(
     provider_settings: AppSettings | None = None,
     resume_from: str | None = None,
 ) -> DocumentRecord:
+    """Run the translator for one document and publish its products.
+
+    A document is owned by one run at a time: the record is shared with the API
+    and with the previous run's late writes, so a second run is only ever
+    started after this one has released the document.
+    """
+    register_document_run(record.document_id)
+    try:
+        return _process_document(
+            record,
+            override_api_key=override_api_key,
+            override_base_url=override_base_url,
+            override_model=override_model,
+            provider_settings=provider_settings,
+            resume_from=resume_from,
+        )
+    finally:
+        release_document_run(record.document_id)
+
+
+def _process_document(
+    record: DocumentRecord,
+    override_api_key: str | None = None,
+    override_base_url: str | None = None,
+    override_model: str | None = None,
+    provider_settings: AppSettings | None = None,
+    resume_from: str | None = None,
+) -> DocumentRecord:
+    if _abandoned(record):
+        return record
     if provider_settings is not None:
         override_api_key = provider_settings.api_key
         override_base_url = provider_settings.base_url
@@ -466,10 +510,22 @@ def process_document(
         # The original is published up front so a failed run still leaves the
         # paper readable from the history list.
         _register_source_artifacts(record, output_dir)
+        # This run owns the document's products now. Until it publishes its own
+        # translation, the previous run's translated PDF is not this run's
+        # result: a failure or a cancellation must not serve it as one.
         _drop_artifacts(
-            record, MANIFEST_KIND, GLOSSARY_KIND, "annotated_pdf", "dual_pdf", "merged_pdf"
+            record,
+            MANIFEST_KIND,
+            GLOSSARY_KIND,
+            "translated_pdf",
+            "annotated_pdf",
+            "dual_pdf",
+            "merged_pdf",
         )
+        record.translated_pdf_url = None
 
+        if _abandoned(record):
+            return record
         glossary_csv = _write_domain_glossary(translation_domain, work_dir)
         try:
             products = run_worker(
@@ -488,8 +544,9 @@ def process_document(
             switcher.fail()
             raise
         switcher.close()
+        if _abandoned(record):
+            return record
         result = PdfTranslationResult.from_worker(record.source_path, products)
-        record.translated_pdf_url = None
         translated_output = _publish_translated_pdf(record, result.translated_pdf, output_dir)
         _publish_merged_pdf(record, translated_output, output_dir)
         _register_extraction_artifacts(record, result)
@@ -524,7 +581,8 @@ def process_document(
         switcher.fail()
         stage = record.current_stage or resume_from or "upload"
         _fail(record, stage, str(exc), resume_from)
-    return save_document(record)
+    _persist(record)
+    return record
 
 
 def _fail(
@@ -600,5 +658,5 @@ def _build_reader_state(
         _publish_annotated_pdf(record, manifest.blocks, manifest.pages, output_dir)
     else:
         record.logs.append("Annotated PDF skipped: reading preference off")
-    save_document(record)
+    _persist(record)
     return display_title

@@ -13,7 +13,14 @@ from pathlib import Path
 import pytest
 from pypdf import PdfWriter
 
-from app.models.store import ArtifactEntry, FailureEntry, save_document
+from app.core.config import settings
+from app.models.store import (
+    ArtifactEntry,
+    FailureEntry,
+    begin_document_delete,
+    document_run_active,
+    save_document,
+)
 from app.services import document_pipeline
 from app.services.document_pipeline import (
     GLOSSARY_KIND,
@@ -414,6 +421,93 @@ def test_a_cancelled_run_publishes_no_products(
     assert any("Cancelled" in line for line in result.logs)
     # Nothing is left holding the document back from a reprocess.
     assert result.status not in {"queued", "processing"}
+
+
+def test_a_failed_rerun_does_not_serve_the_previous_translation(
+    isolated_storage, monkeypatch, tmp_path, client
+):
+    """A rerun that fails must not expose the translation the last run published."""
+    from app.services.pdf_translation_worker import WorkerError
+
+    _stub_worker(monkeypatch, tmp_path)
+    record = create_document_record(_write_pdf(tmp_path / "paper.pdf"))
+    assert _run(record).translated_pdf_url is not None
+
+    def broken_worker(_kwargs):
+        raise WorkerError("translation failed", stage="translate")
+
+    _stub_worker(monkeypatch, tmp_path, on_call=broken_worker)
+    result = _run(record, resume_from="parse")
+
+    assert result.status == "failed"
+    assert result.translated_pdf_url is None
+    assert [item.kind for item in result.artifacts if item.kind == "translated_pdf"] == []
+    assert [item.kind for item in result.artifacts if item.kind == "merged_pdf"] == []
+    status = client.get(f"/api/document/{record.document_id}").json()
+    assert status["status"] == "failed"
+    assert status["translated_pdf_url"] is None
+
+
+def test_a_cancelled_rerun_does_not_serve_the_previous_translation(
+    isolated_storage, monkeypatch, tmp_path, client
+):
+    from app.services.pdf_translation_worker import WorkerCancelled
+
+    _stub_worker(monkeypatch, tmp_path)
+    record = create_document_record(_write_pdf(tmp_path / "paper.pdf"))
+    assert _run(record).translated_pdf_url is not None
+
+    def cancelled_worker(_kwargs):
+        raise WorkerCancelled("worker cancelled")
+
+    _stub_worker(monkeypatch, tmp_path, on_call=cancelled_worker)
+    result = _run(record, resume_from="parse")
+
+    assert result.status == "cancelled"
+    assert result.translated_pdf_url is None
+    status = client.get(f"/api/document/{record.document_id}").json()
+    assert status["translated_pdf_url"] is None
+
+
+def test_a_document_deleted_mid_run_publishes_nothing(
+    isolated_storage, monkeypatch, tmp_path
+):
+    record = create_document_record(_write_pdf(tmp_path / "paper.pdf"))
+
+    def delete_during_run(_kwargs):
+        begin_document_delete(record.document_id)
+
+    _stub_worker(monkeypatch, tmp_path, on_call=delete_during_run)
+    result = _run(record)
+
+    published = {
+        "translated_pdf",
+        "manifest",
+        "glossary",
+        "annotated_pdf",
+        "merged_pdf",
+    }
+    assert [item.kind for item in result.artifacts if item.kind in published] == []
+    assert result.translated_pdf_url is None
+    output_dir = settings.output_dir / record.document_id
+    assert not (output_dir / "paper_Chinese_ver.pdf").exists()
+    assert not (output_dir / "paper_双语对照.pdf").exists()
+
+
+def test_a_run_owns_the_document_until_it_returns(isolated_storage, monkeypatch, tmp_path):
+    seen: list[bool] = []
+    _stub_worker(
+        monkeypatch,
+        tmp_path,
+        on_call=lambda kwargs: seen.append(document_run_active(kwargs["document_id"])),
+    )
+    record = create_document_record(_write_pdf(tmp_path / "paper.pdf"))
+
+    result = _run(record)
+
+    assert result.status == "done"
+    assert seen == [True], "the run must own the document while it writes"
+    assert document_run_active(record.document_id) is False
 
 
 def test_a_finished_run_schedules_background_term_extraction(

@@ -1,10 +1,27 @@
 from fastapi import HTTPException
 import pytest
+import threading
 
 from app.core.config import settings
 from app.core.database import db_cursor, init_database
 from app.models import store
 from app.services.stage_tracker import init_stages, with_stage
+
+
+def _hold_run(document_id: str) -> tuple[threading.Thread, threading.Event, threading.Event]:
+    """Keep a run registered for a document until the test releases it."""
+    started = threading.Event()
+    release = threading.Event()
+
+    def hold() -> None:
+        store.register_document_run(document_id)
+        started.set()
+        release.wait(10)
+        store.release_document_run(document_id)
+
+    thread = threading.Thread(target=hold, daemon=True)
+    thread.start()
+    return thread, started, release
 
 
 def test_failed_document_can_queue_retry_once(client, monkeypatch):
@@ -146,6 +163,90 @@ def test_cancel_needs_an_active_worker_and_a_cancelled_document_can_be_reprocess
     )
     assert client.post("/api/document/cancelled-doc/reprocess").status_code == 202
     assert dispatched == [("cancelled-doc", "parse")]
+
+
+def test_queueing_a_run_is_refused_while_the_previous_run_is_finishing(
+    client, isolated_storage, monkeypatch
+):
+    from app.api import routes_document
+
+    dispatched: list[str] = []
+    monkeypatch.setattr(
+        routes_document,
+        "_run_retry_pipeline",
+        lambda document_id, resume_from: dispatched.append(document_id),
+    )
+    source = settings.upload_dir / "settling.pdf"
+    source.write_bytes(b"pdf")
+    store.save_document(store.DocumentRecord("settling-doc", "pdf", source, status="cancelled"))
+
+    thread, started, release = _hold_run("settling-doc")
+    try:
+        assert started.wait(10)
+        reprocess = client.post("/api/document/settling-doc/reprocess")
+        assert reprocess.status_code == 409, reprocess.text
+        assert reprocess.json()["detail"] == "The previous run is still finishing"
+        assert dispatched == []
+    finally:
+        release.set()
+        thread.join(10)
+
+    # Once the previous run has stopped writing, the reprocess is accepted.
+    assert client.post("/api/document/settling-doc/reprocess").status_code == 202
+    assert dispatched == ["settling-doc"]
+
+
+def test_retry_is_refused_while_the_failed_run_is_still_finishing(
+    client, isolated_storage, monkeypatch
+):
+    from app.api import routes_document
+
+    dispatched: list[str] = []
+    monkeypatch.setattr(
+        routes_document,
+        "_run_retry_pipeline",
+        lambda document_id, resume_from: dispatched.append(document_id),
+    )
+    source = settings.upload_dir / "still-finishing.pdf"
+    source.write_bytes(b"pdf")
+    store.save_document(
+        store.DocumentRecord(
+            "still-finishing-doc",
+            "pdf",
+            source,
+            status="failed",
+            failure=store.FailureEntry(stage="translate", message="translation failed"),
+        )
+    )
+
+    thread, started, release = _hold_run("still-finishing-doc")
+    try:
+        assert started.wait(10)
+        retry = client.post("/api/document/still-finishing-doc/retry")
+        assert retry.status_code == 409, retry.text
+        assert retry.json()["detail"] == "The previous run is still finishing"
+        assert dispatched == []
+    finally:
+        release.set()
+        thread.join(10)
+
+    assert client.post("/api/document/still-finishing-doc/retry").status_code == 202
+    assert dispatched == ["still-finishing-doc"]
+
+
+def test_cancel_is_refused_for_a_worker_that_already_finished(client, isolated_storage):
+    """A run whose worker emitted its finish event is no longer cancellable."""
+    source = settings.upload_dir / "finished-worker.pdf"
+    source.write_bytes(b"pdf")
+    store.save_document(
+        store.DocumentRecord("finished-worker-doc", "pdf", source, status="processing")
+    )
+
+    response = client.post("/api/document/finished-worker-doc/cancel")
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "Document worker is not active"
+    assert store.get_document("finished-worker-doc").status == "processing"
 
 
 def test_retry_rejects_non_failed_and_non_retryable_documents(client):

@@ -111,6 +111,41 @@ class DocumentRecord:
 DOCUMENTS: dict[str, DocumentRecord] = {}
 _RETRY_LOCK = threading.RLock()
 
+# The pipeline run that currently owns each document. A run mutates the shared
+# DocumentRecord in place, so exactly one run may be writing a document at a
+# time: a new run must wait until the previous one has stopped, which is what
+# keeps a superseded run from overwriting the state its successor already wrote.
+_RUN_THREADS: dict[str, threading.Thread] = {}
+_RUN_THREADS_LOCK = threading.RLock()
+
+
+def register_document_run(document_id: str) -> None:
+    """Mark the calling thread as the run that owns ``document_id``."""
+    with _RUN_THREADS_LOCK:
+        _RUN_THREADS[document_id] = threading.current_thread()
+
+
+def release_document_run(document_id: str) -> None:
+    with _RUN_THREADS_LOCK:
+        if _RUN_THREADS.get(document_id) is threading.current_thread():
+            del _RUN_THREADS[document_id]
+
+
+def document_run_active(document_id: str) -> bool:
+    with _RUN_THREADS_LOCK:
+        thread = _RUN_THREADS.get(document_id)
+    return thread is not None and thread.is_alive()
+
+
+def wait_for_document_run(document_id: str, timeout: float = 10.0) -> bool:
+    """Wait for the document's run to stop writing. False on timeout."""
+    with _RUN_THREADS_LOCK:
+        thread = _RUN_THREADS.get(document_id)
+    if thread is None:
+        return True
+    thread.join(timeout)
+    return not thread.is_alive()
+
 
 def normalized_source_filename(name: str, original_name: str = "document.pdf") -> str:
     """Return a safe display filename while preserving the source file type."""
@@ -402,6 +437,10 @@ def queue_document_retry(document_id: str) -> tuple[DocumentRecord, str]:
     """Claim one failed document using a process lock plus SQLite compare-and-set."""
     with _RETRY_LOCK:
         record = require_document(document_id)
+        # The failed run may still be writing its last state; queueing now would
+        # let that write land on top of the new run.
+        if document_run_active(document_id):
+            raise HTTPException(status_code=409, detail="The previous run is still finishing")
         if record.status != "failed":
             raise HTTPException(status_code=409, detail="Document is not in a retryable failed state")
         if record.failure and not record.failure.retryable:
@@ -441,6 +480,8 @@ def queue_document_reprocess(
     """
     with _RETRY_LOCK:
         record = require_document(document_id)
+        if document_run_active(document_id):
+            raise HTTPException(status_code=409, detail="The previous run is still finishing")
         if record.status in {"queued", "processing"}:
             raise HTTPException(status_code=409, detail="Document is already being processed")
         if not record.source_path.is_file():
@@ -475,7 +516,7 @@ def mark_document_failed(document_id: str, stage: str, message: str) -> None:
     failed documents keep their state.
     """
     record = DOCUMENTS.get(document_id)
-    if record is None or record.status not in {"queued", "processing"}:
+    if record is None or record.deleted_at or record.status not in {"queued", "processing"}:
         return
     record.status = "failed"
     record.failure = FailureEntry(
@@ -536,11 +577,23 @@ def purge_document_artifacts(record: DocumentRecord) -> list[str]:
     return removed
 
 
-def soft_delete_document(document_id: str) -> list[str]:
-    """Remove a document from the library and delete its derived artifacts."""
+def begin_document_delete(document_id: str) -> DocumentRecord:
+    """Flag a document deleted before its artifacts are purged.
+
+    The flag is written first so a pipeline run that is still translating sees
+    it and stops publishing into a document the operator has already removed;
+    the run is then stopped and its files removed by
+    :func:`finish_document_delete`.
+    """
     record = require_document(document_id)
-    removed = purge_document_artifacts(record)
     record.deleted_at = _utcnow()
     save_document(record)
-    DOCUMENTS.pop(document_id, None)
+    return record
+
+
+def finish_document_delete(record: DocumentRecord) -> list[str]:
+    """Remove a flagged document's derived artifacts and drop it from the library."""
+    removed = purge_document_artifacts(record)
+    save_document(record)
+    DOCUMENTS.pop(record.document_id, None)
     return removed
