@@ -358,15 +358,17 @@ chmod +x desktop/build_macos.sh
 
 脚本会依次执行：
 
-1. `npm ci`
+1. `npm ci`（`node_modules` 与 `package-lock.json` 一致时跳过安装，直接复用）
 2. `npm run build`
 3. 生成 `.icns`
 4. 使用 `py2app` 构建原生 `.app`
 5. 补入运行时 Python 包/动态库
-6. 若存在 `desktop/worker-runtime`，把它复制到 `Contents/Resources/worker-runtime`（在签名之前，否则签名失效）
+6. 把 `desktop/worker-runtime` 复制到 `Contents/Resources/worker-runtime`（在签名之前，否则签名失效）。瘦身（裁剪 gradio/pip/Tcl-Tk 等）只在运行时内容变化时执行一次，结果缓存在 `build/cache/worker-runtime-slim`，之后通过 APFS clonefile 秒级拷入 app
 7. 对 `.app` 执行 ad-hoc `codesign`
-8. 使用 `hdiutil` 制作压缩 DMG
+8. 制作压缩 DMG（macOS 26 起用 `diskutil image create from`，旧系统回退 `hdiutil create`）
 9. 生成 SHA-256 文件
+
+本地迭代时可用 `./desktop/build_macos.sh --fast` 跳过 DMG 打包（第 8、9 步），直接使用 `dist/PaperReader.app`。
 
 应用版本来自：
 
