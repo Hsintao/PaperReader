@@ -14,7 +14,7 @@ import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { PDF_DOCUMENT_OPTIONS } from '../lib/pdfDocumentOptions'
 import { buildSpanIndex, locateNeedle, normalized, paintRange, prefixMatchScore, type SpanIndex } from '../lib/pdfText'
 import type { PDFPageProxy } from 'pdfjs-dist'
-import { applyDarkPageFilter, getImageTransforms } from '../lib/pdfDarkMode'
+import { applyDarkPageFilterChunked, getImageTransforms } from '../lib/pdfDarkMode'
 import type { AnnotationItem as ApiAnnotationItem } from '../lib/api'
 import { usePageText } from '../hooks/usePageText'
 import { usePdfZoom } from '../hooks/usePdfZoom'
@@ -187,8 +187,8 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
   const updateRenderRange = () => {
     const scroller = scrollRef.current
     if (!active || !scroller || mode !== 'scroll' || !numPages) return
-    const top = scroller.scrollTop - 700
-    const bottom = scroller.scrollTop + scroller.clientHeight + 700
+    const top = scroller.scrollTop - 1400
+    const bottom = scroller.scrollTop + scroller.clientHeight + 1400
     let first = numPages
     let last = 1
     for (let i = 0; i < pageRefs.current.length; i += 1) {
@@ -470,14 +470,21 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
     const canvas = pageRefs.current[page - 1]?.querySelector('canvas')
     if (!canvas) return
     if (darkModeRef.current) {
-    const { width, height } = canvas
-    const baseViewport = pdfPage.getViewport({ scale: 1 })
-    const renderScale = scale * (containerWidth ? containerWidth / baseViewport.width : 1)
-    const viewport = pdfPage.getViewport({ scale: renderScale * window.devicePixelRatio })
-    const operators = await pdfPage.getOperatorList()
-    if (!darkModeRef.current || pageRefs.current[page - 1]?.querySelector('canvas') !== canvas
-      || canvas.width !== width || canvas.height !== height) return
-    applyDarkPageFilter(canvas, getImageTransforms(operators, viewport.transform))
+      // The canvas reaches the screen white one frame before this callback
+      // runs; the CSS invert added here applies from the first paint, so the
+      // page reads as dark immediately while the pixel filter catches up.
+      canvas.classList.add('pdf-dark-approx')
+      const { width, height } = canvas
+      const baseViewport = pdfPage.getViewport({ scale: 1 })
+      const renderScale = scale * (containerWidth ? containerWidth / baseViewport.width : 1)
+      const viewport = pdfPage.getViewport({ scale: renderScale * window.devicePixelRatio })
+      const operators = await pdfPage.getOperatorList()
+      const stale = () => pageRefs.current[page - 1]?.querySelector('canvas') !== canvas
+        || canvas.width !== width || canvas.height !== height
+      if (darkModeRef.current && !stale()) {
+        await applyDarkPageFilterChunked(canvas, getImageTransforms(operators, viewport.transform), stale)
+      }
+      if (!stale()) canvas.classList.remove('pdf-dark-approx')
     }
     const timing = loadTimingRef.current
     if (active && page === pageNumber && timing.loaded && !timing.rendered) {

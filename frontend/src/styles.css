@@ -691,6 +691,11 @@ textarea { resize: vertical; }
   align-items: center;
   gap: 4px;
 }
+/* Dark approximation shown from the first paint while the pixel-level page
+   filter catches up; close to the filter's paper tone so the swap is seamless. */
+[data-theme='dark'] .react-pdf__Page__canvas.pdf-dark-approx {
+  filter: invert(0.92) hue-rotate(180deg);
+}
 .pdf-page-counterpart-highlight .react-pdf__Page {
   outline: 4px solid rgba(255, 184, 0, 0.78);
   outline-offset: 3px;

@@ -49,23 +49,7 @@ export function getImageTransforms(operators: PDFOperatorList, viewportTransform
 const SAT_FULL = 12
 const SAT_NONE = 48
 
-export function applyDarkPageFilter(canvas: HTMLCanvasElement, imageTransforms: number[][]): void {
-  const ctx = canvas.getContext('2d')
-  if (!ctx || canvas.width === 0 || canvas.height === 0) return
-  let protectedPixels: Uint8ClampedArray | undefined
-  if (imageTransforms.length) {
-    const mask = canvas.ownerDocument.createElement('canvas')
-    mask.width = canvas.width
-    mask.height = canvas.height
-    const maskCtx = mask.getContext('2d')!
-    for (const [a, b, c, d, e, f] of imageTransforms) {
-      maskCtx.setTransform(a, b, c, d, e, f)
-      maskCtx.fillRect(0, 0, 1, 1)
-    }
-    protectedPixels = maskCtx.getImageData(0, 0, mask.width, mask.height).data
-  }
-  const image = ctx.getImageData(0, 0, canvas.width, canvas.height)
-  const data = image.data
+function mapNeutralPixels(data: Uint8ClampedArray, protectedPixels?: Uint8ClampedArray): void {
   for (let i = 0; i < data.length; i += 4) {
     if (protectedPixels?.[i + 3]) continue
     const r = data[i]
@@ -80,5 +64,57 @@ export function applyDarkPageFilter(canvas: HTMLCanvasElement, imageTransforms: 
     data[i + 1] = g + t * (217.65 - 1.743 * g)
     data[i + 2] = b + t * (217.65 - 1.743 * b)
   }
+}
+
+function buildMaskContext(canvas: HTMLCanvasElement, imageTransforms: number[][]): CanvasRenderingContext2D | undefined {
+  if (!imageTransforms.length) return undefined
+  const mask = canvas.ownerDocument.createElement('canvas')
+  mask.width = canvas.width
+  mask.height = canvas.height
+  const maskCtx = mask.getContext('2d')!
+  for (const [a, b, c, d, e, f] of imageTransforms) {
+    maskCtx.setTransform(a, b, c, d, e, f)
+    maskCtx.fillRect(0, 0, 1, 1)
+  }
+  return maskCtx
+}
+
+export function applyDarkPageFilter(canvas: HTMLCanvasElement, imageTransforms: number[][]): void {
+  const ctx = canvas.getContext('2d')
+  if (!ctx || canvas.width === 0 || canvas.height === 0) return
+  const maskCtx = buildMaskContext(canvas, imageTransforms)
+  const protectedPixels = maskCtx?.getImageData(0, 0, canvas.width, canvas.height).data
+  const image = ctx.getImageData(0, 0, canvas.width, canvas.height)
+  mapNeutralPixels(image.data, protectedPixels)
   ctx.putImageData(image, 0, 0)
+}
+
+const nextFrame = () => new Promise<void>((resolve) => {
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve())
+  else setTimeout(resolve, 0)
+})
+
+// Chunked variant: process the canvas in horizontal bands and yield a frame
+// between bands, so filtering several pages in the render window cannot block
+// scrolling. Aborts early when the canvas was re-rendered in the meantime
+// (zoom/theme change) or isStale() reports the page element was replaced.
+export async function applyDarkPageFilterChunked(
+  canvas: HTMLCanvasElement,
+  imageTransforms: number[][],
+  isStale: () => boolean = () => false
+): Promise<void> {
+  const ctx = canvas.getContext('2d')
+  if (!ctx || canvas.width === 0 || canvas.height === 0) return
+  const { width, height } = canvas
+  const maskCtx = buildMaskContext(canvas, imageTransforms)
+  const bandHeight = Math.max(256, Math.floor(1_000_000 / width))
+  for (let y = 0; y < height; y += bandHeight) {
+    if (isStale() || canvas.width !== width || canvas.height !== height) return
+    const h = Math.min(bandHeight, height - y)
+    const protectedPixels = maskCtx?.getImageData(0, y, width, h).data
+    const image = ctx.getImageData(0, y, width, h)
+    mapNeutralPixels(image.data, protectedPixels)
+    ctx.putImageData(image, 0, y)
+    await nextFrame()
+  }
 }
