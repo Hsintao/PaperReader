@@ -29,7 +29,15 @@ function Refresh-Path {
 function Resolve-Python311 {
     $launcher = Get-Command py.exe -ErrorAction SilentlyContinue
     if ($launcher) {
-        $out = & $launcher.Source -3.11 -c "import sys; print(sys.executable)" 2>$null
+        # A missing 3.11 runtime makes py.exe exit non-zero; with $ErrorActionPreference
+        # = "Stop" PowerShell would throw before the fallback below gets a chance.
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $out = & $launcher.Source -3.11 -c "import sys; print(sys.executable)" 2>$null
+        } finally {
+            $ErrorActionPreference = $prevEAP
+        }
         if ($LASTEXITCODE -eq 0 -and $out) { return $out.Trim() }
     }
     $pythonCmd = Get-Command python.exe -ErrorAction SilentlyContinue
@@ -64,7 +72,7 @@ if (-not $PythonPath) {
     $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
     if ($winget) {
         Log "Installing Python 3.11 via winget"
-        & $winget.Source install --id Python.Python.3.11 -e --accept-source-agreements --accept-package-agreements
+        & $winget.Source install --id Python.Python.3.11 -e --source winget --accept-source-agreements --accept-package-agreements
         Refresh-Path
         $PythonPath = Resolve-Python311
     }
@@ -82,7 +90,7 @@ if (-not $NpmPath) {
     $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
     if ($winget) {
         Log "Installing Node.js LTS via winget"
-        & $winget.Source install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements
+        & $winget.Source install --id OpenJS.NodeJS.LTS -e --source winget --accept-source-agreements --accept-package-agreements
         Refresh-Path
         $NpmPath = Resolve-Npm
     }
@@ -115,7 +123,13 @@ function Test-WorkerRuntime([string]$root) {
     if ($manifest.runtime_type -ne "python-standalone") { return $false }
     $py = Join-Path $root "python.exe"
     if (-not (Test-Path -LiteralPath $py)) { return $false }
-    & $py -c "import pdf2zh_next, babeldoc" 2>$null | Out-Null
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $py -c "import pdf2zh_next, babeldoc" 2>$null | Out-Null
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
     return ($LASTEXITCODE -eq 0)
 }
 
