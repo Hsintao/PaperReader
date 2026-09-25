@@ -43,6 +43,10 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
+        # requests only needs chardet OR charset_normalizer; chardet >= 6 ships
+        # mypyc-compiled extensions that fail to import from a frozen app
+        # (SystemError: module filename missing), so keep it out of the bundle.
+        "chardet",
         "pytest",
         "IPython",
         "ipykernel",
