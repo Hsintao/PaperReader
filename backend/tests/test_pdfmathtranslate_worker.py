@@ -452,7 +452,7 @@ def test_a_job_file_carries_the_key_that_redaction_removes(tmp_path):
     job = load_job(job_path)
 
     assert job.api_key == "sk-secret-value"
-    assert job.output_mode == settings.pdfmathtranslate_output_mode
+    assert job.output_mode == "mono"
     assert "glossary" not in payload
 
     redacted = job.redacted()
@@ -1058,9 +1058,7 @@ def test_debug_annotations_are_turned_off_before_the_pdf_is_drawn(monkeypatch):
     assert config.debug is False
 
 
-def test_the_job_file_carries_the_configured_output_mode(tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "pdfmathtranslate_output_mode", "dual")
-
+def test_the_job_file_requests_no_watermark_mono_output(tmp_path):
     payload = _job_payload(
         document_id="doc-1",
         input_pdf=tmp_path / "paper.pdf",
@@ -1072,32 +1070,9 @@ def test_the_job_file_carries_the_configured_output_mode(tmp_path, monkeypatch):
         glossary_path=None,
     )
 
-    assert payload["options"]["output"] == "dual"
+    # No output option: the worker's default mono run is all the backend needs.
+    assert "output" not in payload["options"]
     assert payload["options"]["no_watermark"] is True
-
-
-def test_a_dual_product_is_read_from_the_finish_event(tmp_path):
-    translated = tmp_path / "translated.pdf"
-    translated.write_bytes(b"%PDF-1.7\n")
-    manifest = tmp_path / "manifest.json"
-    manifest.write_text("{}", encoding="utf-8")
-    dual = tmp_path / "translated.dual.pdf"
-    dual.write_bytes(b"%PDF-1.7\n")
-    finish = {
-        "translated_pdf": str(translated),
-        "manifest_path": str(manifest),
-    }
-
-    assert _products_from_finish(finish, tmp_path).dual_pdf is None
-    assert _products_from_finish({**finish, "dual_pdf": ""}, tmp_path).dual_pdf is None
-    assert _products_from_finish({**finish, "dual_pdf": str(dual)}, tmp_path).dual_pdf == dual
-
-    with pytest.raises(WorkerError) as excinfo:
-        _products_from_finish(
-            {**finish, "dual_pdf": str(tmp_path / "gone.pdf")}, tmp_path
-        )
-
-    assert "bilingual" in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------

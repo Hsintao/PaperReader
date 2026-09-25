@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from pypdf import PdfWriter
 
-from app.models.store import FailureEntry, save_document
+from app.models.store import ArtifactEntry, FailureEntry, save_document
 from app.services import document_pipeline
 from app.services.document_pipeline import (
     GLOSSARY_KIND,
@@ -94,7 +94,10 @@ def _stub_worker(
     extraction_dir = output_dir / "extraction"
     extraction_dir.mkdir(parents=True, exist_ok=True)
     translated = _write_pdf(output_dir / "translated.pdf")
-    dual_pdf = _write_pdf(output_dir / "translated.dual.pdf") if dual else None
+    if dual:
+        # A dual-mode worker leaves its bilingual PDF in the output directory;
+        # the pipeline never registers it as an artifact.
+        _write_pdf(output_dir / "translated.dual.pdf")
     manifest = extraction_dir / "manifest.json"
     manifest.write_text(
         json.dumps(_manifest_payload(glossary=[{"source": "attention", "target": "注意力"}])),
@@ -119,7 +122,6 @@ def _stub_worker(
             mode_label="PDFMathTranslate-next 2.9.0 · mono",
             page_count=1,
             glossary_path=glossary_path,
-            dual_pdf=dual_pdf,
         )
 
     monkeypatch.setattr(document_pipeline, "run_worker", fake_run_worker)
@@ -331,21 +333,21 @@ def test_a_retry_reruns_the_worker_and_resets_the_parse_stage(
     assert result.failure is None
 
 
-def test_a_dual_run_registers_the_bilingual_pdf(
+def test_a_dual_run_registers_no_bilingual_pdf(
     isolated_storage, monkeypatch, tmp_path
 ):
+    """The dual-mode bilingual PDF is a raw worker product, not an artifact."""
     _stub_worker(monkeypatch, tmp_path, dual=True)
     record = create_document_record(_write_pdf(tmp_path / "paper.pdf"))
 
     result = _run(record)
 
     assert result.status == "done"
-    dual = next(item for item in result.artifacts if item.kind == "dual_pdf")
-    assert Path(dual.path).is_file()
-    assert Path(dual.path).name == "paper_双语对照.pdf"
-    assert dual.url == "/data/outputs/{}/paper_双语对照.pdf".format(record.document_id)
-    # The monolingual PDF stays the document's translated artifact.
-    assert result.translated_pdf_url.endswith("paper_Chinese_ver.pdf")
+    assert [item.kind for item in result.artifacts if item.kind == "dual_pdf"] == []
+    # The reader's bilingual view is the side-by-side merge.
+    merged = next(item for item in result.artifacts if item.kind == "merged_pdf")
+    assert Path(merged.path).name == "paper_双语对照.pdf"
+    assert Path(merged.path).is_file()
 
 
 def test_a_mono_run_registers_no_bilingual_pdf(
@@ -360,15 +362,24 @@ def test_a_mono_run_registers_no_bilingual_pdf(
     assert [item.kind for item in result.artifacts if item.kind == "dual_pdf"] == []
 
 
-def test_a_retry_drops_a_bilingual_pdf_the_new_run_did_not_produce(
+def test_a_retry_drops_a_legacy_bilingual_artifact(
     isolated_storage, monkeypatch, tmp_path
 ):
-    _stub_worker(monkeypatch, tmp_path, dual=True)
+    _stub_worker(monkeypatch, tmp_path)
     record = create_document_record(_write_pdf(tmp_path / "paper.pdf"))
     _run(record)
 
-    _stub_worker(monkeypatch, tmp_path, dual=False)
+    # A document processed before the backend stopped publishing the dual PDF
+    # still carries the artifact; the next run must purge it.
+    record.artifacts.append(
+        ArtifactEntry(
+            name="paper_双语逐页对照.pdf",
+            kind="dual_pdf",
+            path=str(tmp_path / "paper_双语逐页对照.pdf"),
+        )
+    )
     record.status = "failed"
+    _stub_worker(monkeypatch, tmp_path)
     result = _run(record, resume_from="parse")
 
     assert result.status == "done"

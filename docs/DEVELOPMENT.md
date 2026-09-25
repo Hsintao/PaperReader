@@ -1151,10 +1151,9 @@ cp .env.example .env
 | `PDFMATHTRANSLATE_TIMEOUT` | 单篇文档的处理预算，默认 `3600` 秒；超时后进程被强杀，文档按 `translate` 阶段失败 |
 | `PDFMATHTRANSLATE_WORKING_DIR` | 临时目录根，默认 `<DATA_DIR>/worker`；每篇文档一个子目录，作业结束时清空 |
 | `PDFMATHTRANSLATE_DEBUG`（默认 `false`） | 把翻译器自己的布局输出保留到 `outputs/<id>/extraction/debug`，单篇可达数百 MB；manifest 无论开关都会产出 |
-| `PDFMATHTRANSLATE_OUTPUT_MODE` | `mono`（译文单语，默认）或 `dual`（双语）；非法值回落 `mono` |
 | `PDFMATHTRANSLATE_QPS` | 同时翻译的段落数（默认 `4`，即库的默认值）。一篇论文的耗时几乎全在 `Translate Paragraphs` 阶段，与并发数成反比；提高前先确认供应商的并发/速率限制 |
 
-作业文件由 `app/services/pdf_translation_worker.py` 生成：`job_id`、`input_pdf`、`output_dir`、`work_dir`、`translation`（`api_key` / `base_url` / `model`）、`options`（`output` / `no_watermark` / `debug`）、`qps`，以及可选 `glossary`（领域术语表的 CSV 路径）。作业文件写在临时工作目录中，API key 只出现在这里，不写日志。
+作业文件由 `app/services/pdf_translation_worker.py` 生成：`job_id`、`input_pdf`、`output_dir`、`work_dir`、`translation`（`api_key` / `base_url` / `model`）、`options`（`no_watermark` / `debug`）、`qps`，以及可选 `glossary`（领域术语表的 CSV 路径）。作业文件写在临时工作目录中，API key 只出现在这里，不写日志。
 
 事件协议：worker 在 stdout 上逐行写 JSON，每行一个带 `type` 的事件；日志走 stderr，保证 stdout 可解析。
 
@@ -1167,7 +1166,7 @@ cp .env.example .env
 
 manifest 契约：worker 把 BabelDOC 的调试布局（`paragraph_finder.json`、`add_debug_information.json`、`il_translated.json`）转换成 `extraction/manifest.json`，schema 为 `paperreader-manifest-v1`，并用 `boxes_normalized: false` 声明坐标是 PDF 用户空间的点（原点在页面左下角）。内容包括：每页的 `width` / `height` 与按阅读顺序排列的区块；区块的 `kind`（`title` / `paragraph` / `list` / `formula` / `figure` / `table`）、`bbox`、`layout_label`、`source_text`、`translated_text`、`protected_spans`（URL、引用、行内公式、数字）、`fragment_id` / `logical_id` / `fragments`，图/表的 `captions` 与 `caption_bbox`，表格的 `table_html` 与单元格；顶层的 `figures`、`tables`、`references`、`logical_objects`（逻辑对象 id → 片段 id 列表，按阅读顺序）与 `glossary`（翻译器抽取的术语）。每个区块是一个物理片段，`logical_id` 指向它所属的上游布局区域；BabelDOC 的布局区域编号逐页从 1 开始，因此逻辑对象 id 带页码前缀（如 `p0-l7`），跨页重号不会被合并。`app/services/document_manifest.py` 是唯一读取方，由它生成 IR、页面几何、目录、图表、参考文献与对齐对；下游不读 BabelDOC 的内部 JSON。
 
-产物布局：`outputs/<document_id>/` 下是译文 PDF `<源文件名>_Chinese_ver.pdf`、dual 模式下的 `<源文件名>_双语对照.pdf`、`original.pdf`、`alignment.json`，以及 `extraction/manifest.json`、`extraction/glossary.csv`（术语表非空时才有）和可选的 `extraction/debug/`。`<源文件名>_原文标注.pdf` 只在「界面设置」开启原文标注时生成；偏好默认关闭，开启后阅读器会在打开旧文档时按需补建。
+产物布局：`outputs/<document_id>/` 下是译文 PDF `<源文件名>_Chinese_ver.pdf`、逐页拼接的对照 PDF `<源文件名>_双语对照.pdf`（阅读器展示与下载用）、`original.pdf`、`alignment.json`，以及 `extraction/manifest.json`、`extraction/glossary.csv`（术语表非空时才有）和可选的 `extraction/debug/`。`<源文件名>_原文标注.pdf` 只在「界面设置」开启原文标注时生成；偏好默认关闭，开启后阅读器会在打开旧文档时按需补建。
 
 ## 19.4 本地运行
 

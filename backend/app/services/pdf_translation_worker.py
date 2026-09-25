@@ -54,7 +54,6 @@ class WorkerProducts:
     mode_label: str
     page_count: int
     glossary_path: Path | None = None
-    dual_pdf: Path | None = None
 
 
 def bundle_root() -> Path:
@@ -159,7 +158,6 @@ def _job_payload(
             "custom_system_prompt": build_worker_system_prompt(translation_domain),
         },
         "options": {
-            "output": settings.pdfmathtranslate_output_mode,
             "no_watermark": True,
             "debug": bool(settings.pdfmathtranslate_debug),
         },
@@ -559,15 +557,6 @@ def _products_from_finish(finish: dict, output_dir: Path) -> WorkerProducts:
         )
     extraction = Path(str(finish.get("extraction_dir") or output_dir / "extraction"))
     debug = Path(str(finish.get("debug_dir") or extraction / "debug"))
-    dual = None
-    reported_dual = str(finish.get("dual_pdf") or "").strip()
-    if reported_dual:
-        dual = _existing_path(reported_dual)
-        if dual is None:
-            raise WorkerError(
-                f"worker reported a bilingual PDF that does not exist: {reported_dual}",
-                stage="render",
-            )
     return WorkerProducts(
         translated_pdf=translated,
         manifest_path=manifest,
@@ -576,5 +565,4 @@ def _products_from_finish(finish: dict, output_dir: Path) -> WorkerProducts:
         mode_label=str(finish.get("mode_label") or "PDFMathTranslate-next"),
         page_count=int(finish.get("page_count") or 0),
         glossary_path=_existing_path(finish.get("glossary_path")),
-        dual_pdf=dual,
     )

@@ -37,8 +37,6 @@ class Settings(BaseSettings):
                 )
         if not self.pdfmathtranslate_version:
             self.pdfmathtranslate_version = "2.9.0"
-        mode = (self.pdfmathtranslate_output_mode or "").strip().lower()
-        self.pdfmathtranslate_output_mode = mode if mode in {"mono", "dual"} else "mono"
         worker_dir = self.pdfmathtranslate_working_dir
         # ``Path("")`` is represented as ``.`` and is truthy. Leaving it
         # relative makes the backend write the job relative to its process,
@@ -76,9 +74,6 @@ class Settings(BaseSettings):
     # outputs/<document>/extraction/debug. It is what the manifest is converted
     # from and runs to hundreds of megabytes per paper, so it is off by default.
     pdfmathtranslate_debug: bool = Field(default=False, alias="PDFMATHTRANSLATE_DEBUG")
-    pdfmathtranslate_output_mode: str = Field(
-        default="mono", alias="PDFMATHTRANSLATE_OUTPUT_MODE"
-    )
     # Paragraphs translated concurrently; the worker's thread pool is sized by
     # this. The translator is the only slow stage of a run and its wall time
     # scales with it. Measured per-request latency is ~7s, so 4 workers left

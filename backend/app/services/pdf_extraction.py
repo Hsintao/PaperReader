@@ -25,7 +25,6 @@ class PdfTranslationResult:
     mode_label: str
     page_count: int = 0
     glossary_path: Path | None = None
-    dual_pdf: Path | None = None
 
     def manifest(self) -> "DocumentManifest":
         """Parse the manifest this result points at."""
@@ -44,7 +43,6 @@ class PdfTranslationResult:
             mode_label=products.mode_label,
             page_count=products.page_count,
             glossary_path=products.glossary_path,
-            dual_pdf=products.dual_pdf,
         )
 
     def is_usable(self) -> bool:

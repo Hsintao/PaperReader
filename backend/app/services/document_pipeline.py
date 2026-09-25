@@ -20,7 +20,6 @@ from app.models.store import (
     DocumentRecord,
     FailureEntry,
     annotated_pdf_filename,
-    dual_pdf_filename,
     merged_pdf_filename,
     save_document,
     set_document_metadata,
@@ -107,19 +106,6 @@ def _publish_translated_pdf(
     record.translated_pdf_url = _to_data_url(output)
     _append_artifact(record, name, "translated_pdf", output)
     return output
-
-
-def _publish_dual_pdf(
-    record: DocumentRecord, dual_pdf: Path, output_dir: Path
-) -> None:
-    """Publish the bilingual PDF a dual-mode run produced alongside the mono one."""
-    name = dual_pdf_filename(record.source_filename)
-    output = output_dir / name
-    output.parent.mkdir(parents=True, exist_ok=True)
-    if dual_pdf.resolve() != output.resolve():
-        shutil.copyfile(dual_pdf, output)
-        dual_pdf.unlink(missing_ok=True)
-    _append_artifact(record, name, "dual_pdf", output)
 
 
 def _publish_merged_pdf(
@@ -505,8 +491,6 @@ def process_document(
         result = PdfTranslationResult.from_worker(record.source_path, products)
         record.translated_pdf_url = None
         translated_output = _publish_translated_pdf(record, result.translated_pdf, output_dir)
-        if result.dual_pdf is not None:
-            _publish_dual_pdf(record, result.dual_pdf, output_dir)
         _publish_merged_pdf(record, translated_output, output_dir)
         _register_extraction_artifacts(record, result)
         record.logs.append(f"Extraction model: {result.mode_label}")

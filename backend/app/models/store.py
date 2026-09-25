@@ -144,13 +144,6 @@ def annotated_pdf_filename(source_filename: str) -> str:
     return f"{stem[:120]}_原文标注.pdf"
 
 
-def dual_pdf_filename(source_filename: str) -> str:
-    """Return the user-facing bilingual PDF filename for a source document."""
-    stem = Path(source_filename or "document.pdf").stem
-    stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", stem).strip(" .") or "document"
-    return f"{stem[:120]}_双语对照.pdf"
-
-
 def merged_pdf_filename(source_filename: str) -> str:
     """Return the user-facing side-by-side bilingual PDF filename."""
     stem = Path(source_filename or "document.pdf").stem
