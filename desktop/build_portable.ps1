@@ -50,7 +50,10 @@ try {
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
 
 $PortableDir = Join-Path $ProjectRoot "dist\PaperReader"
-Copy-Item -LiteralPath (Join-Path $ProjectRoot "desktop\README_zh.md") -Destination (Join-Path $PortableDir "使用说明.txt") -Force
+# Write with a UTF-8 BOM: without one, Notepad on Chinese Windows reads the
+# file as GBK and shows mojibake.
+$ReadmeText = [IO.File]::ReadAllText((Join-Path $ProjectRoot "desktop\README_zh.md"), [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText((Join-Path $PortableDir "使用说明.txt"), $ReadmeText, [Text.UTF8Encoding]::new($true))
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "desktop\create_shortcut.ps1") -Destination $PortableDir -Force
 
 # The PDF translation worker's dependencies stay out of the frozen app; a
