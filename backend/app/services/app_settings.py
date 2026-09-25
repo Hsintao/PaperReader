@@ -23,7 +23,7 @@ from app.services.translation_prompts import normalize_domain
 
 
 _LOCK = threading.RLock()
-_THEMES = {"light", "dark"}
+_THEMES = {"light", "gray", "dark"}
 _PROVIDERS = {"deepseek", "siliconflow", "custom"}
 
 # Fields removed when SoMark / MinerU parsing was replaced by the

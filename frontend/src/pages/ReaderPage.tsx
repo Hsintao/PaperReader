@@ -7,6 +7,7 @@ import { ProgressBar } from '../components/ProgressBar'
 import { SettingsModal } from '../components/SettingsModal'
 import { Sidebar } from '../components/Sidebar'
 import { isCurrentDocument } from '../lib/requestGuard'
+import { THEME_CYCLE } from '../lib/theme'
 import type { DocumentStatus, DocumentSummary } from '../lib/api'
 import {
   cancelDocument,
@@ -553,7 +554,7 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
           onCollapse={() => setShowSidebar(false)}
           onOpenSettings={() => setSettingsOpen(true)}
           onToggleTheme={() => {
-            const next = theme === 'dark' ? 'light' : 'dark'
+            const next = THEME_CYCLE[theme]
             setTheme(next)
             void persistPreferences({ theme: next })
           }}

@@ -51,6 +51,34 @@
   color-scheme: dark;
 }
 
+/* Gray dims every surface without inverting text: the page gutter is mid-gray
+   and the PDF filter lands paper at #d7d7d7, so pages still read lighter than
+   the chrome around them. */
+[data-theme='gray'] {
+  --bg: #c9ccd1;
+  --bg-soft: #dadce0;
+  --bg-elev: #d3d5da;
+  --border: #b1b5bd;
+  --border-strong: #969ba4;
+  --text: #23262c;
+  --text-soft: #454a53;
+  --muted: #656a74;
+  --accent: #5b5bd6;
+  --accent-hover: #4a4ac0;
+  --accent-soft: #d3d4ef;
+  --danger: #c62b1f;
+  --warning: #9a5a08;
+  --success: #05603a;
+  --pending: #5b6068;
+  --code-bg: rgba(91, 91, 214, 0.12);
+  --code-fg: #3f3fa8;
+  --pre-bg: #23262c;
+  --pre-fg: #e6e8ef;
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.12);
+  --shadow-md: 0 4px 14px rgba(16, 24, 40, 0.18);
+  color-scheme: light;
+}
+
 * { box-sizing: border-box; }
 
 html, body, #root {
@@ -126,6 +154,10 @@ textarea { resize: vertical; }
 [data-theme='dark'] .auth-copy {
   background: rgba(22, 26, 35, 0.72);
   border-color: rgba(58, 66, 85, 0.72);
+}
+[data-theme='gray'] .auth-copy {
+  background: rgba(218, 220, 224, 0.66);
+  border-color: rgba(150, 155, 164, 0.55);
 }
 .auth-brand { margin-bottom: 18px; }
 .auth-copy h1 {
@@ -386,6 +418,7 @@ textarea { resize: vertical; }
   display: flex; align-items: center; justify-content: center;
 }
 .doc-item.active .doc-icon { background: #fff; color: var(--accent); }
+[data-theme='gray'] .doc-item.active .doc-icon { background: #eceef1; }
 .doc-meta {
   flex: 1;
   min-width: 0;
@@ -674,6 +707,12 @@ textarea { resize: vertical; }
   box-shadow: var(--shadow-md);
   background: var(--bg-soft);
 }
+/* react-pdf puts an inline white background on the page element, which wins
+   over the rule above. Neither tone wants a white page frame: it shows while a
+   page is still painting, and behind the canvas wherever it does not quite
+   cover. Override it with the tone's paper colour. */
+[data-theme='gray'] .pdf-canvas-wrap .react-pdf__Page { background: #d7d7d7 !important; }
+[data-theme='dark'] .pdf-canvas-wrap .react-pdf__Page { background: #1c1c1c !important; }
 .pdf-canvas-wrap .react-pdf__Page__textContent,
 .pdf-canvas-wrap .react-pdf__Page__textContent span {
   -webkit-user-select: text !important;
@@ -691,10 +730,13 @@ textarea { resize: vertical; }
   align-items: center;
   gap: 4px;
 }
-/* Dark approximation shown from the first paint while the pixel-level page
-   filter catches up; close to the filter's paper tone so the swap is seamless. */
+/* Approximation shown from the first paint while the pixel-level page filter
+   catches up; each matches its filter's paper tone so the swap is seamless. */
 [data-theme='dark'] .react-pdf__Page__canvas.pdf-dark-approx {
   filter: invert(0.92) hue-rotate(180deg);
+}
+[data-theme='gray'] .react-pdf__Page__canvas.pdf-gray-approx {
+  filter: brightness(0.84);
 }
 .pdf-page-counterpart-highlight .react-pdf__Page {
   outline: 4px solid rgba(255, 184, 0, 0.78);

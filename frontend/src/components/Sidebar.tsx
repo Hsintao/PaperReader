@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   ChevronRight,
+  Cloud,
   FileText,
   FolderOpen,
   Moon,
@@ -17,17 +18,25 @@ import {
 import type {
   DocumentSummary,
   LibrarySearchHit,
+  Theme,
 } from '../lib/api'
 import { getDocumentBibtex, searchLibrary } from '../lib/api'
+import { THEME_CYCLE, THEME_LABELS } from '../lib/theme'
 
 type Tab = 'tasks' | 'favorites'
+
+const THEME_ICONS = {
+  light: Sun,
+  gray: Cloud,
+  dark: Moon,
+} as const
 
 type Props = {
   documents: DocumentSummary[]
   activeDocumentId?: string
   favorites: string[]
   uploading: boolean
-  theme: 'light' | 'dark'
+  theme: Theme
   activeStatus?: string
   onUpload: (file: File) => void
   onSelect: (documentId: string) => void
@@ -78,6 +87,7 @@ export function Sidebar({
   onRefreshStatus,
   onSearchLocate,
 }: Props) {
+  const ThemeIcon = THEME_ICONS[theme]
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [tab, setTab] = useState<Tab>('tasks')
   const [contextMenu, setContextMenu] = useState<{ documentId: string; x: number; y: number } | null>(null)
@@ -146,10 +156,10 @@ export function Sidebar({
         <div className="toolbar-spacer" />
         <button
           className="icon-btn"
-          title={theme === 'dark' ? '切换到浅色' : '切换到深色'}
+          title={`切换到${THEME_LABELS[THEME_CYCLE[theme]]}`}
           onClick={onToggleTheme}
         >
-          {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+          <ThemeIcon size={16} />
         </button>
         <button className="icon-btn" title="设置" onClick={onOpenSettings}>
           <Settings size={16} />

@@ -77,12 +77,15 @@ export type LibrarySearchHit = {
   position_ratio: number
 }
 
+// Reading theme: light, a gray dim that keeps dark ink, or dark.
+export type Theme = 'light' | 'gray' | 'dark'
+
 export type UserSettings = {
   api_key_configured: boolean
   provider: string
   base_url: string
   model: string
-  theme: 'light' | 'dark'
+  theme: Theme
   show_annotated_pdf: boolean
   translation_domain: TranslationDomain
   favorites: string[]

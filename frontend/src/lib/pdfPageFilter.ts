@@ -3,6 +3,14 @@ import type { PDFPageProxy } from 'pdfjs-dist'
 
 type PDFOperatorList = Awaited<ReturnType<PDFPageProxy['getOperatorList']>>
 
+// Reading tones that repaint a rendered page. 'light' leaves the page as the
+// document drew it, so it needs no filter.
+export type PdfPageTone = 'gray' | 'dark'
+
+export function pageToneForTheme(theme: string | undefined): PdfPageTone | null {
+  return theme === 'gray' || theme === 'dark' ? theme : null
+}
+
 // Image placement matrices map the image unit square into canvas pixels.
 export function getImageTransforms(operators: PDFOperatorList, viewportTransform: number[]): number[][] {
   let transform = viewportTransform
@@ -45,11 +53,27 @@ export function getImageTransforms(operators: PDFOperatorList, viewportTransform
 }
 
 // Keep embedded images intact, including their grayscale pixels. Outside images,
-// map neutral paper/text to dark-mode tones and retain saturated vector colors.
+// map neutral paper and text through an affine curve c' = offset + c * scale and
+// retain saturated vector colors (charts, diagrams, link boxes).
 const SAT_FULL = 12
 const SAT_NONE = 48
 
-function mapNeutralPixels(data: Uint8ClampedArray, protectedPixels?: Uint8ClampedArray): void {
+const TONES: Record<PdfPageTone, { offset: number; scale: number }> = {
+  // Ink (0) becomes light and paper (255) becomes near-black, so the page reads
+  // as a dark surface with light text.
+  dark: { offset: 217.65, scale: -0.743 },
+  // Paper (255) drops to ~#d7d7d7 and ink (0) stays dark at ~#242424: the page
+  // is dimmed without inverting, which keeps figures legible.
+  gray: { offset: 36, scale: 0.7 },
+}
+
+function mapNeutralPixels(
+  data: Uint8ClampedArray,
+  tone: { offset: number; scale: number },
+  protectedPixels?: Uint8ClampedArray
+): void {
+  const { offset, scale } = tone
+  const shift = scale - 1
   for (let i = 0; i < data.length; i += 4) {
     if (protectedPixels?.[i + 3]) continue
     const r = data[i]
@@ -60,9 +84,9 @@ function mapNeutralPixels(data: Uint8ClampedArray, protectedPixels?: Uint8Clampe
     const sat = max - min
     if (sat >= SAT_NONE) continue
     const t = sat <= SAT_FULL ? 1 : (SAT_NONE - sat) / (SAT_NONE - SAT_FULL)
-    data[i] = r + t * (217.65 - 1.743 * r)
-    data[i + 1] = g + t * (217.65 - 1.743 * g)
-    data[i + 2] = b + t * (217.65 - 1.743 * b)
+    data[i] = r + t * (offset + shift * r)
+    data[i + 1] = g + t * (offset + shift * g)
+    data[i + 2] = b + t * (offset + shift * b)
   }
 }
 
@@ -79,16 +103,6 @@ function buildMaskContext(canvas: HTMLCanvasElement, imageTransforms: number[][]
   return maskCtx
 }
 
-export function applyDarkPageFilter(canvas: HTMLCanvasElement, imageTransforms: number[][]): void {
-  const ctx = canvas.getContext('2d')
-  if (!ctx || canvas.width === 0 || canvas.height === 0) return
-  const maskCtx = buildMaskContext(canvas, imageTransforms)
-  const protectedPixels = maskCtx?.getImageData(0, 0, canvas.width, canvas.height).data
-  const image = ctx.getImageData(0, 0, canvas.width, canvas.height)
-  mapNeutralPixels(image.data, protectedPixels)
-  ctx.putImageData(image, 0, 0)
-}
-
 const nextFrame = () => new Promise<void>((resolve) => {
   if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve())
   else setTimeout(resolve, 0)
@@ -98,14 +112,16 @@ const nextFrame = () => new Promise<void>((resolve) => {
 // between bands, so filtering several pages in the render window cannot block
 // scrolling. Aborts early when the canvas was re-rendered in the meantime
 // (zoom/theme change) or isStale() reports the page element was replaced.
-export async function applyDarkPageFilterChunked(
+export async function applyPageFilterChunked(
   canvas: HTMLCanvasElement,
   imageTransforms: number[][],
+  tone: PdfPageTone,
   isStale: () => boolean = () => false
 ): Promise<void> {
   const ctx = canvas.getContext('2d')
   if (!ctx || canvas.width === 0 || canvas.height === 0) return
   const { width, height } = canvas
+  const toneMap = TONES[tone]
   const maskCtx = buildMaskContext(canvas, imageTransforms)
   const bandHeight = Math.max(256, Math.floor(1_000_000 / width))
   for (let y = 0; y < height; y += bandHeight) {
@@ -113,7 +129,7 @@ export async function applyDarkPageFilterChunked(
     const h = Math.min(bandHeight, height - y)
     const protectedPixels = maskCtx?.getImageData(0, y, width, h).data
     const image = ctx.getImageData(0, y, width, h)
-    mapNeutralPixels(image.data, protectedPixels)
+    mapNeutralPixels(image.data, toneMap, protectedPixels)
     ctx.putImageData(image, 0, y)
     await nextFrame()
   }

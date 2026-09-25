@@ -14,7 +14,7 @@ import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { PDF_DOCUMENT_OPTIONS } from '../lib/pdfDocumentOptions'
 import { buildSpanIndex, locateNeedle, normalized, paintRange, prefixMatchScore, type SpanIndex } from '../lib/pdfText'
 import type { PDFPageProxy } from 'pdfjs-dist'
-import { applyDarkPageFilterChunked, getImageTransforms } from '../lib/pdfDarkMode'
+import { applyPageFilterChunked, getImageTransforms, pageToneForTheme, type PdfPageTone } from '../lib/pdfPageFilter'
 import type { AnnotationItem as ApiAnnotationItem } from '../lib/api'
 import { usePageText } from '../hooks/usePageText'
 import { usePdfZoom } from '../hooks/usePdfZoom'
@@ -142,7 +142,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
   const [notesOpen, setNotesOpen] = useState(false)
   const [activeAnnotationId, setActiveAnnotationId] = useState<string | null>(null)
   const [locateMessage, setLocateMessage] = useState('')
-  const [darkMode, setDarkMode] = useState(() => document.documentElement.dataset.theme === 'dark')
+  const [pdfTone, setPdfTone] = useState<PdfPageTone | null>(() => pageToneForTheme(document.documentElement.dataset.theme))
   const centerCounterpartRef = useRef(false)
 
   const annotationsRef = useRef<AnnotationItem[]>(annotations)
@@ -161,8 +161,8 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
     () => Array.from({ length: numPages }, (_, index) => () => pageRenderedRef.current(index + 1)),
     [numPages]
   )
-  const darkModeRef = useRef(darkMode)
-  darkModeRef.current = darkMode
+  const pdfToneRef = useRef(pdfTone)
+  pdfToneRef.current = pdfTone
   const progressHandlerRef = useRef(onProgressChange)
   progressHandlerRef.current = onProgressChange
   const canvasRenderedRef = useRef(handleCanvasRendered)
@@ -174,7 +174,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
 
   useEffect(() => {
     const observer = new MutationObserver(() => {
-      setDarkMode(document.documentElement.dataset.theme === 'dark')
+      setPdfTone(pageToneForTheme(document.documentElement.dataset.theme))
     })
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
     return () => observer.disconnect()
@@ -501,11 +501,12 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
   async function handleCanvasRendered(page: number, pdfPage: PDFPageProxy) {
     const canvas = pageRefs.current[page - 1]?.querySelector('canvas')
     if (!canvas) return
-    if (darkModeRef.current) {
+    const tone = pdfToneRef.current
+    if (tone) {
       // The canvas reaches the screen white one frame before this callback
-      // runs; the CSS invert added here applies from the first paint, so the
-      // page reads as dark immediately while the pixel filter catches up.
-      canvas.classList.add('pdf-dark-approx')
+      // runs; the CSS approximation added here applies from the first paint,
+      // so the page reads as dimmed immediately while the pixel filter catches up.
+      canvas.classList.add(tone === 'dark' ? 'pdf-dark-approx' : 'pdf-gray-approx')
       const { width, height } = canvas
       const baseViewport = pdfPage.getViewport({ scale: 1 })
       const renderScale = scale * (containerWidth ? containerWidth / baseViewport.width : 1)
@@ -513,10 +514,10 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
       const operators = await pdfPage.getOperatorList()
       const stale = () => pageRefs.current[page - 1]?.querySelector('canvas') !== canvas
         || canvas.width !== width || canvas.height !== height
-      if (darkModeRef.current && !stale()) {
-        await applyDarkPageFilterChunked(canvas, getImageTransforms(operators, viewport.transform), stale)
+      if (pdfToneRef.current === tone && !stale()) {
+        await applyPageFilterChunked(canvas, getImageTransforms(operators, viewport.transform), tone, stale)
       }
-      if (!stale()) canvas.classList.remove('pdf-dark-approx')
+      if (!stale()) canvas.classList.remove('pdf-dark-approx', 'pdf-gray-approx')
     }
     const timing = loadTimingRef.current
     if (active && page === pageNumber && timing.loaded && !timing.rendered) {
@@ -808,7 +809,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
       >
         {shouldRender ? (
           <Page
-            key={`${page}-${darkMode ? 'dark' : 'light'}`}
+            key={`${page}-${pdfTone ?? 'light'}`}
             pageNumber={page}
             scale={scale}
             width={containerWidth}
@@ -974,7 +975,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
                 }}
               >
                 <Page
-                  key={`${pageNumber}-${darkMode ? 'dark' : 'light'}`}
+                  key={`${pageNumber}-${pdfTone ?? 'light'}`}
                   pageNumber={pageNumber}
                   scale={scale}
                   width={containerWidth}
