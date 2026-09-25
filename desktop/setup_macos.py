@@ -24,11 +24,6 @@ def frontend_data_files() -> list[tuple[str, list[str]]]:
     return sorted(grouped.items())
 
 
-def font_data_files() -> list[tuple[str, list[str]]]:
-    fonts = ROOT / "backend" / "app" / "assets" / "fonts"
-    return [("app/assets/fonts", sorted(str(path) for path in fonts.iterdir() if path.is_file()))]
-
-
 def worker_data_files() -> list[tuple[str, list[str]]]:
     """Ship the PDF translation worker package next to the bundled frontend.
 
@@ -47,7 +42,7 @@ setup(
     name="PaperReader",
     version=VERSION,
     app=[str(ROOT / "desktop" / "launcher.py")],
-    data_files=frontend_data_files() + font_data_files() + worker_data_files(),
+    data_files=frontend_data_files() + worker_data_files(),
     options={
         "py2app": {
             "argv_emulation": False,
