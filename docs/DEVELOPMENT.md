@@ -1148,10 +1148,10 @@ cp .env.example .env
 | `PDFMATHTRANSLATE_PYTHON` | 运行 worker 的解释器（默认 `python3`） |
 | `PDFMATHTRANSLATE_WORKER` | 独立的 worker 可执行文件；设置后按原样执行，作业路径追加在末尾 |
 | `PDFMATHTRANSLATE_VERSION` | 仅作记录：manifest 中登记的 PDFMathTranslate-next 版本（默认 `2.9.0`） |
-| `PDFMATHTRANSLATE_TIMEOUT` | 单篇文档的处理预算，默认 `3600` 秒；超时后进程被强杀，文档按 `translate` 阶段失败 |
+| `PDFMATHTRANSLATE_TIMEOUT` | 单篇文档的处理预算，默认 `3600` 秒；超时后先请进程自行退出（worker 借机清掉自己的临时目录），仍未退出才强杀，文档按 `translate` 阶段失败 |
 | `PDFMATHTRANSLATE_WORKING_DIR` | 临时目录根，默认 `<DATA_DIR>/worker`；每篇文档一个子目录，作业结束时清空 |
 | `PDFMATHTRANSLATE_DEBUG`（默认 `false`） | 把翻译器自己的布局输出保留到 `outputs/<id>/extraction/debug`，单篇可达数百 MB；manifest 无论开关都会产出 |
-| `PDFMATHTRANSLATE_QPS` | 同时翻译的段落数（默认 `4`，即库的默认值）。一篇论文的耗时几乎全在 `Translate Paragraphs` 阶段，与并发数成反比；提高前先确认供应商的并发/速率限制 |
+| `PDFMATHTRANSLATE_QPS` | 同时翻译的段落数（默认 `12`，库的默认值是 `4`）。一篇论文的耗时几乎全在 `Translate Paragraphs` 阶段，与并发数成反比；提高前先确认供应商的并发/速率限制 |
 
 作业文件由 `app/services/pdf_translation_worker.py` 生成：`job_id`、`input_pdf`、`output_dir`、`work_dir`、`translation`（`api_key` / `base_url` / `model`）、`options`（`no_watermark` / `debug`）、`qps`，以及可选 `glossary`（领域术语表的 CSV 路径）。作业文件写在临时工作目录中，API key 只出现在这里，不写日志。
 

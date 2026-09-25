@@ -616,6 +616,68 @@ def test_a_run_stops_a_worker_that_overruns_its_budget(monkeypatch, tmp_path):
     assert cancel_worker("doc-1") is False
 
 
+class _BlockingStream:
+    """A worker stdout that produces nothing until the process is stopped."""
+
+    def __init__(self) -> None:
+        self._stopped = threading.Event()
+
+    def __iter__(self):
+        self._stopped.wait(timeout=30)
+        return iter(())
+
+    def release(self) -> None:
+        self._stopped.set()
+
+
+class _WatchdogProcess:
+    """A persistent worker that only exits once it is asked to stop."""
+
+    def __init__(self) -> None:
+        self.pid = 4321
+        self.stdin = io.StringIO()
+        self.stdout = _BlockingStream()
+        self.stderr: list[str] = []
+        self.returncode: int | None = None
+        self.terminated = False
+        self.killed = False
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.returncode = -15
+        self.stdout.release()
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = -9
+        self.stdout.release()
+
+    def wait(self, timeout: float | None = None) -> int | None:
+        return self.returncode
+
+
+def test_the_timeout_watchdog_stops_the_worker_gracefully(monkeypatch, tmp_path):
+    """A timeout terminates the worker so it can clean its scratch, and the run
+    still reports the budget rather than a cancellation."""
+    process = _WatchdogProcess()
+    monkeypatch.setattr(settings, "pdfmathtranslate_worker", sys.executable)
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(pdf_translation_worker, "_HANDLE", None)
+    started: list[WorkerRun] = []
+
+    with pytest.raises(WorkerError) as excinfo:
+        _run(tmp_path, timeout=0.2, on_start=started.append)
+
+    assert "budget" in str(excinfo.value)
+    assert process.terminated
+    assert not process.killed
+    assert started
+    assert started[0].cancelled is False
+
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -807,6 +869,21 @@ def test_a_cancelled_run_reports_cancelled_and_publishes_nothing(monkeypatch, tm
     assert started and started[0].cancelled
     assert not (tmp_path / "output" / "translated.pdf").exists()
     assert cancel_worker("doc-1") is False
+
+
+def test_a_finished_run_is_no_longer_cancellable(monkeypatch, tmp_path):
+    """Once the finish event is read the run is out of the registry, so a late
+    cancel must not stop the worker or discard the completed result."""
+    _fake_worker(monkeypatch, tmp_path, _FAKE_WORKER)
+    started: list[WorkerRun] = []
+
+    products = _run(tmp_path, on_start=started.append)
+
+    assert products.translated_pdf.is_file()
+    assert cancel_worker("doc-1") is False
+    assert started and not started[0].cancelled
+    # The shared worker is still alive for the next job.
+    assert started[0].process.poll() is None
 
 
 # ---------------------------------------------------------------------------

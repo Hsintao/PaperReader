@@ -21,6 +21,7 @@ import argparse
 import logging
 import os
 import shutil
+import signal
 import sys
 import threading
 import time
@@ -98,8 +99,9 @@ def _build_settings(job: Job):
         engine._openai_extra_body = {"thinking": {"type": "disabled"}}
     settings = SettingsModel(
         # The manifest is converted from BabelDOC's debug layout, so debug mode
-        # is always on. Whether the worker *keeps* that output is a separate
-        # decision, controlled by the job's keep_debug flag.
+        # is always on. Whether the worker *copies* that output into the
+        # extraction directory is a separate decision, controlled by the job's
+        # keep_debug flag; the scratch it was written to is removed either way.
         basic=BasicSettings(debug=True),
         translation=TranslationSettings(
             lang_in=job.source_lang,
@@ -317,11 +319,13 @@ def _publish_dual(job: Job, result) -> Path | None:
 
 
 def _publish_debug(job: Job, debug_dir: Path) -> dict:
-    """Keep the translator's own layout output when the job asks for it.
+    """Copy the translator's own layout output when the job asks for it.
 
-    It is what the manifest was converted from, and it is large — hundreds of
-    megabytes for a long paper — so it is off by default and the manifest is
-    the thing that persists.
+    It is what the manifest was converted from. The source lives in the job's
+    scratch directory, which is removed when the run ends, so this copy under
+    ``extraction/debug`` is the one that persists; it is off by default because
+    it is large — hundreds of megabytes for a long paper — and the manifest is
+    the thing the reader needs.
     """
     if not job.keep_debug:
         return {"debug_files": []}
@@ -335,6 +339,35 @@ def _publish_debug(job: Job, debug_dir: Path) -> dict:
     return {"debug_files": copied}
 
 
+# The job whose ``run()`` body is executing. A termination signal can arrive at
+# any bytecode boundary, so the handler needs a reference to clean up that does
+# not depend on the interrupted frame.
+_ACTIVE_JOB: Job | None = None
+
+
+def _handle_termination(signum: int, _frame) -> None:
+    """Remove the running job's scratch, then terminate like a killed process.
+
+    SIGTERM's default action kills the interpreter outright, so ``run()``'s
+    ``finally`` never runs and ``data/worker/<document_id>`` — hundreds of
+    megabytes of BabelDOC output — is left behind forever. The handler must not
+    raise: an exception here would surface inside ``_run_job``'s ``except
+    BaseException`` and be reported as a worker error instead of ending the
+    process, so ``os._exit`` is the only way out.
+    """
+    try:
+        job = _ACTIVE_JOB
+        if job is not None:
+            _clean_work_dir(job)
+    finally:
+        os._exit(128 + signum)
+
+
+def _install_signal_handlers() -> None:
+    """Install the termination handler for the life of the process."""
+    signal.signal(signal.SIGTERM, _handle_termination)
+
+
 def run(job: Job, writer: EventWriter) -> dict:
     """Execute the job and return the payload of the ``finish`` event."""
     if not job.input_pdf.is_file():
@@ -344,7 +377,9 @@ def run(job: Job, writer: EventWriter) -> dict:
     job.extraction_dir.mkdir(parents=True, exist_ok=True)
     job.babeldoc_work_dir.mkdir(parents=True, exist_ok=True)
 
+    global _ACTIVE_JOB
     logger.info("worker job %s: %s", job.job_id, job.input_pdf.name)
+    _ACTIVE_JOB = job
     try:
         result, _config = _translate(job, writer)
 
@@ -382,6 +417,7 @@ def run(job: Job, writer: EventWriter) -> dict:
         debug_info = _publish_debug(job, debug_dir)
     finally:
         _clean_work_dir(job)
+        _ACTIVE_JOB = None
 
     payload = {
         "job_id": job.job_id,
@@ -402,8 +438,15 @@ def run(job: Job, writer: EventWriter) -> dict:
 
 
 def _clean_work_dir(job: Job) -> None:
-    """The scratch directory holds hundreds of megabytes of debug output."""
-    if job.keep_debug or job.work_dir == job.output_dir:
+    """Remove the job's scratch directory.
+
+    It holds hundreds of megabytes of BabelDOC output; the debug files worth
+    keeping were copied into the extraction directory by ``_publish_debug``
+    before this runs. The one directory that must never be removed is the
+    published output, so a job that points its scratch at ``output_dir`` — where
+    the translated PDF and the manifest live — keeps it.
+    """
+    if job.work_dir == job.output_dir:
         return
     shutil.rmtree(job.work_dir, ignore_errors=True)
 
@@ -503,6 +546,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     _configure_logging()
+    _install_signal_handlers()
     if args.serve:
         return _serve()
     if not args.job:

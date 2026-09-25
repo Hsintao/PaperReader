@@ -186,6 +186,15 @@ class WorkerRun:
         self.cancelled = True
         self._stop(force=False)
 
+    def stop(self) -> None:
+        """Stop the worker gracefully without recording a cancellation.
+
+        The timeout watchdog uses this: the worker gets the same chance to
+        remove its scratch directory as an operator cancellation, but the run
+        stays a timeout — it reports the budget, not ``WorkerCancelled``.
+        """
+        self._stop(force=False)
+
     def kill(self) -> None:
         # ``SIGKILL`` is not defined on Windows. ``Popen.kill`` provides the
         # same forceful operation on every supported platform.
@@ -470,7 +479,9 @@ def run_worker(
 
         def _deadline() -> None:
             run.timed_out = True
-            run.kill()
+            # Stop it the way a cancellation does, so the worker can remove its
+            # scratch directory before exiting; the run still reports the budget.
+            run.stop()
 
         watchdog = threading.Timer(budget, _deadline)
         watchdog.daemon = True
