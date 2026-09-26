@@ -179,6 +179,12 @@ if (Test-WorkerRuntime $WorkerRuntime) {
     }
 }
 
+# Trim BabelDOC's asset set to the CN font family so the offline assets
+# package stays small. Idempotent, so it also repairs runtimes prepared
+# before this step existed; see desktop/patch_worker_assets.py.
+& (Join-Path $WorkerRuntime "python.exe") desktop\patch_worker_assets.py $WorkerRuntime
+if ($LASTEXITCODE -ne 0) { Fail "worker asset trim failed" }
+
 # --- 6. 工具自检 ----------------------------------------------------------
 Log "Verifying build tooling"
 & $PythonPath -c "import webview, PyInstaller, pythonnet, clr_loader"
