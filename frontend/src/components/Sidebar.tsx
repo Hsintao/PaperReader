@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   ChevronRight,
-  Cloud,
   FileText,
   FolderOpen,
   Moon,
@@ -27,7 +26,6 @@ type Tab = 'tasks' | 'favorites'
 
 const THEME_ICONS = {
   light: Sun,
-  gray: Cloud,
   dark: Moon,
 } as const
 

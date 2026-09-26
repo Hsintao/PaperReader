@@ -27,9 +27,9 @@
 }
 
 [data-theme='dark'] {
-  --bg: #0f1218;
-  --bg-soft: #161a23;
-  --bg-elev: #1c2230;
+  --bg: #1e1e2e;
+  --bg-soft: #262638;
+  --bg-elev: #2e2e44;
   --border: #2a3142;
   --border-strong: #3a4255;
   --text: #e6e8ef;
@@ -49,34 +49,6 @@
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.45);
   color-scheme: dark;
-}
-
-/* Gray dims every surface without inverting text: the page gutter is mid-gray
-   and the PDF filter lands paper at #d7d7d7, so pages still read lighter than
-   the chrome around them. */
-[data-theme='gray'] {
-  --bg: #c9ccd1;
-  --bg-soft: #dadce0;
-  --bg-elev: #d3d5da;
-  --border: #b1b5bd;
-  --border-strong: #969ba4;
-  --text: #23262c;
-  --text-soft: #454a53;
-  --muted: #656a74;
-  --accent: #5b5bd6;
-  --accent-hover: #4a4ac0;
-  --accent-soft: #d3d4ef;
-  --danger: #c62b1f;
-  --warning: #9a5a08;
-  --success: #05603a;
-  --pending: #5b6068;
-  --code-bg: rgba(91, 91, 214, 0.12);
-  --code-fg: #3f3fa8;
-  --pre-bg: #23262c;
-  --pre-fg: #e6e8ef;
-  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.12);
-  --shadow-md: 0 4px 14px rgba(16, 24, 40, 0.18);
-  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -152,12 +124,8 @@ textarea { resize: vertical; }
   backdrop-filter: blur(12px);
 }
 [data-theme='dark'] .auth-copy {
-  background: rgba(22, 26, 35, 0.72);
+  background: rgba(38, 38, 56, 0.72);
   border-color: rgba(58, 66, 85, 0.72);
-}
-[data-theme='gray'] .auth-copy {
-  background: rgba(218, 220, 224, 0.66);
-  border-color: rgba(150, 155, 164, 0.55);
 }
 .auth-brand { margin-bottom: 18px; }
 .auth-copy h1 {
@@ -418,7 +386,6 @@ textarea { resize: vertical; }
   display: flex; align-items: center; justify-content: center;
 }
 .doc-item.active .doc-icon { background: #fff; color: var(--accent); }
-[data-theme='gray'] .doc-item.active .doc-icon { background: #eceef1; }
 .doc-meta {
   flex: 1;
   min-width: 0;
@@ -711,7 +678,6 @@ textarea { resize: vertical; }
    over the rule above. Neither tone wants a white page frame: it shows while a
    page is still painting, and behind the canvas wherever it does not quite
    cover. Override it with the tone's paper colour. */
-[data-theme='gray'] .pdf-canvas-wrap .react-pdf__Page { background: #d7d7d7 !important; }
 [data-theme='dark'] .pdf-canvas-wrap .react-pdf__Page { background: #1c1c1c !important; }
 .pdf-canvas-wrap .react-pdf__Page__textContent,
 .pdf-canvas-wrap .react-pdf__Page__textContent span {
@@ -733,8 +699,7 @@ textarea { resize: vertical; }
 }
 /* A new PDF canvas is painted white before its dark pixels are ready. Keep the
    old page visible through zoom and reveal the replacement only when ready. */
-[data-theme='dark'] .react-pdf__Page__canvas:not(.pdf-tone-ready),
-[data-theme='gray'] .react-pdf__Page__canvas:not(.pdf-tone-ready) {
+[data-theme='dark'] .react-pdf__Page__canvas:not(.pdf-tone-ready) {
   visibility: hidden !important;
 }
 .pdf-zoom-snapshot {

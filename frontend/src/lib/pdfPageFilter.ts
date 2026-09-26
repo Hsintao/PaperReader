@@ -5,10 +5,10 @@ type PDFOperatorList = Awaited<ReturnType<PDFPageProxy['getOperatorList']>>
 
 // Reading tones that repaint a rendered page. 'light' leaves the page as the
 // document drew it, so it needs no filter.
-export type PdfPageTone = 'gray' | 'dark'
+export type PdfPageTone = 'dark'
 
 export function pageToneForTheme(theme: string | undefined): PdfPageTone | null {
-  return theme === 'gray' || theme === 'dark' ? theme : null
+  return theme === 'dark' ? 'dark' : null
 }
 
 // Image placement matrices map the image unit square into canvas pixels.
@@ -64,9 +64,6 @@ const TONES: Record<PdfPageTone, { offset: number; scale: number }> = {
   // Ink (0) becomes light and paper (255) becomes near-black, so the page reads
   // as a dark surface with light text.
   dark: { offset: 217.65, scale: -0.743 },
-  // Paper (255) drops to ~#d7d7d7 and ink (0) stays dark at ~#242424: the page
-  // is dimmed without inverting, which keeps figures legible.
-  gray: { offset: 36, scale: 0.7 },
 }
 
 function mapNeutralPixels(

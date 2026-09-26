@@ -77,8 +77,8 @@ export type LibrarySearchHit = {
   position_ratio: number
 }
 
-// Reading theme: light, a gray dim that keeps dark ink, or dark.
-export type Theme = 'light' | 'gray' | 'dark'
+// Reading theme: light or dark.
+export type Theme = 'light' | 'dark'
 
 export type UserSettings = {
   api_key_configured: boolean
