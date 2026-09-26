@@ -41,6 +41,13 @@ if (-not $PythonPath) {
 if ($LASTEXITCODE -ne 0) {
     throw "$PythonPath is older than Python 3.10. Run scripts\setup_build_env.ps1 or pass -PythonPath to a 3.10+ interpreter."
 }
+# PyInstaller only logs a warning for modules it cannot import at build time,
+# and the frozen app then crashes at startup (e.g. "No module named
+# 'webview'"); verify the build interpreter has them before freezing.
+& $PythonPath -c "import webview, PyInstaller, pythonnet, clr_loader"
+if ($LASTEXITCODE -ne 0) {
+    throw "$PythonPath is missing build dependencies (pywebview/PyInstaller/pythonnet/clr-loader). Run scripts\setup_build_env.ps1 first, or pass -PythonPath to the prepared build interpreter."
+}
 
 Push-Location (Join-Path $ProjectRoot "frontend")
 try {
