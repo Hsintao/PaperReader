@@ -1221,3 +1221,94 @@ def test_the_layout_model_is_loaded_once_and_shared_between_jobs(monkeypatch):
 
     assert first is second
     assert len(loads) == 1
+
+
+def test_offline_assets_package_prefers_the_env_override_file(monkeypatch, tmp_path):
+    package = tmp_path / "offline_assets_abc.zip"
+    package.write_bytes(b"zip")
+    monkeypatch.setenv("PAPERREADER_OFFLINE_ASSETS", str(package))
+
+    assert pdf_translation_worker.offline_assets_package() == package
+
+
+def test_offline_assets_package_accepts_an_override_directory(monkeypatch, tmp_path):
+    package = tmp_path / "offline_assets_abc.zip"
+    package.write_bytes(b"zip")
+    monkeypatch.setenv("PAPERREADER_OFFLINE_ASSETS", str(tmp_path))
+
+    assert pdf_translation_worker.offline_assets_package() == package
+
+
+def test_offline_assets_package_reads_the_bundle_directory(monkeypatch, tmp_path):
+    monkeypatch.delenv("PAPERREADER_OFFLINE_ASSETS", raising=False)
+    monkeypatch.setenv("PAPERREADER_BUNDLE_ROOT", str(tmp_path))
+    directory = tmp_path / "offline_assets"
+    directory.mkdir()
+    package = directory / "offline_assets_abc.zip"
+    package.write_bytes(b"zip")
+
+    assert pdf_translation_worker.offline_assets_package() == package
+
+
+def test_offline_assets_package_is_none_without_a_build_zip(monkeypatch, tmp_path):
+    monkeypatch.delenv("PAPERREADER_OFFLINE_ASSETS", raising=False)
+    monkeypatch.setenv("PAPERREADER_BUNDLE_ROOT", str(tmp_path))
+
+    assert pdf_translation_worker.offline_assets_package() is None
+
+
+def test_restore_offline_assets_runs_the_worker_entry(monkeypatch, tmp_path):
+    package = tmp_path / "offline_assets_abc.zip"
+    package.write_bytes(b"zip")
+    monkeypatch.setenv("PAPERREADER_OFFLINE_ASSETS", str(package))
+    monkeypatch.setattr(settings, "pdfmathtranslate_worker", "")
+    monkeypatch.setattr(settings, "pdfmathtranslate_python", "/opt/python/bin/python3")
+    runs = []
+    monkeypatch.setattr(
+        pdf_translation_worker.subprocess,
+        "run",
+        lambda *args, **kwargs: runs.append((args, kwargs))
+        or types.SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    pdf_translation_worker.restore_offline_assets()
+
+    assert len(runs) == 1
+    command = runs[0][0][0]
+    assert command[:3] == ["/opt/python/bin/python3", "-m", "workers.pdfmathtranslate"]
+    assert command[-2:] == ["--restore-assets", str(package)]
+
+
+def test_restore_offline_assets_is_a_noop_without_a_package(monkeypatch, tmp_path):
+    monkeypatch.delenv("PAPERREADER_OFFLINE_ASSETS", raising=False)
+    monkeypatch.setenv("PAPERREADER_BUNDLE_ROOT", str(tmp_path))
+    monkeypatch.setattr(settings, "pdfmathtranslate_worker", "")
+    monkeypatch.setattr(settings, "pdfmathtranslate_python", "/opt/python/bin/python3")
+    runs = []
+    monkeypatch.setattr(
+        pdf_translation_worker.subprocess,
+        "run",
+        lambda *args, **kwargs: runs.append(args),
+    )
+
+    pdf_translation_worker.restore_offline_assets()
+
+    assert runs == []
+
+
+def test_prewarm_restores_assets_before_starting_the_worker(monkeypatch):
+    monkeypatch.setattr(settings, "pdfmathtranslate_worker", "")
+    monkeypatch.setattr(settings, "pdfmathtranslate_python", "/opt/python/bin/python3")
+    order = []
+    monkeypatch.setattr(
+        pdf_translation_worker, "restore_offline_assets", lambda: order.append("restore")
+    )
+    monkeypatch.setattr(
+        pdf_translation_worker, "_worker_handle", lambda: order.append("worker")
+    )
+
+    thread = pdf_translation_worker.prewarm_worker()
+
+    assert thread is not None
+    thread.join(timeout=10)
+    assert order == ["restore", "worker"]

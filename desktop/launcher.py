@@ -97,9 +97,23 @@ def _worker_python(runtime: Path) -> Path | None:
     return None
 
 
+def _find_offline_assets() -> Path | None:
+    """The bundled BabelDOC offline asset package, if the build shipped one."""
+    for root in (_bundle_root(), _executable_root()):
+        directory = root / "offline_assets"
+        if directory.is_dir():
+            matches = sorted(directory.glob("offline_assets_*.zip"))
+            if matches:
+                return matches[-1]
+    return None
+
+
 def _prepare_worker() -> None:
     """Point the backend at the worker and at a runtime it can run under."""
     os.environ.setdefault("PAPERREADER_BUNDLE_ROOT", str(_bundle_root()))
+    assets = _find_offline_assets()
+    if assets is not None:
+        os.environ.setdefault("PAPERREADER_OFFLINE_ASSETS", str(assets))
     if (os.environ.get("PDFMATHTRANSLATE_WORKER") or "").strip():
         return
     runtime = _worker_runtime_root()

@@ -166,3 +166,43 @@ def test_sigterm_cleans_the_active_jobs_scratch_and_exits_143(tmp_path):
 
     assert result.returncode == 143, result.stderr
     assert not scratch.exists()
+
+
+def test_restore_assets_cli_routes_to_the_restore(monkeypatch):
+    calls = []
+    monkeypatch.setattr(runner, "_restore_assets", lambda path: calls.append(path) or 0)
+
+    assert runner.main(["--restore-assets", "/tmp/assets.zip"]) == 0
+    assert calls == ["/tmp/assets.zip"]
+
+
+def test_restore_assets_reports_a_finish_event(tmp_path, monkeypatch, capsys):
+    package = tmp_path / "offline_assets_abc.zip"
+    package.write_bytes(b"zip")
+    restored = []
+
+    assets_module = types.ModuleType("babeldoc.assets.assets")
+    assets_module.restore_offline_assets_package = lambda path: restored.append(path)
+    monkeypatch.setitem(sys.modules, "babeldoc.assets.assets", assets_module)
+
+    assert runner._restore_assets(str(package)) == 0
+
+    event = json.loads(capsys.readouterr().out.strip())
+    assert event["type"] == "finish"
+    assert event["restored_assets"] == str(package)
+    assert restored == [package]
+
+
+def test_restore_assets_reports_an_error_event(monkeypatch, capsys):
+    def fail(_path):
+        raise RuntimeError("bad zip")
+
+    assets_module = types.ModuleType("babeldoc.assets.assets")
+    assets_module.restore_offline_assets_package = fail
+    monkeypatch.setitem(sys.modules, "babeldoc.assets.assets", assets_module)
+
+    assert runner._restore_assets("/tmp/gone.zip") == 1
+
+    event = json.loads(capsys.readouterr().out.strip())
+    assert event["type"] == "error"
+    assert "bad zip" in event["message"]

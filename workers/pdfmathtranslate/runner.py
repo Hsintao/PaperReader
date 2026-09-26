@@ -532,6 +532,21 @@ def _serve() -> int:
     return 0
 
 
+def _restore_assets(package_path: str) -> int:
+    """Populate the asset cache from a bundled offline package, then exit."""
+    writer = EventWriter()
+    try:
+        from babeldoc.assets.assets import restore_offline_assets_package
+
+        restore_offline_assets_package(Path(package_path))
+    except Exception as exc:  # noqa: BLE001 - reported, never swallowed
+        logger.error("offline assets restore failed: %s", exc)
+        writer.error(f"{type(exc).__name__}: {exc}", stage="parse")
+        return 1
+    writer.finish({"restored_assets": package_path})
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="pdfmathtranslate-worker",
@@ -543,10 +558,17 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="keep running and read job JSON paths from stdin, one per line",
     )
+    parser.add_argument(
+        "--restore-assets",
+        metavar="ZIP",
+        help="restore the BabelDOC asset cache from an offline package, then exit",
+    )
     args = parser.parse_args(argv)
 
     _configure_logging()
     _install_signal_handlers()
+    if args.restore_assets:
+        return _restore_assets(args.restore_assets)
     if args.serve:
         return _serve()
     if not args.job:

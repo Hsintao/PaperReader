@@ -11,6 +11,7 @@ published.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shlex
 import subprocess
@@ -23,6 +24,8 @@ from typing import Callable, Iterable
 
 from app.core.config import settings
 from app.services.translation_prompts import build_worker_system_prompt
+
+logger = logging.getLogger(__name__)
 
 EventSink = Callable[[dict], None]
 
@@ -361,6 +364,67 @@ def worker_runtime_configured() -> bool:
     return settings.pdfmathtranslate_python != "python3"
 
 
+def offline_assets_package() -> Path | None:
+    """The BabelDOC offline asset package shipped with the build, if any.
+
+    A packaged desktop build carries the zip at ``<bundle>/offline_assets/``;
+    ``PAPERREADER_OFFLINE_ASSETS`` overrides the location (a zip, or a
+    directory holding one) for development and custom deployments.
+    """
+    override = os.environ.get("PAPERREADER_OFFLINE_ASSETS", "").strip()
+    directory = bundle_root() / "offline_assets"
+    if override:
+        candidate = Path(override)
+        if candidate.is_file():
+            return candidate
+        if candidate.is_dir():
+            directory = candidate
+        else:
+            return None
+    matches = sorted(directory.glob("offline_assets_*.zip"))
+    return matches[-1] if matches else None
+
+
+def restore_offline_assets() -> None:
+    """Populate the BabelDOC asset cache from the bundled offline package.
+
+    Runs on every startup, before the worker prewarm: the prewarm loads the
+    layout model and would otherwise download it on a fresh machine. The
+    restore is idempotent — intact files are hash-verified and skipped — so a
+    warm cache costs a couple of seconds of hashing and nothing more. Failures
+    are logged, never raised: a job can still fall back to downloading.
+    """
+    if not worker_runtime_configured():
+        return
+    package = offline_assets_package()
+    if package is None:
+        return
+    command = [*worker_command(), "--restore-assets", str(package)]
+    hidden = (
+        {"creationflags": subprocess.CREATE_NO_WINDOW}
+        if os.name == "nt"
+        else {}
+    )
+    try:
+        result = subprocess.run(
+            command,
+            cwd=str(bundle_root()),
+            env=worker_environment(),
+            capture_output=True,
+            text=True,
+            timeout=600,
+            **hidden,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("offline assets restore could not run: %s", exc)
+        return
+    if result.returncode != 0:
+        tail = (result.stderr or result.stdout or "").strip().splitlines()[-3:]
+        logger.warning("offline assets restore failed: %s", " | ".join(tail))
+        return
+    logger.info("offline assets ready: %s", package)
+
+
 def prewarm_worker() -> threading.Thread | None:
     """Start the persistent worker ahead of the first job, in the background.
 
@@ -374,6 +438,7 @@ def prewarm_worker() -> threading.Thread | None:
 
     def _start() -> None:
         try:
+            restore_offline_assets()
             with _SERVE_LOCK:
                 _worker_handle()
         except Exception:  # noqa: BLE001 - the first real job reports it

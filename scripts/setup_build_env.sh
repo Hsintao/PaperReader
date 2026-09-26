@@ -171,6 +171,9 @@ PY
   WORKER_PY="$WORKER_RUNTIME/bin/python3"
   "$WORKER_PY" -m pip install --upgrade pip
   "$WORKER_PY" -m pip install -r desktop/requirements-worker.txt
+  # Trim BabelDOC's asset set to the CN font family so the offline assets
+  # package stays small; see desktop/patch_worker_assets.py.
+  "$WORKER_PY" desktop/patch_worker_assets.py "$WORKER_RUNTIME"
   echo '{"runtime_type": "python-standalone"}' > "$WORKER_RUNTIME/runtime-manifest.json"
   "$WORKER_PY" -c 'import pdf2zh_next, babeldoc' \
     || fail "worker runtime self-check failed (pdf2zh_next/babeldoc not importable)"

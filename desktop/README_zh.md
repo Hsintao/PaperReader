@@ -19,7 +19,7 @@ PaperReader v2.2.0 Windows 可移植版
   - 打包时准备了 `desktop/worker-runtime` 的话，它会随包发布，启动器自动使用它；
   - 否则在 `%LOCALAPPDATA%\PaperReader\.config.env` 中把 `PDFMATHTRANSLATE_PYTHON` 指向一个装有 worker 依赖的解释器（依赖见 `desktop/requirements-worker.txt`），或用 `PDFMATHTRANSLATE_WORKER` 指向独立的 worker 可执行文件。
 - 译文 PDF 与原文标注 PDF 自带字体，宿主不需要安装中文字体或 TeX。
-- worker 首次运行时会把版面模型、字体与 tiktoken 词表下载到 `%USERPROFILE%\.cache\babeldoc`；该目录可写且能访问模型来源，是首次翻译的前置条件。需要离线首跑时，把已下载的 `.cache\babeldoc` 一并复制到目标机器即可。
+- 打包时若 `release/` 下有 `offline_assets_*.zip`（BabelDOC 离线资产包），它会随包发布，启动时自动还原到 `%USERPROFILE%\.cache\babeldoc`，首次翻译无需联网；没有该包时 worker 首次运行会把版面模型、字体与 tiktoken 词表下载到该目录，此时该目录可写且能访问模型来源是首次翻译的前置条件。
 - 不要分享 %LOCALAPPDATA%\PaperReader 下的隐藏配置或 data 用户数据：其中 settings.json 保存着你的 API Key。
 
 分享方法
