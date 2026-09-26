@@ -30,7 +30,7 @@ PaperReader v2.2.0 Windows 可移植版
 开发者重新打包
 --------------
 
-在仓库根目录运行 `powershell -ExecutionPolicy Bypass -File .\desktop\build_portable.ps1`。
+在仓库根目录运行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\desktop\build_portable.ps1`（`-NoProfile` 防止新进程重跑 `$PROFILE` 时丢掉当前会话激活的 conda 环境；也可以先在当前会话 `conda activate`，然后直接 `.\desktop\build_portable.ps1`）。
 脚本默认从 PATH 查找 npm 和 Python；也可通过 `-NpmPath`、`-PythonPath` 指定路径。
 要把翻译用的离线资产包（字体/模型，免首翻联网）一并打进压缩包，改用 `.\desktop\build_portable_offline.ps1`。
 
@@ -44,6 +44,6 @@ EXE 未做 Authenticode 签名。本版本去掉了账号体系、TeX 工程上�
 
 重新构建前安装 Node.js 20 和 Python 3.11，然后运行：
 python -m pip install -r desktop/requirements-build.txt
-powershell -ExecutionPolicy Bypass -File .\desktop\build_portable.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\desktop\build_portable.ps1
 
 解压包中的 create_shortcut.ps1 可用于创建直接指向 PaperReader.exe 的桌面快捷方式。
