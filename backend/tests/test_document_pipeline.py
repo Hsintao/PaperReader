@@ -369,6 +369,65 @@ def test_a_mono_run_registers_no_bilingual_pdf(
     assert [item.kind for item in result.artifacts if item.kind == "dual_pdf"] == []
 
 
+def test_the_document_reads_done_before_the_merge_finishes(
+    isolated_storage, monkeypatch, tmp_path, client
+):
+    """The side-by-side merge must not extend the wait for a finished paper."""
+    _stub_worker(monkeypatch, tmp_path)
+    record = create_document_record(_write_pdf(tmp_path / "paper.pdf"))
+
+    observed: list[tuple[str, str | None]] = []
+    real_merge = document_pipeline.build_side_by_side_pdf
+
+    def slow_merge(*args, **kwargs):
+        status = client.get(f"/api/document/{record.document_id}").json()
+        observed.append((status["status"], status["merged_pdf_url"]))
+        return real_merge(*args, **kwargs)
+
+    monkeypatch.setattr(document_pipeline, "build_side_by_side_pdf", slow_merge)
+
+    result = _run(record)
+
+    assert observed == [("done", None)]
+    assert result.status == "done"
+    merged = next(item for item in result.artifacts if item.kind == "merged_pdf")
+    assert Path(merged.path).is_file()
+
+
+def test_a_merged_pdf_failure_still_finishes_the_document(
+    isolated_storage, monkeypatch, tmp_path
+):
+    _stub_worker(monkeypatch, tmp_path)
+
+    def broken_merge(*args, **kwargs):
+        raise RuntimeError("merge exploded")
+
+    monkeypatch.setattr(document_pipeline, "build_side_by_side_pdf", broken_merge)
+    record = create_document_record(_write_pdf(tmp_path / "paper.pdf"))
+
+    result = _run(record)
+
+    assert result.status == "done"
+    assert [item.kind for item in result.artifacts if item.kind == "merged_pdf"] == []
+    assert any("Merged PDF skipped" in line for line in result.logs)
+
+
+def test_merged_pdf_rebuild_reuses_an_existing_file(
+    isolated_storage, monkeypatch, tmp_path
+):
+    _stub_worker(monkeypatch, tmp_path)
+    record = create_document_record(_write_pdf(tmp_path / "paper.pdf"))
+    result = _run(record)
+    merged = next(item for item in result.artifacts if item.kind == "merged_pdf")
+
+    def unexpected_rebuild(*args, **kwargs):
+        raise AssertionError("an existing merged PDF must not be rebuilt")
+
+    monkeypatch.setattr(document_pipeline, "build_side_by_side_pdf", unexpected_rebuild)
+
+    assert document_pipeline.build_merged_pdf(record) == merged.url
+
+
 def test_a_retry_drops_a_legacy_bilingual_artifact(
     isolated_storage, monkeypatch, tmp_path
 ):

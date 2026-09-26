@@ -316,6 +316,9 @@ def create_annotated_pdf(document_id: str) -> dict:
 def create_merged_pdf(document_id: str) -> dict:
     """Build the side-by-side bilingual PDF for a document that predates it."""
     record = require_document(document_id)
+    # A fresh translation reports "done" before its own merge finishes; wait
+    # that run out so this reuses its artifact instead of merging twice.
+    wait_for_document_run(document_id)
     url = build_merged_pdf(record)
     if not url:
         raise HTTPException(

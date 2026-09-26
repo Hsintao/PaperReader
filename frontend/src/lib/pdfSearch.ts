@@ -2,6 +2,10 @@ import type { Match } from './pdfText'
 
 export const MAX_MATCHES = 500
 
+// Pages are fetched in batches: one await per page serialized the scan on the
+// pdf.js worker round trip, which dominated search time on long documents.
+const FETCH_BATCH = 6
+
 // Collects every occurrence of the caller-normalized `needle` (see
 // `normalized`) in the cached page texts.  Returns null as soon as
 // `isCurrent()` reports a newer search, so a slow scan can never publish
@@ -14,14 +18,21 @@ export async function collectMatches(
 ): Promise<Match[] | null> {
   if (!needle) return null
   const found: Match[] = []
-  for (let page = 1; page <= numPages && found.length < MAX_MATCHES; page += 1) {
-    const text = await getPageText(page)
+  for (let start = 1; start <= numPages && found.length < MAX_MATCHES; start += FETCH_BATCH) {
+    const end = Math.min(numPages, start + FETCH_BATCH - 1)
+    const texts = await Promise.all(
+      Array.from({ length: end - start + 1 }, (_, i) => getPageText(start + i))
+    )
     if (!isCurrent()) return null
-    if (!text) continue
-    let at = text.indexOf(needle)
-    while (at >= 0 && found.length < MAX_MATCHES) {
-      found.push({ page, start: at, length: needle.length })
-      at = text.indexOf(needle, at + 1)
+    for (let i = 0; i < texts.length && found.length < MAX_MATCHES; i += 1) {
+      const text = texts[i]
+      if (!text) continue
+      const page = start + i
+      let at = text.indexOf(needle)
+      while (at >= 0 && found.length < MAX_MATCHES) {
+        found.push({ page, start: at, length: needle.length })
+        at = text.indexOf(needle, at + 1)
+      }
     }
   }
   return isCurrent() ? found : null

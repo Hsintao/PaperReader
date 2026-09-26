@@ -216,7 +216,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
     if (!active) setSelectionMenu(null)
   }, [active])
 
-  const { getPageText } = usePageText({ docRef: pdfDocumentRef, activeKey: pdfUrl || '' })
+  const { getPageText, getAllPageTexts } = usePageText({ docRef: pdfDocumentRef, activeKey: pdfUrl || '' })
 
   const updateRenderRange = () => {
     const scroller = scrollRef.current
@@ -287,6 +287,14 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
       zoomStackRef.current.style.willChange = ''
     }
   }, [pdfUrl])
+
+  // Pre-extract page texts once the document settles, so the first locate or
+  // search does not pay a per-page round trip through the pdf.js worker.
+  useEffect(() => {
+    if (!active || !numPages) return
+    const timer = window.setTimeout(() => { void getAllPageTexts(numPages) }, 1200)
+    return () => window.clearTimeout(timer)
+  }, [active, numPages, getAllPageTexts])
 
   useEffect(() => {
     const el = containerRef.current
@@ -602,15 +610,17 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
       setLocateMessage('正在定位…')
       const hint = Math.max(1, Math.min(numPages, Math.round(positionRatio * Math.max(0, numPages - 1)) + 1))
       // Score every page by the longest prefix of the target it contains;
-      // ties and misses fall back to the position hint.  Whole-document scan
-      // is cheap because page texts are cached.
+      // ties and misses fall back to the position hint.  Pages are read with
+      // bounded concurrency and cached, so the scan itself stays cheap.
       const highlightTarget = normalized(highlightText || '')
       const blockTarget = normalized(text)
+      const pageTexts = await getAllPageTexts(numPages)
+      if (pdfDocumentRef.current !== doc) return
       let bestPage = hint
       let bestScore = 0
       let bestHighlightScore = 0
       for (let page = 1; page <= numPages; page += 1) {
-        const pageText = await getPageText(page)
+        const pageText = pageTexts[page - 1]
         const highlightScore = prefixMatchScore(pageText, highlightTarget)
         const score = prefixMatchScore(pageText, blockTarget)
         if (highlightScore > bestHighlightScore || (highlightScore === bestHighlightScore &&
@@ -620,7 +630,6 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
           bestPage = page
         }
       }
-      if (pdfDocumentRef.current !== doc) return
       if (!bestScore && !bestHighlightScore) {
         setLocateMessage('未找到匹配文字，请选择一句完整文本后重试。')
         return

@@ -69,3 +69,23 @@ test('collects matches up to the cap and stops once the request is stale', async
   )
   assert.equal(dropped, null)
 })
+
+test('page texts are fetched with overlapping requests', async () => {
+  // One await per page serialized whole-document search on the worker round
+  // trip; batched fetches must overlap while keeping results in page order.
+  let inFlight = 0
+  let peak = 0
+  const getPageText = (page) => {
+    inFlight += 1
+    peak = Math.max(peak, inFlight)
+    return new Promise((resolve) =>
+      setTimeout(() => {
+        inFlight -= 1
+        resolve(page % 2 ? 'alpha' : '')
+      }, 5)
+    )
+  }
+  const found = await collectMatches('alpha', 12, getPageText, () => true)
+  assert.equal(peak > 1, true)
+  assert.deepEqual(found.map((m) => m.page), [1, 3, 5, 7, 9, 11])
+})

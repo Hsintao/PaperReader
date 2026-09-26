@@ -132,9 +132,15 @@ def _publish_merged_pdf(
     demand when the document opens.
     """
     target = output_dir / merged_pdf_filename(record.source_filename)
+    # Build beside the target and move it into place: the reader may ask for
+    # this file while a run is still merging, and an atomic rename is the only
+    # write it can never observe half-finished.
+    temp = target.with_name(f".{target.name}.{uuid.uuid4().hex[:8]}.tmp")
     try:
-        build_side_by_side_pdf(record.source_path, translated_pdf, target)
+        build_side_by_side_pdf(record.source_path, translated_pdf, temp)
+        temp.replace(target)
     except Exception as exc:  # noqa: BLE001 - never block the pipeline on this
+        temp.unlink(missing_ok=True)
         record.logs.append(f"Merged PDF skipped: {exc}")
         return
     _append_artifact(record, target.name, "merged_pdf", target)
@@ -142,6 +148,11 @@ def _publish_merged_pdf(
 
 def build_merged_pdf(record: DocumentRecord) -> str | None:
     """Build the side-by-side PDF for a document that predates the feature."""
+    existing = next(
+        (item for item in record.artifacts if item.kind == "merged_pdf"), None
+    )
+    if existing and existing.url and Path(existing.path).is_file():
+        return existing.url
     if not record.source_path.is_file():
         return None
     translated = next(
@@ -548,7 +559,6 @@ def _process_document(
             return record
         result = PdfTranslationResult.from_worker(record.source_path, products)
         translated_output = _publish_translated_pdf(record, result.translated_pdf, output_dir)
-        _publish_merged_pdf(record, translated_output, output_dir)
         _register_extraction_artifacts(record, result)
         record.logs.append(f"Extraction model: {result.mode_label}")
         record.logs.append(f"Extraction dir: {result.extraction_dir}")
@@ -559,6 +569,12 @@ def _process_document(
         record.status = "done"
         record.failure = None
         record.logs.append("Processing done")
+        # Publish the finished document before the side-by-side merge: the
+        # merge re-reads both PDFs page by page and would otherwise keep a long
+        # paper waiting on "done" for something the reader can also build on
+        # demand. The run still owns the document while it merges.
+        _persist(record)
+        _publish_merged_pdf(record, translated_output, output_dir)
         # Terminology is learned off the wait path: the worker already
         # translated with the curated glossary, and a background pass now
         # extracts candidates from the manifest into the pending pool.
