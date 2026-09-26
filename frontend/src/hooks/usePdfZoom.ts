@@ -119,6 +119,11 @@ export function usePdfZoom({ scrollerRef, zoomStackRef, scaleRef, scale, setScal
         stack.style.transform = ''
         stack.style.willChange = ''
       }
+      if (finalScale === gesture.base) {
+        scroller.scrollLeft = gesture.stackLayoutLeft + gesture.originX - gesture.localX
+        scroller.scrollTop = gesture.stackLayoutTop + gesture.originY - gesture.localY
+        return
+      }
       // Layout catches up when React re-renders with the new scale; once it
       // has, re-anchor the scroll so the gesture focal point stays put.
       pendingAnchorRef.current = {
@@ -130,7 +135,6 @@ export function usePdfZoom({ scrollerRef, zoomStackRef, scaleRef, scale, setScal
         localY: gesture.localY,
         ratio
       }
-      scaleRef.current = finalScale
       setScale(finalScale)
     }
 

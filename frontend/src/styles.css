@@ -729,14 +729,22 @@ textarea { resize: vertical; }
   flex-direction: column;
   align-items: center;
   gap: 4px;
+  position: relative;
 }
-/* Approximation shown from the first paint while the pixel-level page filter
-   catches up; each matches its filter's paper tone so the swap is seamless. */
-[data-theme='dark'] .react-pdf__Page__canvas.pdf-dark-approx {
-  filter: invert(0.92) hue-rotate(180deg);
+/* A new PDF canvas is painted white before its dark pixels are ready. Keep the
+   old page visible through zoom and reveal the replacement only when ready. */
+[data-theme='dark'] .react-pdf__Page__canvas:not(.pdf-tone-ready),
+[data-theme='gray'] .react-pdf__Page__canvas:not(.pdf-tone-ready) {
+  visibility: hidden !important;
 }
-[data-theme='gray'] .react-pdf__Page__canvas.pdf-gray-approx {
-  filter: brightness(0.84);
+.pdf-zoom-snapshot {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 5;
+  width: 100%;
+  height: auto;
+  pointer-events: none;
 }
 .pdf-page-counterpart-highlight .react-pdf__Page {
   outline: 4px solid rgba(255, 184, 0, 0.78);

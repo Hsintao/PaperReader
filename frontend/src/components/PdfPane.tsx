@@ -1,5 +1,6 @@
 import {
   forwardRef,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useImperativeHandle,
@@ -68,6 +69,12 @@ export type PdfPaneProps = {
 
 pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 
+// React-PDF requests an opaque 2D context when rendering. Initializing it as
+// alpha-enabled first keeps neutral text antialiasing grayscale on Windows.
+const initPageCanvas = (canvas: HTMLCanvasElement | null) => {
+  canvas?.getContext('2d', { alpha: true })
+}
+
 export type PdfPaneHandle = {
   locateAndHighlight: (payload: {
     text: string
@@ -124,6 +131,31 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
   const [zoomInput, setZoomInput] = useState('100')
   const [containerWidth, setContainerWidth] = useState<number | undefined>(undefined)
   const [mode, setMode] = useState<ViewMode>('scroll')
+  const setScaleWithSnapshot = useCallback((next: React.SetStateAction<number>) => {
+    const target = typeof next === 'function' ? next(scaleRef.current) : next
+    if (target === scaleRef.current) return
+    const scroller = scrollRef.current
+    if (scroller) {
+      const viewport = scroller.getBoundingClientRect()
+      const tone = pageToneForTheme(document.documentElement.dataset.theme)
+      for (const wrap of pageRefs.current) {
+        if (!wrap || wrap.querySelector('.pdf-zoom-snapshot')) continue
+        const canvas = wrap.querySelector<HTMLCanvasElement>('.react-pdf__Page__canvas')
+        if (!canvas || !canvas.width || !canvas.height || (tone && !canvas.classList.contains('pdf-tone-ready'))
+          || getComputedStyle(canvas).visibility !== 'visible') continue
+        const rect = canvas.getBoundingClientRect()
+        if (rect.bottom <= viewport.top || rect.top >= viewport.bottom) continue
+        const snapshot = document.createElement('canvas')
+        snapshot.width = canvas.width
+        snapshot.height = canvas.height
+        snapshot.getContext('2d')?.drawImage(canvas, 0, 0)
+        snapshot.className = 'pdf-zoom-snapshot'
+        wrap.append(snapshot)
+      }
+    }
+    scaleRef.current = target
+    setScale(target)
+  }, [])
   const [selectionMenu, setSelectionMenu] = useState<{
     x: number
     y: number
@@ -225,7 +257,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
     zoomStackRef,
     scaleRef,
     scale,
-    setScale,
+    setScale: setScaleWithSnapshot,
     activeKey: pdfUrl || ''
   })
 
@@ -499,25 +531,27 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
   }
 
   async function handleCanvasRendered(page: number, pdfPage: PDFPageProxy) {
-    const canvas = pageRefs.current[page - 1]?.querySelector('canvas')
+    const wrap = pageRefs.current[page - 1]
+    const canvas = wrap?.querySelector<HTMLCanvasElement>('.react-pdf__Page__canvas')
     if (!canvas) return
     const tone = pdfToneRef.current
     if (tone) {
-      // The canvas reaches the screen white one frame before this callback
-      // runs; the CSS approximation added here applies from the first paint,
-      // so the page reads as dimmed immediately while the pixel filter catches up.
-      canvas.classList.add(tone === 'dark' ? 'pdf-dark-approx' : 'pdf-gray-approx')
       const { width, height } = canvas
       const baseViewport = pdfPage.getViewport({ scale: 1 })
       const renderScale = scale * (containerWidth ? containerWidth / baseViewport.width : 1)
       const viewport = pdfPage.getViewport({ scale: renderScale * window.devicePixelRatio })
       const operators = await pdfPage.getOperatorList()
-      const stale = () => pageRefs.current[page - 1]?.querySelector('canvas') !== canvas
+      const stale = () => pdfToneRef.current !== tone
+        || pageRefs.current[page - 1]?.querySelector('.react-pdf__Page__canvas') !== canvas
         || canvas.width !== width || canvas.height !== height
-      if (pdfToneRef.current === tone && !stale()) {
+      if (!stale()) {
         await applyPageFilterChunked(canvas, getImageTransforms(operators, viewport.transform), tone, stale)
       }
-      if (!stale()) canvas.classList.remove('pdf-dark-approx', 'pdf-gray-approx')
+      if (!stale()) canvas.classList.add('pdf-tone-ready')
+    }
+    if ((!tone || canvas.classList.contains('pdf-tone-ready'))
+      && pageRefs.current[page - 1]?.querySelector('.react-pdf__Page__canvas') === canvas) {
+      wrap?.querySelector('.pdf-zoom-snapshot')?.remove()
     }
     const timing = loadTimingRef.current
     if (active && page === pageNumber && timing.loaded && !timing.rendered) {
@@ -556,8 +590,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
     }
     const percent = Math.max(40, Math.min(300, Math.round(parsed)))
     const nextScale = percent / 100
-    scaleRef.current = nextScale
-    setScale(nextScale)
+    setScaleWithSnapshot(nextScale)
     setZoomInput(String(percent))
   }
 
@@ -813,6 +846,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
             pageNumber={page}
             scale={scale}
             width={containerWidth}
+            canvasRef={initPageCanvas}
             renderTextLayer
             renderAnnotationLayer
             onRenderSuccess={canvasCallbacks[index]}
@@ -859,7 +893,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
             </button>
           </div>
           <span className="sep" />
-          <button className="icon-btn" title="缩小" onClick={() => setScale((s) => Math.max(0.4, s - 0.1))}>
+          <button className="icon-btn" title="缩小" onClick={() => setScaleWithSnapshot((s) => Math.max(0.4, s - 0.1))}>
             <ZoomOut size={16} />
           </button>
           <label className="zoom-input-wrap" title="手动输入缩放比例（40%–300%）">
@@ -884,10 +918,10 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
             />
             <span>%</span>
           </label>
-          <button className="icon-btn" title="放大" onClick={() => setScale((s) => Math.min(3, s + 0.1))}>
+          <button className="icon-btn" title="放大" onClick={() => setScaleWithSnapshot((s) => Math.min(3, s + 0.1))}>
             <ZoomIn size={16} />
           </button>
-          <button className="icon-btn" title="适合宽度" onClick={() => setScale(1.0)}>
+          <button className="icon-btn" title="适合宽度" onClick={() => setScaleWithSnapshot(1.0)}>
             <Maximize2 size={16} />
           </button>
           <span className="sep" />
@@ -979,6 +1013,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
                   pageNumber={pageNumber}
                   scale={scale}
                   width={containerWidth}
+                  canvasRef={initPageCanvas}
                   renderTextLayer
                   renderAnnotationLayer
                   onRenderSuccess={canvasCallbacks[pageNumber - 1]}
