@@ -227,7 +227,7 @@ if [[ -n "$OFFLINE_ZIP" ]]; then
   cp "$OFFLINE_ZIP" "$PROJECT_ROOT/dist/PaperReader.app/Contents/Resources/offline_assets/"
   echo "Bundled offline assets: $(du -sh "$PROJECT_ROOT/dist/PaperReader.app/Contents/Resources/offline_assets" | cut -f1)"
 else
-  echo "no release/offline_assets_*.zip found; first translation will download fonts and models"
+  echo "no release/offline_assets_*.zip found; first translation will download fonts and models (use desktop/build_macos_offline.sh to build with them bundled)"
 fi
 step_done
 

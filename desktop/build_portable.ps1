@@ -148,7 +148,7 @@ if ($OfflineZip) {
     Copy-Item -LiteralPath $OfflineZip.FullName -Destination $OfflineDir -Force
     Write-Host "Bundled offline translation assets"
 } else {
-    Write-Host "no release\offline_assets_*.zip found; first translation will download fonts and models"
+    Write-Host "no release\offline_assets_*.zip found; first translation will download fonts and models (use desktop\build_portable_offline.ps1 to build with them bundled)"
 }
 
 $ReleaseDir = Join-Path $ProjectRoot "release"

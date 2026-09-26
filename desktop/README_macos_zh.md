@@ -35,6 +35,6 @@ python -m pip install -r desktop/requirements-build.txt
 ./desktop/build_macos.sh
 ```
 
-脚本会构建前端、生成 `.app`、执行 ad-hoc 签名并输出 DMG 与 SHA-256 文件。
+脚本会构建前端、生成 `.app`、执行 ad-hoc 签名并输出 DMG 与 SHA-256 文件。要把翻译用的离线资产包（字体/模型，免首翻联网）一并打进 DMG，改用 `./desktop/build_macos_offline.sh`。
 
 可移植包必须带独立 Python 运行时：使用 python-build-standalone 等 standalone distribution，安装 `desktop/requirements-worker.txt` 后放入 `desktop/worker-runtime`，并在其中提供 `runtime-manifest.json`（`runtime_type` 为 `python-standalone`）。普通 venv 会被打包脚本拒绝；没有该运行时就不会生成可移植发布包。
