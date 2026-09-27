@@ -9,7 +9,7 @@ import {
   type TranslationDomain,
   type UserSettings
 } from '../lib/api'
-import { ProviderSettingsForm } from './ProviderSettingsForm'
+import { MASKED_API_KEY, ProviderSettingsForm } from './ProviderSettingsForm'
 import { TranslationSettingsPanel } from './TranslationSettingsPanel'
 
 type Props = {
@@ -28,7 +28,8 @@ function providerDraft(settings: UserSettings): ProviderSettingsDraft {
     ? settings.provider
     : PROVIDER_PRESETS.find((item) => item.base_url === settings.base_url)?.id || 'custom'
   return {
-    api_key: '', provider, base_url: settings.base_url, model: settings.model
+    api_key: settings.api_key_configured ? MASKED_API_KEY : '',
+    provider, base_url: settings.base_url, model: settings.model
   }
 }
 
@@ -72,7 +73,13 @@ export function SettingsModal({ open, settings, onClose, onSettingsChange }: Pro
     try {
       let next = settings
       if (tab === 'providers') {
-        next = await updateProviderSettings(providers)
+        const draft = { ...providers }
+        if (draft.api_key === MASKED_API_KEY) {
+          draft.api_key = ''
+        } else if (!draft.api_key.trim()) {
+          draft.clear_api_key = true
+        }
+        next = await updateProviderSettings(draft)
         setProviders(providerDraft(next))
       } else if (tab === 'translation') {
         next = await updateSettings({ translation_domain: domain })
@@ -102,7 +109,7 @@ export function SettingsModal({ open, settings, onClose, onSettingsChange }: Pro
             <button className={tab === 'reading' ? 'active' : ''} onClick={() => setTab('reading')}><BookOpen size={16} />界面设置</button>
           </nav>
           <div className="modal-body profile-body">
-            {tab === 'providers' && <ProviderSettingsForm value={providers} onChange={setProviders} apiKeyConfigured={settings.api_key_configured} allowClear />}
+            {tab === 'providers' && <ProviderSettingsForm value={providers} onChange={setProviders} apiKeyConfigured={settings.api_key_configured} />}
             {tab === 'translation' && <TranslationSettingsPanel domain={domain} onDomainChange={setDomain} />}
             {tab === 'reading' && (
               <section className="profile-section borderless">

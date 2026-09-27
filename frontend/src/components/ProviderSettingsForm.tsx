@@ -1,18 +1,20 @@
 import { CheckCircle2, CircleAlert, KeyRound } from 'lucide-react'
 import { PROVIDER_PRESETS, type ProviderSettingsDraft } from '../lib/api'
 
+// Stands in for the stored key while a key is configured: saving with the
+// mask untouched keeps the key, saving with the field emptied deletes it.
+export const MASKED_API_KEY = '••••••••••••••••'
+
 type Props = {
   value: ProviderSettingsDraft
   onChange: (value: ProviderSettingsDraft) => void
   apiKeyConfigured?: boolean
-  allowClear?: boolean
 }
 
 export function ProviderSettingsForm({
   value,
   onChange,
-  apiKeyConfigured = false,
-  allowClear = false
+  apiKeyConfigured = false
 }: Props) {
   const set = <K extends keyof ProviderSettingsDraft>(key: K, next: ProviderSettingsDraft[K]) => {
     onChange({ ...value, [key]: next })
@@ -53,7 +55,7 @@ export function ProviderSettingsForm({
           </select>
         </label>
         <label className="field field-span-2">
-          <span>API Key {apiKeyConfigured && '（留空则保持不变）'}</span>
+          <span>API Key {apiKeyConfigured && '（留空将删除已保存的 Key）'}</span>
           <div className="secret-field">
             <KeyRound size={15} />
             <input
@@ -61,7 +63,10 @@ export function ProviderSettingsForm({
               autoComplete="off"
               value={value.api_key}
               onChange={(e) => set('api_key', e.target.value)}
-              placeholder={apiKeyConfigured ? '••••••••••••••••' : `输入你的 API Key${preset ? `（${preset.key_hint}）` : ''}`}
+              onFocus={(e) => {
+                if (value.api_key === MASKED_API_KEY) e.currentTarget.select()
+              }}
+              placeholder={apiKeyConfigured ? '留空将删除已保存的 Key' : `输入你的 API Key${preset ? `（${preset.key_hint}）` : ''}`}
             />
           </div>
         </label>
@@ -85,16 +90,6 @@ export function ProviderSettingsForm({
           )}
         </label>
       </div>
-      {allowClear && apiKeyConfigured && (
-        <label className="check-row danger-check">
-          <input
-            type="checkbox"
-            checked={!!value.clear_api_key}
-            onChange={(e) => set('clear_api_key', e.target.checked)}
-          />
-          <span>删除已保存的大模型 API Key</span>
-        </label>
-      )}
     </div>
   )
 }
