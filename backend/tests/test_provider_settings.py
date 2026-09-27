@@ -13,6 +13,7 @@ _SETTINGS_KEYS = {
     "model",
     "theme",
     "show_annotated_pdf",
+    "enable_source_links",
     "translation_domain",
     "favorites",
 }
@@ -160,6 +161,24 @@ def test_show_annotated_pdf_defaults_off_and_keeps_explicit_choice(isolated_stor
 
     with TestClient(app) as second:
         assert second.get("/api/settings/me").json()["show_annotated_pdf"] is True
+
+
+def test_enable_source_links_defaults_off_and_keeps_explicit_choice(isolated_storage):
+    with TestClient(app) as client:
+        assert client.get("/api/settings/me").json()["enable_source_links"] is False
+
+        updated = client.put("/api/settings/me", json={"enable_source_links": True})
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["enable_source_links"] is True
+
+    with TestClient(app) as second:
+        assert second.get("/api/settings/me").json()["enable_source_links"] is True
+        turned_off = second.put("/api/settings/me", json={"enable_source_links": False})
+        assert turned_off.status_code == 200, turned_off.text
+        assert turned_off.json()["enable_source_links"] is False
+
+    with TestClient(app) as third:
+        assert third.get("/api/settings/me").json()["enable_source_links"] is False
 
 
 def test_translation_domain_roundtrip_and_validation(isolated_storage):

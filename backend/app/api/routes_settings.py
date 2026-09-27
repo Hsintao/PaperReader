@@ -17,6 +17,7 @@ class UpdateSettingsRequest(BaseModel):
     model: str | None = None
     theme: str | None = None
     show_annotated_pdf: bool | None = None
+    enable_source_links: bool | None = None
     translation_domain: str | None = None
     favorites: list[str] | None = None
 
@@ -42,6 +43,7 @@ def put_settings(payload: UpdateSettingsRequest) -> dict:
         model=payload.model,
         theme=payload.theme,
         show_annotated_pdf=payload.show_annotated_pdf,
+        enable_source_links=payload.enable_source_links,
         translation_domain=payload.translation_domain,
         favorites=payload.favorites,
         provider=payload.provider,

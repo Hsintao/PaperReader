@@ -87,7 +87,8 @@ export function SettingsModal({ open, settings, onClose, onSettingsChange }: Pro
       } else {
         next = await updateSettings({
           theme: reading.theme,
-          show_annotated_pdf: reading.show_annotated_pdf
+          show_annotated_pdf: reading.show_annotated_pdf,
+          enable_source_links: reading.enable_source_links
         })
       }
       onSettingsChange(next)
@@ -117,6 +118,7 @@ export function SettingsModal({ open, settings, onClose, onSettingsChange }: Pro
                 <div className="field-grid two">
                   <label className="field"><span>主题</span><select value={reading.theme} onChange={(e) => setReading((v) => ({ ...v, theme: e.target.value as Theme }))}><option value="light">浅色</option><option value="dark">深色</option></select></label>
                   <label className="field"><span>原文标注</span><select value={reading.show_annotated_pdf ? 'on' : 'off'} onChange={(e) => setReading((v) => ({ ...v, show_annotated_pdf: e.target.value === 'on' }))}><option value="off">关闭 · 显示双语对照 PDF</option><option value="on">开启 · 显示原文标注版本</option></select></label>
+                  <label className="field"><span>来源链接</span><select value={reading.enable_source_links ? 'on' : 'off'} onChange={(e) => setReading((v) => ({ ...v, enable_source_links: e.target.value === 'on' }))}><option value="off">关闭 · 仅选择本地文件</option><option value="on">开启 · 可用路径/链接导入</option></select></label>
                 </div>
               </section>
             )}

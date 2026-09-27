@@ -45,6 +45,7 @@ export type PdfPaneProps = {
   active?: boolean
   title: string
   pdfUrl?: string
+  emptyText?: string
   downloads?: DownloadItem[]
   counterpartLabel?: string
   onLocateCounterpart?: (payload: {
@@ -104,6 +105,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
   active = true,
   title,
   pdfUrl,
+  emptyText = '暂无 PDF',
   downloads,
   counterpartLabel,
   onLocateCounterpart,
@@ -828,7 +830,7 @@ export const PdfPane = forwardRef<PdfPaneHandle, PdfPaneProps>(function PdfPane(
         <div className="pdf-toolbar">
           <div className="pdf-title">{title}</div>
         </div>
-        <div className="pdf-empty muted">暂无 PDF</div>
+        <div className="pdf-empty muted">{emptyText}</div>
       </div>
     )
   }

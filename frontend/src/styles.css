@@ -1105,6 +1105,29 @@ textarea { resize: vertical; }
   justify-content: flex-end;
   gap: 8px;
 }
+.source-import-card { width: min(480px, 92vw); }
+.source-import-local {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 14px;
+}
+.source-import-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.source-import-divider::before,
+.source-import-divider::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--border);
+}
 .btn {
   padding: 6px 14px;
   border-radius: var(--radius-sm);
@@ -1346,6 +1369,7 @@ textarea { resize: vertical; }
   .setup-header h1 { font-size: 22px; }
   .field-grid.two { grid-template-columns: 1fr; }
   .field-span-2 { grid-column: auto; }
+  .source-import-card { width: 100vw; min-height: 100vh; max-height: none; border-radius: 0; }
   .setup-footer { align-items: stretch; flex-direction: column; }
   .profile-card { width: 100vw; height: 100vh; max-height: none; border-radius: 0; }
   .profile-body { padding: 16px; }

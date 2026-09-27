@@ -87,6 +87,7 @@ export type UserSettings = {
   model: string
   theme: Theme
   show_annotated_pdf: boolean
+  enable_source_links: boolean
   translation_domain: TranslationDomain
   favorites: string[]
 }
@@ -245,6 +246,14 @@ export async function uploadFile(file: File): Promise<UploadResult> {
   const form = new FormData()
   form.append('file', file)
   return apiFetch('/api/upload', { method: 'POST', body: form })
+}
+
+export async function importSource(source: string): Promise<UploadResult> {
+  return apiFetch('/api/import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source })
+  })
 }
 
 export async function getDocumentStatus(documentId: string): Promise<DocumentStatus> {

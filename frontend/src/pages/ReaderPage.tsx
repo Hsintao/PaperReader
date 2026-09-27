@@ -6,10 +6,12 @@ import type { UserSettings } from '../lib/api'
 import { ProgressBar } from '../components/ProgressBar'
 import { SettingsModal } from '../components/SettingsModal'
 import { Sidebar } from '../components/Sidebar'
+import { SourceImportDialog } from '../components/SourceImportDialog'
 import { isCurrentDocument } from '../lib/requestGuard'
 import { THEME_CYCLE } from '../lib/theme'
 import type { DocumentStatus, DocumentSummary } from '../lib/api'
 import {
+  ApiError,
   cancelDocument,
   createAnnotation,
   deleteAnnotation,
@@ -18,6 +20,7 @@ import {
   ensureAnnotatedPdf,
   ensureMergedPdf,
   getDocumentStatus,
+  importSource,
   listAnnotations,
   listDocuments,
   locateCounterpart,
@@ -46,6 +49,7 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
   const [uploading, setUploading] = useState(false)
   const [showSidebar, setShowSidebar] = useState(() => window.innerWidth >= 900)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [sourceImportOpen, setSourceImportOpen] = useState(false)
   const [theme, setTheme] = useState<UserSettings['theme']>(settings.theme)
   const [favorites, setFavorites] = useState<string[]>(settings.favorites)
   const [notice, setNotice] = useState<string | null>(null)
@@ -60,8 +64,6 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
   const pollTimerRef = useRef<number | null>(null)
   const paneRef = useRef<PdfPaneHandle | null>(null)
   const emptyUploadRef = useRef<HTMLInputElement | null>(null)
-  const annotatedRequestRef = useRef<string | null>(null)
-  const mergedRequestRef = useRef<string | null>(null)
   const prewarmRequestedRef = useRef<Set<string>>(new Set())
   // Async handlers compare against the document that is active when they
   // resolve, not the one their callback was created with.
@@ -174,36 +176,66 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
   }, [activeId])
 
   // Documents parsed before annotation existed have no artifact yet; build it
-  // once from their cached parse when the preference is on.
+  // once from their cached parse when the preference is on. A failure used to
+  // park the pane on the empty state until reload, so retry while the document
+  // stays open; a 409 means the build is genuinely impossible, not transient.
   useEffect(() => {
     if (!settings.show_annotated_pdf) return
     if (!activeId || activeDoc?.status !== 'done' || activeDoc.annotated_pdf_url) return
-    if (annotatedRequestRef.current === activeId) return
-    annotatedRequestRef.current = activeId
-    void ensureAnnotatedPdf(activeId)
-      .then((url) => {
-        setDocCache((cache) => {
-          const current = cache[activeId]
-          return current ? { ...cache, [activeId]: { ...current, annotated_pdf_url: url } } : cache
+    let cancelled = false
+    let timer: number | undefined
+    const attempt = () => {
+      void ensureAnnotatedPdf(activeId)
+        .then((url) => {
+          if (cancelled) return
+          setDocCache((cache) => {
+            const current = cache[activeId]
+            return current ? { ...cache, [activeId]: { ...current, annotated_pdf_url: url } } : cache
+          })
         })
-      })
-      .catch((error) => console.error(error))
+        .catch((error) => {
+          console.error(error)
+          if (!cancelled && !(error instanceof ApiError && error.status === 409)) {
+            timer = window.setTimeout(attempt, 3000)
+          }
+        })
+    }
+    attempt()
+    return () => {
+      cancelled = true
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
   }, [settings.show_annotated_pdf, activeId, activeDoc?.status, activeDoc?.annotated_pdf_url])
 
   // Documents translated before the merged PDF existed get it built once from
-  // their stored original + translation when they are opened.
+  // their stored original + translation when they are opened. A fresh run also
+  // reports "done" before its own merge lands, so a failed request must not
+  // park the pane on the empty state forever: retry while the doc stays open.
   useEffect(() => {
     if (!activeId || activeDoc?.status !== 'done' || activeDoc.merged_pdf_url) return
-    if (mergedRequestRef.current === activeId) return
-    mergedRequestRef.current = activeId
-    void ensureMergedPdf(activeId)
-      .then((url) => {
-        setDocCache((cache) => {
-          const current = cache[activeId]
-          return current ? { ...cache, [activeId]: { ...current, merged_pdf_url: url } } : cache
+    let cancelled = false
+    let timer: number | undefined
+    const attempt = () => {
+      void ensureMergedPdf(activeId)
+        .then((url) => {
+          if (cancelled) return
+          setDocCache((cache) => {
+            const current = cache[activeId]
+            return current ? { ...cache, [activeId]: { ...current, merged_pdf_url: url } } : cache
+          })
         })
-      })
-      .catch((error) => console.error(error))
+        .catch((error) => {
+          console.error(error)
+          if (!cancelled && !(error instanceof ApiError && error.status === 409)) {
+            timer = window.setTimeout(attempt, 3000)
+          }
+        })
+    }
+    attempt()
+    return () => {
+      cancelled = true
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
   }, [activeId, activeDoc?.status, activeDoc?.merged_pdf_url])
 
   const handleRetry = useCallback(async () => {
@@ -401,6 +433,9 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
     return {
       title: showAnnotated ? `原文标注 · ${doc.source_filename || docId}` : `对照 · ${mergedPdfName(filename)}`,
       pdfUrl: showAnnotated ? annotatedUrl : mergedUrl,
+      // A fresh run reports "done" while its merged/annotated PDF is still
+      // being stitched; say so instead of showing the bare empty state.
+      emptyText: doc.status === 'done' && !(showAnnotated ? annotatedUrl : mergedUrl) ? 'PDF 生成中，请稍候…' : undefined,
       downloads: [
         { title: '下载译文 PDF', label: '译文', href: doc.translated_pdf_url ? makeDataUrl(doc.translated_pdf_url) : undefined, name: translatedPdfName(filename) },
         { title: '下载双语对照 PDF', label: '双语', href: mergedUrl, name: mergedPdfName(filename) }
@@ -464,6 +499,21 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
     }
   }, [refreshSummaries])
 
+  const handleImportSource = useCallback(async (source: string) => {
+    setUploading(true)
+    try {
+      const result = await importSource(source)
+      setActiveId(result.document_id)
+      await refreshSummaries()
+      setSourceImportOpen(false)
+    } catch (e: any) {
+      if (e?.code === 'config_required' || e?.code === 'worker_unavailable') setSettingsOpen(true)
+      setNotice(`导入失败：${e?.message ?? String(e)}`)
+    } finally {
+      setUploading(false)
+    }
+  }, [refreshSummaries])
+
   const handleIncomingFile = useCallback((file: File) => {
     if (!/\.pdf$/i.test(file.name)) {
       setNotice('仅支持 PDF 文件。')
@@ -471,6 +521,11 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
     }
     void handleUpload(file)
   }, [handleUpload])
+
+  const handleSourceImportLocalFile = useCallback((file: File) => {
+    setSourceImportOpen(false)
+    handleIncomingFile(file)
+  }, [handleIncomingFile])
 
   const handleToggleFavorite = useCallback((docId: string) => {
     const next = favorites.includes(docId) ? favorites.filter((x) => x !== docId) : [...favorites, docId]
@@ -545,7 +600,9 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
           uploading={uploading}
           theme={theme}
           activeStatus={activeDoc?.status}
+          sourceLinksEnabled={settings.enable_source_links}
           onUpload={handleIncomingFile}
+          onOpenSourceImport={() => setSourceImportOpen(true)}
           onSelect={setActiveId}
           onToggleFavorite={handleToggleFavorite}
           onDelete={handleDelete}
@@ -596,7 +653,7 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
             <h2>开始阅读</h2>
             <p className="muted">上传 PDF，PaperReader 会保留原文排版并生成可对照阅读的译文。</p>
             <input ref={emptyUploadRef} type="file" accept=".pdf,application/pdf" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) handleIncomingFile(file); event.currentTarget.value = '' }} />
-            <div className="empty-actions"><button className="btn primary" disabled={uploading} onClick={() => emptyUploadRef.current?.click()}>{uploading ? '正在上传…' : '选择 PDF'}</button></div>
+            <div className="empty-actions"><button className="btn primary" disabled={uploading} onClick={() => (settings.enable_source_links ? setSourceImportOpen(true) : emptyUploadRef.current?.click())}>{uploading ? '正在上传…' : '选择 PDF'}</button></div>
             {!settings.api_key_configured && <button className="config-callout" onClick={() => setSettingsOpen(true)}><AlertCircle size={16} />开始前需要配置 AI 服务</button>}
           </div>
         ) : (
@@ -614,6 +671,13 @@ export function ReaderPage({ settings, onSettingsChange }: Props) {
         settings={settings}
         onClose={() => setSettingsOpen(false)}
         onSettingsChange={onSettingsChange}
+      />
+      <SourceImportDialog
+        open={sourceImportOpen}
+        busy={uploading}
+        onClose={() => setSourceImportOpen(false)}
+        onLocalFile={handleSourceImportLocalFile}
+        onImport={(source) => void handleImportSource(source)}
       />
     </div>
   )

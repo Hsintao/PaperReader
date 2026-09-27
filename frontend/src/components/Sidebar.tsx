@@ -36,7 +36,9 @@ type Props = {
   uploading: boolean
   theme: Theme
   activeStatus?: string
+  sourceLinksEnabled: boolean
   onUpload: (file: File) => void
+  onOpenSourceImport: () => void
   onSelect: (documentId: string) => void
   onToggleFavorite: (documentId: string) => void
   onDelete: (documentId: string) => void
@@ -73,7 +75,9 @@ export function Sidebar({
   uploading,
   theme,
   activeStatus,
+  sourceLinksEnabled,
   onUpload,
+  onOpenSourceImport,
   onSelect,
   onToggleFavorite,
   onDelete,
@@ -167,7 +171,7 @@ export function Sidebar({
       <button
         className="new-parse-btn"
         disabled={uploading}
-        onClick={() => fileInputRef.current?.click()}
+        onClick={() => (sourceLinksEnabled ? onOpenSourceImport() : fileInputRef.current?.click())}
       >
         <Plus size={16} />
         {uploading ? '上传中…' : '新解析'}

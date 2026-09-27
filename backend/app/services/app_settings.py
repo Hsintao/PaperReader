@@ -59,6 +59,7 @@ class AppSettings:
     model: str = ""
     theme: str = "light"
     show_annotated_pdf: bool = False
+    enable_source_links: bool = False
     translation_domain: str = "general"
     favorites: list[str] = field(default_factory=list)
 
@@ -149,6 +150,7 @@ def update_settings(
     model: str | None = None,
     theme: str | None = None,
     show_annotated_pdf: bool | None = None,
+    enable_source_links: bool | None = None,
     translation_domain: str | None = None,
     favorites: list[str] | None = None,
 ) -> AppSettings:
@@ -167,6 +169,8 @@ def update_settings(
         current.theme = theme
     if show_annotated_pdf is not None:
         current.show_annotated_pdf = bool(show_annotated_pdf)
+    if enable_source_links is not None:
+        current.enable_source_links = bool(enable_source_links)
     if translation_domain is not None:
         current.translation_domain = translation_domain
     if favorites is not None:
@@ -205,6 +209,7 @@ def serialize_settings(value: AppSettings) -> dict:
         "model": value.model,
         "theme": value.theme,
         "show_annotated_pdf": value.show_annotated_pdf,
+        "enable_source_links": value.enable_source_links,
         "translation_domain": value.translation_domain,
         "favorites": value.favorites,
     }
