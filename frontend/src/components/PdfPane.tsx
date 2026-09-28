@@ -11,7 +11,7 @@ import {
 import { Document, Page, pdfjs } from 'react-pdf'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
 import { PDF_DOCUMENT_OPTIONS } from '../lib/pdfDocumentOptions'
 import { buildSpanIndex, locateNeedle, normalized, paintRange, prefixMatchScore, type SpanIndex } from '../lib/pdfText'
 import type { PDFPageProxy } from 'pdfjs-dist'

@@ -14,7 +14,7 @@ PaperReader v2.2.0 Windows 可移植版
 运行要求
 --------
 
-- Windows 10/11 64 位，并需要 Microsoft WebView2 Runtime（大多数当前 Windows 安装已包含）。
+- Windows 10/11 64 位，并需要 Microsoft WebView2 Runtime（大多数当前 Windows 安装已包含）。窗口或浏览器打开后一片空白时，基本是本机 WebView2 / 浏览器内核太旧（需 Chromium 87 以上，约 2020 年底之后的版本），升级 Microsoft Edge 或 WebView2 Runtime 即可；仍异常时查看 %LOCALAPPDATA%\PaperReader\PaperReader-error.log。
 - 接收者不需要安装 Python 或 Node.js。翻译与译文 PDF 由一个独立的 PDFMathTranslate-next 运行时执行，该运行时单独提供：
   - 打包时准备了 `desktop/worker-runtime` 的话，它会随包发布，启动器自动使用它；
   - 否则在 `%LOCALAPPDATA%\PaperReader\.config.env` 中把 `PDFMATHTRANSLATE_PYTHON` 指向一个装有 worker 依赖的解释器（依赖见 `desktop/requirements-worker.txt`），或用 `PDFMATHTRANSLATE_WORKER` 指向独立的 worker 可执行文件。

@@ -9,6 +9,16 @@ const pdfjsAssetGlob = (directory: string) =>
   normalizePath(resolve(frontendDir, `node_modules/pdfjs-dist/${directory}/*`))
 
 export default defineConfig({
+  resolve: {
+    alias: [
+      // pdf.js's modern build calls Promise.withResolvers() (Chrome/Edge 119+,
+      // WebView2 119+); the legacy build bundles core-js polyfills and runs on
+      // the same Chromium floor as the rest of the bundle. Without this the
+      // reader chunk throws at evaluation time on older Windows 10 browser
+      // kernels and the whole app renders a blank page.
+      { find: /^pdfjs-dist$/, replacement: 'pdfjs-dist/legacy/build/pdf.mjs' }
+    ]
+  },
   plugins: [
     react(),
     // PDF.js needs the packed CMap files to load CID-keyed CJK fonts (e.g.

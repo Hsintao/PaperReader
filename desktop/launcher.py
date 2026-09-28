@@ -234,7 +234,15 @@ def main() -> None:
         text_select=True,
     )
     try:
-        webview.start(private_mode=False, storage_path=str(app_root / "webview"))
+        # On Windows, pywebview silently falls back to MSHTML (IE11) when the
+        # WebView2 runtime is missing, and the modern frontend renders a blank
+        # window there. Forcing EdgeChromium makes a missing runtime fail
+        # loudly, so the top-level handler can point the user at the error log.
+        webview.start(
+            gui="edgechromium" if os.name == "nt" else None,
+            private_mode=False,
+            storage_path=str(app_root / "webview"),
+        )
     finally:
         server.should_exit = True
         backend_thread.join(timeout=10)
