@@ -20,9 +20,13 @@ from app.services.glossary_service import start_refresh_scheduler
 from app.services.pdf_translation_worker import prewarm_worker
 
 
-# Windows' MIME registry can classify ES module files as text/plain. PDF.js
-# loads its worker from a bundled .mjs asset, and Chromium rejects module
-# workers unless they are served with a JavaScript MIME type.
+# Windows' MIME registry can classify JavaScript files as text/plain (some
+# machines register .js that way), and mimetypes trusts the registry there.
+# Browsers refuse module scripts served with a non-JavaScript MIME type, so
+# the entire UI renders blank. Pin the types we serve instead of trusting
+# the OS; PDF.js also loads its worker from a bundled .mjs asset, which
+# Chromium rejects as a module worker unless served as JavaScript.
+mimetypes.add_type("text/javascript", ".js")
 mimetypes.add_type("text/javascript", ".mjs")
 
 
