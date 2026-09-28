@@ -95,7 +95,9 @@ def _build_settings(job: Job):
         openai_base_url=job.base_url or None,
         openai_api_key=job.api_key,
     )
-    if urlsplit(job.base_url).hostname == "api.deepseek.com":
+    # Translation rarely wants a reasoning pass: thinking tokens slow the job
+    # down and cost extra. The job's flag carries the operator's setting.
+    if job.disable_thinking:
         engine._openai_extra_body = {"thinking": {"type": "disabled"}}
     settings = SettingsModel(
         # The manifest is converted from BabelDOC's debug layout, so debug mode

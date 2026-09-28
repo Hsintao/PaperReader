@@ -1,5 +1,12 @@
+import { useState } from 'react'
 import { CheckCircle2, CircleAlert, KeyRound } from 'lucide-react'
-import { PROVIDER_PRESETS, type ProviderSettingsDraft } from '../lib/api'
+import {
+  ApiError,
+  PROVIDER_PRESETS,
+  testProviderConnection,
+  type ProviderSettingsDraft,
+  type ProviderTestResult
+} from '../lib/api'
 
 // Stands in for the stored key while a key is configured: saving with the
 // mask untouched keeps the key, saving with the field emptied deletes it.
@@ -16,7 +23,11 @@ export function ProviderSettingsForm({
   onChange,
   apiKeyConfigured = false
 }: Props) {
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<ProviderTestResult | null>(null)
+
   const set = <K extends keyof ProviderSettingsDraft>(key: K, next: ProviderSettingsDraft[K]) => {
+    setTestResult(null)
     onChange({ ...value, [key]: next })
   }
 
@@ -24,10 +35,33 @@ export function ProviderSettingsForm({
 
   const selectProvider = (id: string) => {
     const next = PROVIDER_PRESETS.find((item) => item.id === id)
+    setTestResult(null)
     if (next) {
       onChange({ ...value, provider: id, base_url: next.base_url, model: next.model })
     } else {
-      set('provider', 'custom')
+      onChange({ ...value, provider: 'custom' })
+    }
+  }
+
+  // Test the draft exactly as shown, so unsaved edits are covered too; the
+  // masked key means "use the stored one", which the backend falls back to.
+  const runTest = async () => {
+    setTesting(true)
+    setTestResult(null)
+    try {
+      const result = await testProviderConnection({
+        api_key: !value.api_key || value.api_key === MASKED_API_KEY ? undefined : value.api_key,
+        base_url: value.base_url || undefined,
+        model: value.model || undefined
+      })
+      setTestResult(result)
+    } catch (error) {
+      setTestResult({
+        ok: false,
+        message: error instanceof ApiError ? error.message : '测试失败，请稍后重试。'
+      })
+    } finally {
+      setTesting(false)
     }
   }
 
@@ -89,6 +123,27 @@ export function ProviderSettingsForm({
             </datalist>
           )}
         </label>
+        <label className="field">
+          <span>思考</span>
+          <select
+            value={value.enable_thinking ? 'on' : 'off'}
+            onChange={(e) => set('enable_thinking', e.target.value === 'on')}
+          >
+            <option value="off">关闭</option>
+            <option value="on">开启</option>
+          </select>
+        </label>
+      </div>
+
+      <div className="provider-test">
+        <button type="button" className="btn" onClick={() => void runTest()} disabled={testing}>
+          {testing ? '测试中…' : '测试连接'}
+        </button>
+        {testResult && (
+          <span className={testResult.ok ? 'form-success' : 'form-error'} role="status">
+            {testResult.message}
+          </span>
+        )}
       </div>
     </div>
   )

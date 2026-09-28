@@ -16,6 +16,7 @@ import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+import requests
 from fastapi import HTTPException
 
 from app.core.config import settings
@@ -60,6 +61,7 @@ class AppSettings:
     theme: str = "light"
     show_annotated_pdf: bool = False
     enable_source_links: bool = False
+    enable_thinking: bool = False
     translation_domain: str = "general"
     favorites: list[str] = field(default_factory=list)
 
@@ -151,6 +153,7 @@ def update_settings(
     theme: str | None = None,
     show_annotated_pdf: bool | None = None,
     enable_source_links: bool | None = None,
+    enable_thinking: bool | None = None,
     translation_domain: str | None = None,
     favorites: list[str] | None = None,
 ) -> AppSettings:
@@ -171,6 +174,8 @@ def update_settings(
         current.show_annotated_pdf = bool(show_annotated_pdf)
     if enable_source_links is not None:
         current.enable_source_links = bool(enable_source_links)
+    if enable_thinking is not None:
+        current.enable_thinking = bool(enable_thinking)
     if translation_domain is not None:
         current.translation_domain = translation_domain
     if favorites is not None:
@@ -200,6 +205,34 @@ def require_provider_settings() -> AppSettings:
     return provider
 
 
+def probe_provider_connection(base_url: str, api_key: str, model: str) -> tuple[bool, str]:
+    """Ping the configured chat model with a one-token completion request."""
+    try:
+        response = requests.post(
+            f"{base_url.rstrip('/')}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 1,
+                "temperature": 0,
+            },
+            timeout=20,
+        )
+        response.raise_for_status()
+    except requests.HTTPError:
+        snippet = (response.text or "").strip()[:200]
+        return False, f"服务返回 HTTP {response.status_code}：{snippet or response.reason}"
+    except requests.RequestException as exc:
+        return False, f"无法连接到服务：{exc}"
+    try:
+        payload = response.json()
+        payload["choices"][0]["message"]["content"]
+    except (ValueError, KeyError, IndexError, TypeError):
+        return False, "服务响应不是有效的 chat completion 格式。"
+    return True, f"连接成功，模型 {model} 响应正常。"
+
+
 def serialize_settings(value: AppSettings) -> dict:
     """Never expose the stored key; report only whether it is present."""
     return {
@@ -210,6 +243,7 @@ def serialize_settings(value: AppSettings) -> dict:
         "theme": value.theme,
         "show_annotated_pdf": value.show_annotated_pdf,
         "enable_source_links": value.enable_source_links,
+        "enable_thinking": value.enable_thinking,
         "translation_domain": value.translation_domain,
         "favorites": value.favorites,
     }

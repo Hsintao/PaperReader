@@ -29,7 +29,8 @@ function providerDraft(settings: UserSettings): ProviderSettingsDraft {
     : PROVIDER_PRESETS.find((item) => item.base_url === settings.base_url)?.id || 'custom'
   return {
     api_key: settings.api_key_configured ? MASKED_API_KEY : '',
-    provider, base_url: settings.base_url, model: settings.model
+    provider, base_url: settings.base_url, model: settings.model,
+    enable_thinking: settings.enable_thinking
   }
 }
 

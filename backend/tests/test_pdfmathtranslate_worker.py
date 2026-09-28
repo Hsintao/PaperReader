@@ -1032,13 +1032,14 @@ def test_the_translator_does_not_extract_terms_before_translating(tmp_path, monk
     assert captured["translation"]["no_auto_extract_glossary"] is True
 
 
-@pytest.mark.parametrize("base_url, expected", [
-    ("https://api.deepseek.com", {"thinking": {"type": "disabled"}}),
-    ("https://api.deepseek.com/v1", {"thinking": {"type": "disabled"}}),
-    ("https://api.siliconflow.cn/v1", None),
-    ("https://api.openai.com/v1", None),
+@pytest.mark.parametrize("base_url", [
+    "https://api.deepseek.com",
+    "https://api.siliconflow.cn/v1",
+    "https://custom.example/v1",
 ])
-def test_worker_disables_thinking_for_deepseek(tmp_path, monkeypatch, base_url, expected):
+def test_worker_keeps_thinking_untouched_unless_the_job_disables_it(
+    tmp_path, monkeypatch, base_url
+):
     from dataclasses import replace
     from workers.pdfmathtranslate.runner import _build_settings
 
@@ -1047,9 +1048,61 @@ def test_worker_disables_thinking_for_deepseek(tmp_path, monkeypatch, base_url, 
     _build_settings(job)
 
     engine = captured["settings"]["translate_engine_settings"]
-    assert getattr(engine, "_openai_extra_body", None) == expected
+    assert getattr(engine, "_openai_extra_body", None) is None
     assert captured["engine"]["openai_base_url"] == base_url
     assert captured["engine"]["openai_model"] == "deepseek-flash"
+
+
+def test_worker_disables_thinking_when_the_job_asks_for_it(tmp_path, monkeypatch):
+    from workers.pdfmathtranslate.job import job_from_mapping
+    from workers.pdfmathtranslate.runner import _build_settings
+
+    captured = _stub_translator_modules(monkeypatch)
+    job = job_from_mapping({
+        "job_id": "doc-1",
+        "input_pdf": str(tmp_path / "paper.pdf"),
+        "output_dir": str(tmp_path / "output"),
+        "translation": {
+            "api_key": "k",
+            "base_url": "https://custom.example/v1",
+            "model": "m",
+            "disable_thinking": True,
+        },
+        "options": {"output": "mono"},
+    })
+
+    assert job.disable_thinking is True
+    _build_settings(job)
+
+    engine = captured["settings"]["translate_engine_settings"]
+    assert getattr(engine, "_openai_extra_body", None) == {"thinking": {"type": "disabled"}}
+
+
+def test_a_job_payload_carries_the_thinking_switch(tmp_path):
+    payload = _job_payload(
+        document_id="doc-1",
+        input_pdf=tmp_path / "paper.pdf",
+        output_dir=tmp_path / "output",
+        work_dir=tmp_path / "work",
+        api_key="k",
+        base_url="https://custom.example/v1",
+        model="m",
+        glossary_path=None,
+        disable_thinking=True,
+    )
+    assert payload["translation"]["disable_thinking"] is True
+
+    default = _job_payload(
+        document_id="doc-1",
+        input_pdf=tmp_path / "paper.pdf",
+        output_dir=tmp_path / "output",
+        work_dir=tmp_path / "work",
+        api_key="k",
+        base_url="https://custom.example/v1",
+        model="m",
+        glossary_path=None,
+    )
+    assert default["translation"]["disable_thinking"] is False
 
 
 @pytest.mark.parametrize("domain", ["general", "cs", "medical"])

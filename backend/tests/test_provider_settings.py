@@ -14,6 +14,7 @@ _SETTINGS_KEYS = {
     "theme",
     "show_annotated_pdf",
     "enable_source_links",
+    "enable_thinking",
     "translation_domain",
     "favorites",
 }
@@ -181,6 +182,24 @@ def test_enable_source_links_defaults_off_and_keeps_explicit_choice(isolated_sto
         assert third.get("/api/settings/me").json()["enable_source_links"] is False
 
 
+def test_enable_thinking_defaults_off_and_keeps_explicit_choice(isolated_storage):
+    with TestClient(app) as client:
+        assert client.get("/api/settings/me").json()["enable_thinking"] is False
+
+        updated = client.put("/api/settings/me/providers", json={"enable_thinking": True})
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["enable_thinking"] is True
+
+    with TestClient(app) as second:
+        assert second.get("/api/settings/me").json()["enable_thinking"] is True
+        turned_off = second.put("/api/settings/me", json={"enable_thinking": False})
+        assert turned_off.status_code == 200, turned_off.text
+        assert turned_off.json()["enable_thinking"] is False
+
+    with TestClient(app) as third:
+        assert third.get("/api/settings/me").json()["enable_thinking"] is False
+
+
 def test_translation_domain_roundtrip_and_validation(isolated_storage):
     with TestClient(app) as client:
         assert client.get("/api/settings/me").json()["translation_domain"] == "general"
@@ -196,3 +215,132 @@ def test_translation_domain_roundtrip_and_validation(isolated_storage):
             .json()["translation_domain"]
             == "general"
         )
+
+
+class _ProbeResponse:
+    """Stand-in for the provider's chat completion response."""
+
+    def __init__(self, status_code=200, payload=None, text=""):
+        self.status_code = status_code
+        self._payload = payload if payload is not None else {
+            "choices": [{"message": {"content": "pong"}}]
+        }
+        self.text = text
+        self.reason = "reason"
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import requests
+
+            raise requests.HTTPError(f"HTTP {self.status_code}", response=self)
+
+    def json(self):
+        return self._payload
+
+
+def _stub_probe_request(monkeypatch, response=None, exc=None):
+    """Replace app_settings.requests so connectivity probes stay offline."""
+    import requests as real_requests
+
+    captured: dict = {}
+
+    class _RequestsStub:
+        RequestException = real_requests.RequestException
+        HTTPError = real_requests.HTTPError
+
+        @staticmethod
+        def post(url, **kwargs):
+            captured.update({"url": url, **kwargs})
+            if exc is not None:
+                raise exc
+            return response
+
+    monkeypatch.setattr(app_settings, "requests", _RequestsStub)
+    return captured
+
+
+def test_test_provider_requires_an_api_key(isolated_storage):
+    with TestClient(app) as client:
+        response = client.post("/api/settings/test-provider", json={})
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "config_required"
+
+
+def test_test_provider_pings_the_draft_configuration(isolated_storage, monkeypatch):
+    captured = _stub_probe_request(monkeypatch, response=_ProbeResponse())
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/settings/test-provider",
+            json={
+                "api_key": "fresh-key",
+                "base_url": "https://llm.example/v1/",
+                "model": "paper-model",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"ok": True, "message": "连接成功，模型 paper-model 响应正常。"}
+    assert captured["url"] == "https://llm.example/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer fresh-key"
+    assert captured["json"]["model"] == "paper-model"
+    assert captured["json"]["max_tokens"] == 1
+
+
+def test_test_provider_falls_back_to_the_saved_settings(isolated_storage, monkeypatch):
+    captured = _stub_probe_request(monkeypatch, response=_ProbeResponse())
+
+    with TestClient(app) as client:
+        saved = client.put(
+            "/api/settings/me/providers",
+            json={
+                "api_key": "stored-key",
+                "base_url": "https://saved.example/v1",
+                "model": "saved-model",
+            },
+        )
+        assert saved.status_code == 200, saved.text
+
+        response = client.post("/api/settings/test-provider", json={})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["ok"] is True
+    assert captured["url"] == "https://saved.example/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer stored-key"
+    assert captured["json"]["model"] == "saved-model"
+
+
+def test_test_provider_reports_http_failures(isolated_storage, monkeypatch):
+    _stub_probe_request(
+        monkeypatch, response=_ProbeResponse(status_code=401, text='{"error":"bad key"}')
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/settings/test-provider",
+            json={"api_key": "k", "base_url": "https://x.example/v1", "model": "m"},
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["ok"] is False
+    assert "HTTP 401" in payload["message"]
+    assert "bad key" in payload["message"]
+
+
+def test_test_provider_reports_connection_failures(isolated_storage, monkeypatch):
+    import requests
+
+    _stub_probe_request(monkeypatch, exc=requests.ConnectionError("connection refused"))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/settings/test-provider",
+            json={"api_key": "k", "base_url": "https://x.example/v1", "model": "m"},
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["ok"] is False
+    assert "无法连接到服务" in payload["message"]

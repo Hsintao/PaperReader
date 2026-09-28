@@ -35,6 +35,41 @@ from app.services.stage_tracker import init_stages
 from workers.pdfmathtranslate.events import EventWriter
 
 
+def test_the_thinking_setting_reaches_the_worker(isolated_storage, monkeypatch, tmp_path):
+    from app.services.app_settings import AppSettings
+
+    calls = _stub_worker(monkeypatch, tmp_path)
+    record = create_document_record(_write_pdf(tmp_path / "paper.pdf"))
+
+    result = process_document(
+        record,
+        provider_settings=AppSettings(
+            api_key="k",
+            base_url="https://custom.example/v1",
+            model="m",
+            enable_thinking=False,
+        ),
+    )
+
+    assert result.status == "done"
+    assert calls[0]["disable_thinking"] is True
+
+    thinking_calls = _stub_worker(monkeypatch, tmp_path)
+    thinking_record = create_document_record(_write_pdf(tmp_path / "thinking.pdf"))
+    thinking_result = process_document(
+        thinking_record,
+        provider_settings=AppSettings(
+            api_key="k",
+            base_url="https://custom.example/v1",
+            model="m",
+            enable_thinking=True,
+        ),
+    )
+
+    assert thinking_result.status == "done"
+    assert thinking_calls[0]["disable_thinking"] is False
+
+
 def _write_pdf(path: Path) -> Path:
     writer = PdfWriter()
     writer.add_blank_page(width=612, height=792)

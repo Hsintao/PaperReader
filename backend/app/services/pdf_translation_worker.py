@@ -148,6 +148,7 @@ def _job_payload(
     model: str,
     glossary_path: Path | None,
     translation_domain: str = "general",
+    disable_thinking: bool = False,
 ) -> dict:
     payload = {
         "job_id": document_id,
@@ -159,6 +160,7 @@ def _job_payload(
             "base_url": base_url,
             "model": model,
             "custom_system_prompt": build_worker_system_prompt(translation_domain),
+            "disable_thinking": disable_thinking,
         },
         "options": {
             "no_watermark": True,
@@ -500,6 +502,7 @@ def run_worker(
     model: str,
     glossary_path: Path | None = None,
     translation_domain: str = "general",
+    disable_thinking: bool = False,
     on_event: EventSink | None = None,
     on_start: Callable[[WorkerRun], None] | None = None,
     timeout: float | None = None,
@@ -522,6 +525,7 @@ def run_worker(
                 model=model,
                 glossary_path=glossary_path,
                 translation_domain=translation_domain,
+                disable_thinking=disable_thinking,
             ),
             ensure_ascii=False,
             indent=2,

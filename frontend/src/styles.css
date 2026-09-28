@@ -1275,6 +1275,8 @@ textarea { resize: vertical; }
 .field-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .field-span-2 { grid-column: span 2; }
 .provider-form { display: flex; flex-direction: column; gap: 14px; }
+.provider-test { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.provider-test .form-error, .provider-test .form-success { padding: 7px 10px; }
 .settings-section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .settings-section-heading h3 { margin: 0 0 3px; font-size: 16px; }
 .settings-section-heading p { margin: 0; color: var(--muted); font-size: 12px; }

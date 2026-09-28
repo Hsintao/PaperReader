@@ -549,6 +549,12 @@ def _process_document(
                 model=override_model or settings.openai_model,
                 glossary_path=glossary_csv,
                 translation_domain=translation_domain,
+                # Thinking tokens only slow translation down; the operator
+                # toggles them in the provider settings. Without settings (a
+                # bare override run), keep them off.
+                disable_thinking=(
+                    provider_settings is None or not provider_settings.enable_thinking
+                ),
                 on_event=_event_reporter(record, switcher),
             )
         except Exception:

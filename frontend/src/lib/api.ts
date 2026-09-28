@@ -88,6 +88,7 @@ export type UserSettings = {
   theme: Theme
   show_annotated_pdf: boolean
   enable_source_links: boolean
+  enable_thinking: boolean
   translation_domain: TranslationDomain
   favorites: string[]
 }
@@ -132,6 +133,7 @@ export type ProviderSettingsDraft = {
   provider: string
   base_url: string
   model: string
+  enable_thinking: boolean
 }
 
 export type ProviderPreset = {
@@ -219,6 +221,20 @@ export async function getSettings(): Promise<UserSettings> {
 export async function updateSettings(payload: Partial<UserSettings>): Promise<UserSettings> {
   return apiFetch('/api/settings/me', {
     method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+}
+
+export type ProviderTestResult = { ok: boolean; message: string }
+
+export async function testProviderConnection(payload: {
+  api_key?: string
+  base_url?: string
+  model?: string
+}): Promise<ProviderTestResult> {
+  return apiFetch('/api/settings/test-provider', {
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   })
